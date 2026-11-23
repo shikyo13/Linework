@@ -1,6 +1,6 @@
-# Linework 1.6.1
+# Linework 1.6.2
 
-Linework is a Windows x64 text editor for code, notes and multi-gigabyte text files. Run **Linework-Setup-1.6.1-x64.msi** to install it for your Windows account. The installer adds Linework to Start, Windows Default Apps and Explorer’s **Edit with Linework** menu. To change file associations, choose **Choose Linework file defaults** in Start. Files opened from Explorer join your existing Linework window. Use **Settings → Apps → Installed apps** to remove the installation. Your documents and editor preferences are stored separately.
+Linework is a Windows x64 text editor for code, notes and multi-gigabyte text files. Run **Linework-Setup-1.6.2-x64.msi** to install it for your Windows account. The installer adds Linework to Start, Windows Default Apps and Explorer’s **Edit with Linework** menu. To change file associations, choose **Choose Linework file defaults** in Start. Files opened from Explorer join your existing Linework window. Use **Settings → Apps → Installed apps** to remove the installation. Your documents and editor preferences are stored separately.
 
 For a portable copy, extract the application ZIP and launch **Linework.exe** alongside the **runtime** folder. Both editions accept files and folders dropped onto the window or passed on the command line.
 

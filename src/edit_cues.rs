@@ -23,8 +23,13 @@ const FULL: isize = 16;
 /// How long the flash stays. The maintenance timer clears it, so the real
 /// time is this plus up to one timer period.
 const FLASH: Duration = Duration::from_millis(1000);
-/// The line a click in the preview landed on is marked for a shorter time.
+/// The row a click in the preview landed on is marked for a shorter time.
 const LANDING: Duration = Duration::from_millis(480);
+/// It is marked only once a second click can no longer make it a
+/// double-click, which selects a word and marks nothing.
+const LANDING_WAIT: Duration = Duration::from_millis(190);
+/// The one-shot timer that ends that wait.
+pub(crate) const LANDING_TIMER: usize = 2;
 /// What the flash in the editor is showing.
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub(super) enum FlashKind {
@@ -50,6 +55,8 @@ pub(super) struct HistoryFlash {
     /// Places past `MAX_SPANS`.
     more: usize,
     shown: Option<Instant>,
+    /// Not to be shown before this.
+    due: Option<Instant>,
 }
 
 impl App {
@@ -180,17 +187,33 @@ impl App {
             self.history_flash = HistoryFlash::default();
         }
     }
-    /// Mark the line the caret was just sent to from the preview.
+    /// Mark the row the caret was just sent to from the preview. A wrapped
+    /// paragraph is one line many rows tall, and only the caret's row is
+    /// marked. The mark waits a moment, so a double-click never shows it.
     fn flash_landing(&mut self) {
         let Some(i) = self.current() else { return };
         let (p, e) = (self.active, self.edit());
-        let line = e.send(LINEFROMPOSITION, e.caret(), 0).max(0) as usize;
-        let a = e.send(POSITIONFROMLINE, line, 0).max(0) as u64;
-        let z = e.send(GETLINEENDPOSITION, line, 0).max(0) as u64;
+        let h = e.hwnd();
+        let caret = e.caret();
+        let line = e.send(LINEFROMPOSITION, caret, 0).max(0) as usize;
+        let (mut a, mut z) = (
+            e.send(POSITIONFROMLINE, line, 0).max(0),
+            e.send(GETLINEENDPOSITION, line, 0).max(0),
+        );
+        if e.send(WRAPCOUNT, line, 0) > 1 {
+            use linework_editor::sci as s;
+            let y = msg(h, s::SCI_POINTYFROMPOSITION, 0, caret as isize);
+            let left: isize = (0..5).map(|n| msg(h, s::SCI_GETMARGINWIDTHN, n, 0)).sum();
+            let first = msg(h, s::SCI_POSITIONFROMPOINT, left as usize + 1, y);
+            let last = msg(h, s::SCI_POSITIONFROMPOINT, (client(h).0 - 1).max(0) as usize, y);
+            if first < last {
+                (a, z) = (first.clamp(a, z), last.clamp(a, z));
+            }
+        }
         if z <= a {
             return;
         }
-        let span = (events::point(p, a), events::point(p, z));
+        let span = (events::point(p, a as u64), events::point(p, z as u64));
         self.clear_history_flash();
         self.history_flash = HistoryFlash {
             id: self.buffers[i].id,
@@ -198,8 +221,9 @@ impl App {
             spans: vec![span],
             more: 0,
             shown: None,
+            due: Some(Instant::now() + LANDING_WAIT),
         };
-        self.show_history_flash();
+        unsafe { SetTimer(hwnd(self.h), LANDING_TIMER, LANDING_WAIT.as_millis() as u32 + 10, None) };
     }
     /// A paged document changed through an editor pane.
     pub(super) fn note_paged_edit(&mut self, id: u64, rev: u64, at: u64, del: u64, add: u64) {
@@ -221,6 +245,7 @@ impl App {
             spans: vec![(at, at)],
             more: 0,
             shown: None,
+            due: None,
         };
         self.show_history_flash();
     }
@@ -354,6 +379,8 @@ impl App {
         let stay = if self.history_flash.kind == FlashKind::Landing { LANDING } else { FLASH };
         match self.history_flash.shown {
             Some(since) if since.elapsed() >= stay => self.clear_history_flash(),
+            // A landing still inside its double-click wait.
+            None if self.history_flash.due.is_some_and(|due| Instant::now() < due) => {}
             // The last step of a history action was not reported as such.
             None if !self.history_flash.spans.is_empty() => self.show_history_flash(),
             _ => {}
@@ -474,6 +501,10 @@ impl App {
         focus(self.edit().hwnd());
         if len == 0 {
             self.flash_landing();
+        } else if self.history_flash.kind == FlashKind::Landing {
+            // The second click of a double-click: a word is selected, and
+            // the landing its first click asked for is dropped.
+            self.clear_history_flash();
         }
     }
     /// A shortcut was pressed while the preview had the keyboard.

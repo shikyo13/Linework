@@ -193,6 +193,10 @@ pub unsafe extern "system" fn proc(h: HWND, m: u32, w: usize, l: isize) -> isize
                 DefWindowProcW(h, m, w, l)
             }
             WM_TIMER => {
+                if w == crate::app::LANDING_TIMER {
+                    // One shot: it ends the wait before a landing flash.
+                    KillTimer(h, w);
+                }
                 push(Event::Timer);
                 0
             }

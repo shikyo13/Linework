@@ -208,7 +208,10 @@ impl Editor {
             self.send(SCI_MARKERSETBACK, slot, bgr(p.subtle));
         }
         self.send(SCI_SETSELECTIONLAYER, 1, 0);
-        self.send(SCI_SETCARETLINELAYER, 1, 0);
+        // The current-line highlight is the base layer. Drawn in the same layer
+        // as the selection it is painted after it, and being opaque it hid
+        // every selection on the caret's line.
+        self.send(SCI_SETCARETLINELAYER, 0, 0);
         for (element, color) in [
             (0, p.fg),
             (1, p.bg),

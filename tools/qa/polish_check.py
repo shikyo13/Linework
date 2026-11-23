@@ -70,6 +70,7 @@ GETLENGTH, GETCHARAT, GETCURRENTPOS, GETANCHOR, GOTOPOS = 2006, 2007, 2008, 2009
 MARKERGET, GETLINEINDENTATION, SETSEL, LINEFROMPOSITION, UNDO = 2046, 2127, 2160, 2166, 2176
 INDICATORVALUEAT, GETCARETSTYLE, GETELEMENTISSET = 2507, 2513, 2756
 AUTOCACTIVE, AUTOCCANCEL, VK_SPACE = 2102, 2101, 0x20
+POINTX, POINTY = 2164, 2165
 PAIR, DIM, FLASH, HEAT = 30, 31, 15, 0b111110
 
 results = []
@@ -285,6 +286,20 @@ def snapshot(hwnd, path):
     user32.ReleaseDC(hwnd, dc)
 
 
+def pixel(ed, x, y):
+    """The color at a point of the editor pane, from the compositor's copy
+    of the window."""
+    from PIL import Image
+
+    path = os.path.join(WORK, "pixel.png")
+    snapshot(ed.main, path)
+    origin = wintypes.POINT(0, 0)
+    user32.ClientToScreen(ed.h, ctypes.byref(origin))
+    r = wintypes.RECT()
+    user32.GetWindowRect(ed.main, ctypes.byref(r))
+    return Image.open(path).convert("RGB").getpixel((origin.x - r.left + x, origin.y - r.top + y))
+
+
 def watch_glide(pid, ed, move, seconds=0.45):
     """Sample the glide stand-ins while `move` runs. One row per sample:
     time, caret style, whether the line highlight is set, and the rectangle
@@ -382,6 +397,29 @@ def source_checks(pid, ed):
     ed.key(0x49, ctrl=True)
     check("smart typing: Ctrl+I again takes italic off", until(lambda: ed.text() == original))
     ed.undo_to(original)
+
+    # A selection shows on the caret's own line, over the line highlight.
+    ed.focus()
+    ed.select(a, a + 4)
+    time.sleep(0.5)
+    top = ed.sci(POINTY, 0, a) + 1
+    inside = pixel(ed, ed.sci(POINTX, 0, a) + 2, top)
+    beside = pixel(ed, ed.sci(POINTX, 0, a - 4) + 2, top)
+    apart = sum(abs(i - o) for i, o in zip(inside, beside))
+    check("selection: shows on the caret's line", apart > 24, f"selected {inside}, same line unselected {beside}")
+    ed.goto(a)
+
+    # Undo marks what it brought back, with the same flash a paste uses.
+    ed.select(a, a + 4)
+    ed.key(VK_DELETE)
+    until(lambda: ed.text() != original)
+    time.sleep(0.2)
+    ed.sci(UNDO)
+    back = until(lambda: ed.text() == original)
+    marked = until(lambda: ed.sci(INDICATORVALUEAT, FLASH, a + 1), 1.0, 0.005)
+    check("change echo: Undo marks the restored text in the source", back and marked)
+    check("change echo: the Undo mark fades", until(lambda: not ed.sci(INDICATORVALUEAT, FLASH, a + 1), 3))
+    ed.goto(a)
 
     # The completion list keeps out of the way in prose.
     listed = lambda: ed.sci(AUTOCACTIVE)
@@ -650,9 +688,21 @@ async def run():
             await page.click(spot[0], spot[1])
             ok = until(lambda: want <= ed.caret() <= want + 7)
             row_start = ed.pos("Second paragraph")
-            flashed = until(lambda: ed.sci(INDICATORVALUEAT, FLASH, row_start), 0.4, 0.005)
+            flashed = until(lambda: ed.sci(INDICATORVALUEAT, FLASH, row_start), 0.9, 0.005)
             check("click to source: the caret lands inside the clicked word", ok, f"caret {ed.caret()}, word {want}")
             check("click to source: the landing line flashes", flashed)
+
+            # A double-click selects the word and marks nothing.
+            ed.goto(0)
+            await asyncio.sleep(0.8)
+            await page.move(spot[0], spot[1])
+            for count in (1, 2):
+                for kind in ("mousePressed", "mouseReleased"):
+                    await page.call("Input.dispatchMouseEvent", type=kind, x=spot[0], y=spot[1], button="left", clickCount=count)
+                await asyncio.sleep(0.06)
+            flashed = until(lambda: ed.sci(INDICATORVALUEAT, FLASH, row_start), 0.6, 0.005)
+            check("double-click in the preview: selects that word in the source", until(lambda: ed.selected() == "several"), ed.selected())
+            check("double-click in the preview: nothing flashes", not flashed)
 
             # Peek.
             spot = await page.js("return rectOf('a link');")
