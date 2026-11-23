@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+  <Package Name="Linework" Manufacturer="Linework" Version="$(var.AppVersion)" Language="1033"
+           ProductCode="$(var.ProductCode)" UpgradeCode="CB7F3749-8381-4BB1-BECC-F762F183B93A" Scope="perUser" InstallerVersion="500">
+    <MajorUpgrade Schedule="afterInstallInitialize"
+                  DowngradeErrorMessage="A newer version of Linework is already installed." />
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+    <Icon Id="LineworkIcon" SourceFile="$(var.ProductRoot)\assets\linework.ico" />
+    <Property Id="ARPPRODUCTICON" Value="LineworkIcon" />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="Choose which files open in Linework" />
+    <SetProperty Id="ARPINSTALLLOCATION" Value="[INSTALLFOLDER]" After="CostFinalize" Sequence="execute" />
+    <CustomAction Id="ShowDefaultApps" Directory="WindowsFolder"
+                  ExeCommand="&quot;[WindowsFolder]explorer.exe&quot; ms-settings:defaultapps?registeredAppUser=Linework"
+                  Execute="immediate" Return="asyncNoWait" />
+
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="UserPrograms" Name="Programs">
+        <Directory Id="INSTALLFOLDER" Name="Linework" />
+      </Directory>
+    </StandardDirectory>
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="LineworkMenu" Name="Linework" />
+    </StandardDirectory>
+
+    <Feature Id="Editor" Title="Linework" Level="1">
+      <ComponentGroupRef Id="EditorFiles" />
+      <ComponentGroupRef Id="FileTypes" />
+      <ComponentRef Id="ShellIntegration" />
+      <ComponentRef Id="StartMenu" />
+    </Feature>
+
+    <Component Id="StartMenu" Directory="LineworkMenu" Guid="9E9CF9C3-AB80-41A1-A116-253D937589FE">
+      <RegistryValue Root="HKCU" Key="Software\Linework\Installer" Name="StartMenu" Type="integer" Value="1" KeyPath="yes" />
+      <Shortcut Id="StartEditor" Name="Linework" Description="Edit text, source code and large files"
+                Target="[#LineworkExe]" WorkingDirectory="INSTALLFOLDER" Icon="LineworkIcon" />
+      <Shortcut Id="DefaultApps" Name="Choose Linework file defaults" Description="Choose which file types open in Linework"
+                Target="[WindowsFolder]explorer.exe" Arguments="ms-settings:defaultapps?registeredAppUser=Linework" Icon="LineworkIcon" />
+      <RemoveFolder Id="RemoveMenu" On="uninstall" />
+    </Component>
+    <Component Id="ShellIntegration" Directory="INSTALLFOLDER" Guid="0796E439-6A52-4E38-A480-28C8A20A671A">
+      <RegistryValue Root="HKCU" Key="Software\Linework\Installer" Name="InstallDir" Type="string" Value="[INSTALLFOLDER]" KeyPath="yes" />
+      <RegistryValue Root="HKCU" Key="Software\RegisteredApplications" Name="Linework" Type="string" Value="Software\Linework\Capabilities" />
+      <RegistryKey Root="HKCU" Key="Software\Linework\Capabilities">
+        <RegistryValue Name="ApplicationName" Type="string" Value="Linework" />
+        <RegistryValue Name="ApplicationDescription" Type="string" Value="Text and source editor for Windows, including multi-gigabyte files." />
+        <RegistryValue Name="ApplicationIcon" Type="string" Value="&quot;[#LineworkExe]&quot;,0" />
+      </RegistryKey>
+      <RegistryValue Root="HKCU" Key="Software\Microsoft\Windows\CurrentVersion\App Paths\Linework.exe" Type="string" Value="[#LineworkExe]" />
+      <RegistryKey Root="HKCU" Key="Software\Classes\Linework.Document">
+        <RegistryValue Type="string" Value="Linework text document" />
+        <RegistryValue Name="FriendlyTypeName" Type="string" Value="Linework text document" />
+        <RegistryKey Key="Application">
+          <RegistryValue Name="ApplicationName" Type="string" Value="Linework" />
+          <RegistryValue Name="ApplicationIcon" Type="string" Value="&quot;[#LineworkExe]&quot;,0" />
+        </RegistryKey>
+        <RegistryKey Key="DefaultIcon">
+          <RegistryValue Type="string" Value="&quot;[#LineworkExe]&quot;,0" />
+        </RegistryKey>
+        <RegistryKey Key="shell\open\command">
+          <RegistryValue Type="string" Value="&quot;[#LineworkExe]&quot; --reuse-window -- &quot;%1&quot;" />
+        </RegistryKey>
+      </RegistryKey>
+      <RegistryKey Root="HKCU" Key="Software\Classes\Applications\Linework.exe">
+        <RegistryValue Name="FriendlyAppName" Type="string" Value="Linework" />
+        <RegistryKey Key="DefaultIcon">
+          <RegistryValue Type="string" Value="&quot;[#LineworkExe]&quot;,0" />
+        </RegistryKey>
+        <RegistryKey Key="shell\open\command">
+          <RegistryValue Type="string" Value="&quot;[#LineworkExe]&quot; --reuse-window -- &quot;%1&quot;" />
+        </RegistryKey>
+      </RegistryKey>
+      <RegistryKey Root="HKCU" Key="Software\Classes\*\shell\Linework.Edit">
+        <RegistryValue Name="MUIVerb" Type="string" Value="Edit with Linework" />
+        <RegistryValue Name="Icon" Type="string" Value="&quot;[#LineworkExe]&quot;,0" />
+        <RegistryKey Key="command">
+          <RegistryValue Type="string" Value="&quot;[#LineworkExe]&quot; --reuse-window -- &quot;%1&quot;" />
+        </RegistryKey>
+      </RegistryKey>
+    </Component>
+
+    <ui:WixUI Id="WixUI_InstallDir" InstallDirectory="INSTALLFOLDER" />
+    <UI>
+      <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="InstallDirDlg"
+               Condition="NOT Installed AND NOT PATCH" Order="90" />
+      <Publish Dialog="InstallDirDlg" Control="Back" Event="NewDialog" Value="WelcomeDlg"
+               Condition="NOT Installed" Order="90" />
+      <Publish Dialog="ExitDialog" Control="Finish" Event="DoAction" Value="ShowDefaultApps"
+               Condition="WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 AND NOT Installed" Order="1" />
+    </UI>
+  </Package>
+</Wix>

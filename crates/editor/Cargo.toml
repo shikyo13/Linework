@@ -1,0 +1,17 @@
+[package]
+name = "linework-editor"
+version = "1.0.0"
+edition = "2024"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+spellbook = "0.4.2"
+memchr = "2"
+syntect = { version = "5.3", default-features = false, features = ["yaml-load", "parsing", "default-syntaxes", "regex-fancy"] }
+yaml-rust = "0.4"
+onig = { version = "6.5", default-features = false }
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_System_LibraryLoader",
+    "Win32_Graphics_Gdi", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Controls_Dialogs"
+] }

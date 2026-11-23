@@ -1,0 +1,28 @@
+[package]
+name = "linework-project"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+blake3 = "1.8"
+encoding_rs = "0.8"
+globset = "0.4"
+ignore = "0.4"
+memchr = "2"
+regex = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tempfile = "3"
+tree-sitter = "0.25"
+tree-sitter-rust = "0.24"
+tree-sitter-python = "0.25"
+tree-sitter-javascript = "0.25"
+tree-sitter-typescript = "0.23"
+tree-sitter-go = "0.25"
+tree-sitter-c = "0.24"
+tree-sitter-cpp = "0.23"
+tree-sitter-c-sharp = "0.23"
+tree-sitter-java = "0.23"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation","Win32_Security","Win32_System_JobObjects","Win32_System_Threading","Win32_Storage_FileSystem"] }

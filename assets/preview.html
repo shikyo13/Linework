@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data: https://linework-preview.invalid; frame-src about: 'self'; base-uri 'none'; form-action 'none'; object-src 'none'">
+<title>Document preview</title>
+<style>
+:root{color-scheme:dark;--bg:#18191f;--edge:#30313b;--muted:#afa9bd;--accent:#d4bafa;--bar:#202128;--ink:#e3e0eb;--raise:#26272f;--shade:rgba(0,0,0,.42)}
+:root.light{color-scheme:light;--bg:#fcfbfe;--edge:#ddd9e5;--muted:#686576;--accent:#694a98;--bar:#f6f4fa;--ink:#2b2832;--raise:#ffffff;--shade:rgba(60,50,80,.18)}
+*{box-sizing:border-box}html,body{margin:0;height:100%;overflow:hidden}
+[hidden]{display:none!important}
+body{display:flex;flex-direction:column;background:var(--bg);font:13px "Segoe UI",sans-serif}
+header{min-height:34px;padding:0 8px 0 16px;display:flex;align-items:center;gap:9px;color:var(--accent);background:var(--bar);border-bottom:1px solid var(--edge);font-weight:600}
+header span{flex:1;min-width:0;font-weight:400;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+button,select,input{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+#cue-toggle{flex:none;height:24px;padding:0 9px;border:1px solid var(--edge);border-radius:5px;background:transparent;color:var(--muted);font-size:12px;white-space:nowrap}
+#cue-toggle:hover,#cue-toggle[aria-expanded=true]{color:var(--accent);border-color:var(--accent)}
+#cue-panel{position:absolute;z-index:5;top:38px;right:8px;width:min(272px,calc(100% - 16px));max-height:calc(100% - 46px);overflow:auto;padding:11px 13px 12px;display:grid;gap:9px;color:var(--ink);background:var(--raise);border:1px solid var(--edge);border-radius:8px;box-shadow:0 10px 30px var(--shade);font-size:12.5px}
+#cue-panel fieldset{margin:0;padding:0;border:0;display:flex;flex-wrap:wrap;gap:4px 12px}
+#cue-panel legend{padding:0 0 5px;color:var(--muted)}
+#cue-panel label{display:flex;align-items:center;gap:6px;min-height:22px}
+#cue-panel .row{justify-content:space-between;gap:10px}
+#cue-panel select{min-width:0;padding:2px 4px;border:1px solid var(--edge);border-radius:4px;background:var(--bg)}
+#cue-panel input[type=range]{flex:1;min-width:60px;accent-color:var(--accent)}
+#cue-panel input[type=radio],#cue-panel input[type=checkbox]{margin:0;accent-color:var(--accent)}
+#cue-panel output{flex:none;width:3.4ch;text-align:right;color:var(--muted);font-variant-numeric:tabular-nums}
+#cue-panel p{margin:0;color:var(--muted);font-size:12px;line-height:1.4}
+#notice{margin:0;padding:7px 16px;color:var(--muted);border-bottom:1px solid var(--edge);font-size:12px}
+#stage{position:relative;flex:1;min-height:0;display:flex}
+iframe{display:block;flex:1;min-width:0;width:100%;height:100%;border:0;background:var(--bg)}
+#show-edit{position:absolute;z-index:4;left:50%;bottom:12px;transform:translateX(-50%);height:26px;padding:0 12px;border:1px solid var(--accent);border-radius:13px;background:var(--raise);color:var(--accent);font-size:12px;font-weight:600;white-space:nowrap;box-shadow:0 4px 14px var(--shade);cursor:pointer}
+#show-edit.above{top:10px;bottom:auto}
+</style></head><body><header>Preview <span id="format"></span><button id="cue-toggle" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="cue-panel" title="How the preview marks the text you just edited" hidden>Edit cue</button></header>
+<div id="cue-panel" role="group" aria-label="Edit cue settings" hidden>
+<fieldset><legend>Mark edited text with</legend>
+<label><input type="radio" name="lw-style" value="pill">Pill</label>
+<label><input type="radio" name="lw-style" value="beam">Beam</label>
+<label><input type="radio" name="lw-style" value="underline">Underline</label>
+<label><input type="radio" name="lw-style" value="block">Block</label>
+<label><input type="radio" name="lw-style" value="off">Off</label>
+</fieldset>
+<label class="row">Mark<select id="cue-extent"><option value="word">Whole word</option><option value="letters">Changed characters</option></select></label>
+<label class="row">Dim the rest<input id="cue-dim" type="range" min="0" max="45" step="1"><output id="cue-dim-value" for="cue-dim"></output></label>
+<label><input id="cue-margin" type="checkbox">Marker in the margin</label>
+<label><input id="cue-calm" type="checkbox">Reduce motion</label>
+<label><input id="cue-click" type="checkbox">Click text to move the source caret</label>
+<p>Alt+click always goes to the source, also on a link. Double-click selects the word there. Esc returns to the source.</p>
+</div>
+<p id="notice" role="status" hidden></p>
+<template id="reading"><style>
+:root{color-scheme:dark;--paper:#18191f;--text:#e3e0eb;--soft:#b2acbe;--accent:#d4bafa;--edge:#3a3844;--block:#222229}
+:root.light{color-scheme:light;--paper:#fcfbfe;--text:#2b2832;--soft:#696474;--accent:#694796;--edge:#dedbe5;--block:#f2f0f6}
+*{box-sizing:border-box}html,body{margin:0;min-height:100%;background:var(--paper);color:var(--text);overflow-anchor:none}
+body{font:15px/1.62 "Segoe UI",system-ui,sans-serif;overflow-wrap:break-word}
+article{max-width:78ch;padding:clamp(16px,4vw,44px);margin:0 auto}
+article>:first-child{margin-top:0}h1,h2,h3,h4,h5,h6{font-weight:625;line-height:1.23;letter-spacing:-.015em;margin:1.15em 0 .45em}
+h1{font-size:1.9em}h2{font-size:1.47em}h3{font-size:1.2em}p,ul,ol,pre,table,blockquote{margin:.72em 0 1em}
+a{color:var(--accent);text-decoration:underline;text-underline-offset:2px}li>p{margin:.2em 0}
+pre,code,kbd{font-family:"Cascadia Mono",Consolas,monospace;font-size:.91em}
+code,kbd{background:var(--block);padding:.12em .32em;border-radius:3px}
+pre{padding:12px 16px;border:1px solid var(--edge);border-radius:6px;background:var(--block);overflow-x:auto}
+pre code{padding:0;background:transparent}blockquote{border-left:3px solid var(--accent);padding:0 15px;color:var(--soft)}
+table{border-collapse:collapse;display:block;max-width:100%;overflow-x:auto}td,th{padding:5px 11px;border:1px solid var(--edge);text-align:left}th{background:var(--block)}
+img{max-width:100%;height:auto}hr{border:0;border-top:1px solid var(--edge);margin:1.5em 0}
+input[type=checkbox]{accent-color:var(--accent)}.diagram{display:block;width:100%;max-height:75vh;object-fit:contain}
+.lw-cue{position:absolute;left:0;top:0;width:0;height:0;pointer-events:none;z-index:2147483000;--lw-wash:color-mix(in srgb,var(--paper) var(--lw-dim,23%),transparent)}
+.lw-cue>*{position:absolute;left:0;top:0;width:0;height:0;opacity:0}
+.lw-spot{border-radius:5px;background:color-mix(in srgb,var(--accent) 17%,transparent);box-shadow:0 0 0 1px color-mix(in srgb,var(--accent) 74%,transparent),0 0 10px color-mix(in srgb,var(--accent) 16%,transparent),0 0 56px var(--lw-reach,2400px) var(--lw-wash)}
+.lw-spot[data-style=block]{border-radius:8px;background:color-mix(in srgb,var(--accent) 5%,transparent);box-shadow:-3px 0 0 0 var(--accent),0 0 56px var(--lw-reach,2400px) var(--lw-wash)}
+.lw-spot[data-style=underline]{border-radius:0;background:transparent;box-shadow:0 2px 0 0 var(--accent)}
+.lw-spot[data-style=beam]{border-radius:0;background:transparent;box-shadow:0 1px 0 0 color-mix(in srgb,var(--accent) 70%,transparent)}
+.lw-spot[data-thin]{border-radius:1px;background:var(--accent)}
+.lw-pool{background:radial-gradient(ellipse 340px 150px at var(--lw-bx,50%) var(--lw-by,50%),transparent 0,transparent 26%,var(--lw-wash) 100%)}
+.lw-bar{width:3px;border-radius:3px;background:var(--accent)}
+@media (forced-colors:active){.lw-spot{background:transparent!important;box-shadow:none!important;outline:2px solid Highlight;outline-offset:1px}.lw-pool{display:none}.lw-bar{background:Highlight}}
+</style></template>
+<main id="stage"><iframe id="sheet" title="Rendered document" sandbox="allow-same-origin" srcdoc="<!doctype html><html><head><meta charset=utf-8></head><body><article></article></body></html>"></iframe>
+<button id="show-edit" type="button" hidden></button></main>
+</body></html>
