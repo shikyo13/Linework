@@ -53,6 +53,20 @@ pub struct PreviewCues {
     pub calm: bool,
     /// A plain click on rendered text moves the source caret there.
     pub click_source: bool,
+    /// Newly typed text is drawn in a warm color that settles.
+    pub ink: bool,
+    /// Pasted text gets a wash that fades, in the source and in the preview.
+    pub echo: bool,
+    /// Deleted text lingers for a moment, struck through, above the join.
+    pub ghosts: bool,
+    /// Hovering a link shows where it leads. Ctrl+hover shows a block's Markdown.
+    pub peek: bool,
+    /// A selection in the source is highlighted on the rendered text too.
+    pub mirror: bool,
+    /// The preview scrolls to keep the source caret in view.
+    pub follow: bool,
+    /// Task boxes in the preview can be ticked, which edits the source.
+    pub tasks: bool,
 }
 impl PreviewCues {
     pub const STYLES: [&'static str; 5] = ["pill", "beam", "underline", "block", "off"];
@@ -77,6 +91,13 @@ impl Default for PreviewCues {
             dim: 23,
             calm: false,
             click_source: true,
+            ink: true,
+            echo: true,
+            ghosts: true,
+            peek: true,
+            mirror: true,
+            follow: false,
+            tasks: true,
         }
     }
 }

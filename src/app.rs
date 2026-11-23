@@ -282,6 +282,8 @@ pub struct App {
     pub(crate) document_preview: crate::preview::Pane,
     /// Where the last undo or redo changed text, while the editor shows it.
     history_flash: edit_cues::HistoryFlash,
+    /// A paste command is running and its changes are still arriving.
+    pub(crate) pasting: bool,
     /// The document and revision the latest file comparison read as its revised side.
     pub(crate) compared: Option<(u64, u64)>,
     pub project_include: String,
@@ -454,6 +456,7 @@ impl App {
             preview_mode: false,
             document_preview: Default::default(),
             history_flash: Default::default(),
+            pasting: false,
             compared: None,
             project_include: "".into(),
             project_exclude: "".into(),
@@ -1243,6 +1246,7 @@ impl App {
             }
         }
         if !self.exiting {
+            self.finish_paste();
             if self.refresh_after_input { self.refresh(); }
             if self.document_preview.take_update() { self.update_preview(); }
         }

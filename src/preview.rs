@@ -1,9 +1,10 @@
 //! Live document preview. Source snapshots are bounded even for paged files.
-use crate::{app::{App, UiWake}, state::PreviewCues, win::*};
+use crate::{app::{App, UiWake}, events, state::PreviewCues, win::*};
 use std::{
     ops::Range,
     path::{Path, PathBuf},
     sync::mpsc::{self, Receiver, Sender},
+    time::{Duration, Instant},
 };
 
 #[path = "preview_web.rs"]
@@ -55,6 +56,7 @@ pub(crate) enum EditKind {
     Typed,
     Undo,
     Redo,
+    Paste,
 }
 impl EditKind {
     fn label(self) -> &'static str {
@@ -62,6 +64,7 @@ impl EditKind {
             Self::Typed => "type",
             Self::Undo => "undo",
             Self::Redo => "redo",
+            Self::Paste => "paste",
         }
     }
 }
@@ -88,6 +91,119 @@ pub(crate) enum Signal {
     Focus,
     /// A shortcut was pressed while the preview had the keyboard.
     Chord { vk: u32, ctrl: bool, shift: bool, alt: bool },
+    /// A task box was clicked. `at` is the file offset of its `[`.
+    Task { id: u64, rev: u64, at: u64 },
+    /// The reader asked for the Markdown behind a rendered block. The answer
+    /// goes back to the page under `token`.
+    Peek { id: u64, rev: u64, at: u64, len: u64, token: u64 },
+}
+/// What a change brought into the text, for the traces the preview draws.
+pub(crate) enum Arrival {
+    Nothing,
+    /// Typed text. `blank_first` says it begins with white space, which ends
+    /// the word before it. `blank` says it is white space only.
+    Typed { blank_first: bool, blank: bool },
+    Pasted,
+}
+/// Text that was just typed or pasted, in file bytes. It is carried through
+/// every later change, so the page can draw it wherever it is now, however
+/// many renders were skipped in between.
+#[derive(Clone, Copy, Debug)]
+struct Trace {
+    id: u32,
+    doc: u64,
+    start: u64,
+    end: u64,
+    born: Instant,
+    paste: bool,
+}
+/// How long typed text stays warm, and how long pasted text stays washed.
+/// The page uses the same two numbers for its fades.
+const INK: Duration = Duration::from_millis(900);
+const ECHO: Duration = Duration::from_millis(1200);
+const MAX_TRACES: usize = 12;
+impl Trace {
+    fn life(&self) -> Duration {
+        if self.paste { ECHO } else { INK }
+    }
+}
+/// The traces of every buffer, oldest first.
+#[derive(Default)]
+pub(crate) struct Traces {
+    list: Vec<Trace>,
+    next: u32,
+}
+impl Traces {
+    /// Carry the traces through one change of a buffer, then add the text
+    /// the change brought in. Called once for every change, in order.
+    pub(crate) fn change(&mut self, id: u64, at: u64, del: u64, add: u64, arrival: Arrival) {
+        let now = Instant::now();
+        let end = at + del;
+        self.list.retain_mut(|t| {
+            if now.duration_since(t.born) >= t.life() {
+                return false;
+            }
+            if t.doc != id || t.end <= at {
+                return true;
+            }
+            if t.start >= end {
+                t.start = t.start - del + add;
+                t.end = t.end - del + add;
+                return true;
+            }
+            // The change reaches into the trace: keep what is left of it.
+            t.start = t.start.min(at);
+            t.end = if t.end >= end { t.end - del + add } else { at };
+            t.start < t.end
+        });
+        if add == 0 {
+            return;
+        }
+        let paste = match arrival {
+            Arrival::Nothing | Arrival::Typed { blank: true, .. } => return,
+            Arrival::Typed { blank_first, .. } => {
+                // A word being typed stays one trace and its clock restarts,
+                // so it settles as a whole once the typing pauses.
+                let word = self
+                    .list
+                    .iter_mut()
+                    .find(|t| !t.paste && t.doc == id && t.start <= at && at <= t.end);
+                if let (Some(t), false) = (word, blank_first) {
+                    t.end = t.end.max(at + add);
+                    t.born = now;
+                    return;
+                }
+                false
+            }
+            Arrival::Pasted => true,
+        };
+        self.next = self.next.wrapping_add(1).max(1);
+        self.list.push(Trace { id: self.next, doc: id, start: at, end: at + add, born: now, paste });
+        if self.list.len() > MAX_TRACES {
+            self.list.remove(0);
+        }
+    }
+    /// The traces that lie on a page, as `[id, pasted, start, end, age in
+    /// milliseconds]` with offsets in bytes from the start of the page.
+    fn on_page(&self, doc: u64, origin: Option<u64>, len: usize) -> serde_json::Value {
+        let Some(origin) = origin else {
+            return serde_json::Value::Array(vec![]);
+        };
+        let (now, limit) = (Instant::now(), origin + len as u64);
+        self.list
+            .iter()
+            .filter(|t| t.doc == doc && now.duration_since(t.born) < t.life())
+            .filter_map(|t| {
+                let (a, z) = (t.start.max(origin), t.end.min(limit));
+                (a < z).then(|| {
+                    serde_json::json!([
+                        t.id, u8::from(t.paste), a - origin, z - origin,
+                        now.duration_since(t.born).as_millis() as u64
+                    ])
+                })
+            })
+            .collect()
+    }
 }
 #[derive(Clone, PartialEq, Eq)]
 struct Key {
@@ -313,6 +429,16 @@ fn markdown(source: &str, nonce: Option<&str>) -> String {
                     "<!--lw{nonce}:{block}-->\n"
                 ))));
             }
+            Event::TaskListMarker(checked) if !plain => {
+                // The box carries the place of its `[ ]`, so a click in the
+                // preview can tick it in the source.
+                events.push(Event::Html(CowStr::from(format!(
+                    "<input type=\"checkbox\" disabled data-lw=\"{nonce}\" data-o=\"{}\"{}>",
+                    range.start - block,
+                    if *checked { " checked" } else { "" }
+                ))));
+                continue;
+            }
             Event::Code(code) if !plain => {
                 let (start, len, exact) = code_origin(source, &range, code);
                 events.push(Event::Html(CowStr::Borrowed("<code>")));
@@ -421,6 +547,11 @@ pub(crate) struct Pane {
     /// soon as the caret moves on, so the cue folds at once and a page that
     /// arrives late does not replay it.
     cue_caret: Option<(u64, u64)>,
+    /// Freshly typed and pasted text.
+    traces: Traces,
+    /// The selection and caret the page was last told about: buffer,
+    /// revision, selection start and end, caret.
+    tracked: Option<(u64, u64, u64, u64, u64)>,
 }
 impl Pane {
     pub(crate) fn mark_update(&mut self) {
@@ -455,6 +586,17 @@ impl Pane {
     pub(crate) fn mark(&self) -> Option<EditMark> {
         self.mark
     }
+    /// Carry the traces through one change of a buffer. Called once for
+    /// every change, in order.
+    pub(crate) fn track_change(&mut self, id: u64, at: u64, del: u64, add: u64, arrival: Arrival) {
+        self.traces.change(id, at, del, add, arrival);
+    }
+    /// Hand the page the Markdown it asked for.
+    pub(crate) fn peeked(&self, token: u64, text: &str) {
+        if let Some(view) = &self.web {
+            view.run(&format!("peeked({token},{})", serde_json::Value::from(text)));
+        }
+    }
     /// True while the pane is open on a document.
     pub(crate) fn is_open(&self) -> bool {
         self.visible && self.web.is_some()
@@ -476,7 +618,10 @@ impl Pane {
         self.web.as_ref().is_some_and(web::View::locate)
     }
     /// Push changed cue settings to the page without waiting for a render.
-    pub(crate) fn set_cues(&self, cues: &PreviewCues) {
+    pub(crate) fn set_cues(&mut self, cues: &PreviewCues) {
+        // The page is told the selection and the caret again, in case a
+        // setting that needs them was just turned on.
+        self.tracked = None;
         if let Some(view) = &self.web {
             view.run(&format!("options({})", web::cue_json(cues)));
         }
@@ -501,6 +646,7 @@ impl Pane {
             }
             self.requested = None;
             self.cue_caret = None;
+            self.tracked = None;
             return 0;
         }
         if self.web.is_none() {
@@ -689,8 +835,29 @@ impl App {
             // The caret already left this edit: keep it for "Show edit", but
             // do not play the cue.
             let quiet = page.edit.is_some() && self.document_preview.cue_caret.is_none();
+            let traces = self.document_preview.traces.on_page(page.key.id, page.origin, page.len);
             if let Some(view) = &self.document_preview.web {
-                view.show(page, &self.prefs.preview_cues.checked(), quiet);
+                view.show(page, &self.prefs.preview_cues.checked(), quiet, traces);
+            }
+        }
+        // The page mirrors the source selection and can follow the caret.
+        // It is told once per change, and keeps the news until it has drawn
+        // the revision it belongs to.
+        let cues = &self.prefs.preview_cues;
+        if kind == Kind::Markdown && (cues.mirror || cues.follow) {
+            let (a, z) = self.edit().selection();
+            let lo = events::point(self.active, a.min(z) as u64);
+            let hi = events::point(self.active, a.max(z) as u64);
+            let state = (key.id, key.rev, lo, hi, caret);
+            if self.document_preview.tracked != Some(state) {
+                let sent = self.document_preview.web.as_ref().is_some_and(|view| {
+                    view.page_span(key.id, key.rev, lo, hi, caret).is_some_and(|(a, z, c)| {
+                        view.run(&format!("track({},{a},{z},{c})", key.rev))
+                    })
+                });
+                if sent {
+                    self.document_preview.tracked = Some(state);
+                }
             }
         }
     }
@@ -824,6 +991,71 @@ mod tests {
         assert!(page_edit(text, 100, mark(99, 0, 1)).is_none());
         assert!(page_edit(text, 100, mark(105, 0, 5)).is_none());
         assert!(page_edit(text, 100, mark(102, 0, 1)).is_none());
+    }
+    fn spans(t: &Traces, doc: u64) -> Vec<(u64, u64, u64)> {
+        let page = t.on_page(doc, Some(0), 1 << 20);
+        page.as_array()
+            .unwrap()
+            .iter()
+            .map(|m| (m[1].as_u64().unwrap(), m[2].as_u64().unwrap(), m[3].as_u64().unwrap()))
+            .collect()
+    }
+    const WORD: Arrival = Arrival::Typed { blank_first: false, blank: false };
+    #[test]
+    fn a_typed_word_is_one_trace_and_a_blank_ends_it() {
+        let mut t = Traces::default();
+        for (i, at) in (10..14).enumerate() {
+            t.change(1, at, 0, 1, WORD);
+            assert_eq!(spans(&t, 1), [(0, 10, 11 + i as u64)]);
+        }
+        // A blank is not ink and does not extend the word.
+        t.change(1, 14, 0, 1, Arrival::Typed { blank_first: true, blank: true });
+        assert_eq!(spans(&t, 1), [(0, 10, 14)]);
+        // The next word is a trace of its own.
+        t.change(1, 15, 0, 1, WORD);
+        assert_eq!(spans(&t, 1), [(0, 10, 14), (0, 15, 16)]);
+        // Typing in the middle of the first word grows it and moves the second.
+        t.change(1, 12, 0, 2, WORD);
+        assert_eq!(spans(&t, 1), [(0, 10, 16), (0, 17, 18)]);
+    }
+    #[test]
+    fn traces_follow_edits_around_them() {
+        let mut t = Traces::default();
+        t.change(1, 100, 0, 5, Arrival::Pasted);
+        // Text typed before the trace moves it. A pasted trace never grows.
+        t.change(1, 0, 0, 3, Arrival::Nothing);
+        assert_eq!(spans(&t, 1), [(1, 103, 108)]);
+        // Removing text before it moves it back. Another buffer is untouched.
+        t.change(1, 0, 3, 0, Arrival::Nothing);
+        t.change(2, 0, 0, 50, Arrival::Nothing);
+        assert_eq!(spans(&t, 1), [(1, 100, 105)]);
+        // A deletion over its end shortens it, one over all of it removes it.
+        t.change(1, 103, 10, 0, Arrival::Nothing);
+        assert_eq!(spans(&t, 1), [(1, 100, 103)]);
+        t.change(1, 90, 20, 0, Arrival::Nothing);
+        assert!(spans(&t, 1).is_empty());
+    }
+    #[test]
+    fn traces_are_cut_to_the_page() {
+        let mut t = Traces::default();
+        t.change(1, 100, 0, 50, Arrival::Pasted);
+        let page = t.on_page(1, Some(120), 10);
+        assert_eq!((page[0][2].as_u64(), page[0][3].as_u64()), (Some(0), Some(10)));
+        assert!(t.on_page(1, Some(200), 10).as_array().unwrap().is_empty());
+        assert!(t.on_page(1, None, 10).as_array().unwrap().is_empty());
+    }
+    #[test]
+    fn a_task_box_knows_where_its_brackets_are() {
+        let source = "intro\n\n- [ ] one\n- [x] two\n";
+        let html = markdown(source, Some("k"));
+        let block = source.find("- [ ]").unwrap();
+        for (mark, checked) in [("[ ]", false), ("[x]", true)] {
+            let at = source.find(mark).unwrap() - block;
+            let tag = format!("<input type=\"checkbox\" disabled data-lw=\"k\" data-o=\"{at}\"{}>", if checked { " checked" } else { "" });
+            assert!(html.contains(&tag), "{html}");
+        }
+        // Without positions the page gets the plain, inert box.
+        assert!(!markdown(source, None).contains("data-o"));
     }
     #[test]
     fn unmapped_pages_carry_no_positions() {

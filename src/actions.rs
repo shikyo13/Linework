@@ -286,7 +286,7 @@ impl App {
                     self.notice("Preview is available for Markdown, HTML, SVG, CSV and TSV");
                 }
             }
-            "previewcue" | "previewshow" | "previewsync" | "previewsource" => {
+            "previewcue" | "previewfollow" | "previewshow" | "previewsync" | "previewsource" => {
                 self.preview_command(id)
             }
             "minimap" => {
@@ -551,6 +551,9 @@ impl App {
                                 return;
                             }
                         }
+                        // The changes a paste makes are told apart from
+                        // typing by this, until they have all been handled.
+                        self.pasting = id == "paste";
                         self.edit().send(
                             match id {
                                 "cut" => CUT,

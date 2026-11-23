@@ -75,6 +75,8 @@ pub(super) fn cue_json(cues: &PreviewCues) -> serde_json::Value {
     serde_json::json!({
         "style": cues.style, "letters": cues.letters, "margin": cues.margin,
         "dim": cues.dim, "calm": cues.calm, "click": cues.click_source,
+        "ink": cues.ink, "echo": cues.echo, "ghosts": cues.ghosts, "peek": cues.peek,
+        "mirror": cues.mirror, "follow": cues.follow, "tasks": cues.tasks,
     })
 }
 impl View {
@@ -143,7 +145,7 @@ impl View {
     }
     /// Draw a rendered page. `quiet` keeps the page's edit for "Show edit"
     /// without playing its cue, for an edit the source caret has already left.
-    pub fn show(&self, page: Page, cues: &PreviewCues, quiet: bool) {
+    pub fn show(&self, page: Page, cues: &PreviewCues, quiet: bool, traces: serde_json::Value) {
         let key = page.key;
         let format = key.kind.label();
         let mut s = self.state.borrow_mut();
@@ -174,7 +176,7 @@ impl View {
             "view": view, "light": key.light, "kind": format,
             "content": page.content, "base": format!("{ORIGIN}{}/",key.id), "notice": page.notice,
             "rev": key.rev, "mapped": page.origin.is_some(), "nonce": page.nonce,
-            "edit": edit, "cue": cue_json(cues), "live": INTERACTIVE,
+            "edit": edit, "cue": cue_json(cues), "live": INTERACTIVE, "marks": traces,
         });
         s.generation += 1;
         let theme_changed = s.light != key.light;
@@ -219,6 +221,17 @@ impl View {
             .rev()
             .find(|p| p.id == id && p.rev == rev && at >= p.origin && at - p.origin <= p.len as u64)
             .map(|p| at - p.origin)
+    }
+    /// A selection and a caret as bytes from the start of the page on screen,
+    /// if a page of this buffer revision is on screen. The selection is cut
+    /// to the page. A caret outside the page is reported as -1.
+    pub fn page_span(&self, id: u64, rev: u64, lo: u64, hi: u64, caret: u64) -> Option<(u64, u64, i64)> {
+        let s = self.state.borrow();
+        let p = s.pages.iter().rev().find(|p| p.id == id && p.rev == rev)?;
+        let end = p.origin + p.len as u64;
+        let (a, z) = (lo.clamp(p.origin, end) - p.origin, hi.clamp(p.origin, end) - p.origin);
+        let c = if caret >= p.origin && caret <= end { (caret - p.origin) as i64 } else { -1 };
+        Some((a, z, c))
     }
     /// Ask the page for the source position at the top of the reading view.
     /// The answer comes back as a jump, checked like a click.
@@ -284,10 +297,46 @@ fn message(shared: &Shared, json: &str) {
                 dim: v["dim"].as_u64().unwrap_or(23).min(PreviewCues::MAX_DIM as u64) as u8,
                 calm: v["calm"].as_bool().unwrap_or(false),
                 click_source: v["click"].as_bool().unwrap_or(true),
+                ink: v["ink"].as_bool().unwrap_or(true),
+                echo: v["echo"].as_bool().unwrap_or(true),
+                ghosts: v["ghosts"].as_bool().unwrap_or(true),
+                peek: v["peek"].as_bool().unwrap_or(true),
+                mirror: v["mirror"].as_bool().unwrap_or(true),
+                follow: v["follow"].as_bool().unwrap_or(false),
+                tasks: v["tasks"].as_bool().unwrap_or(true),
             }
             .checked(),
         ),
         Some("focus") => Signal::Focus,
+        Some(kind @ ("task" | "peek")) => {
+            // Like a jump: the page must be one the host sent, and the
+            // position must lie inside the text it was rendered from.
+            let (Some(view), Some(rev), Some(at)) =
+                (v["view"].as_str(), v["rev"].as_u64(), v["at"].as_u64())
+            else {
+                return;
+            };
+            let s = shared.borrow();
+            let Some(page) = s.pages.iter().find(|p| p.view == view && p.rev == rev) else {
+                return;
+            };
+            let size = page.len as u64;
+            if at >= size {
+                return;
+            }
+            let (id, at) = (page.id, page.origin + at);
+            if kind == "task" {
+                Signal::Task { id, rev, at }
+            } else {
+                Signal::Peek {
+                    id,
+                    rev,
+                    at,
+                    len: v["len"].as_u64().unwrap_or(0).min(size - (at - page.origin)),
+                    token: v["token"].as_u64().unwrap_or(0),
+                }
+            }
+        }
         _ => return,
     };
     events::push(events::Event::Preview(signal));

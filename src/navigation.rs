@@ -164,6 +164,7 @@ impl App {
             "sidebar" => self.prefs.sidebar,
             "minimap" => self.prefs.document_map,
             "docpreview" => self.prefs.document_preview && self.preview_kind().is_some(),
+            "previewfollow" => self.prefs.preview_cues.follow,
             "whitespace" => self.prefs.whitespace,
             "markmatches" => self.prefs.highlight,
             "currentline" => self.prefs.current_line,

@@ -149,7 +149,8 @@ pub const COMMANDS: &[Command] = cmds![
     ("managesnippets", "Manage snippets…", "Edit", ""),
     ("minimap", "Document map", "View", ""),
     ("docpreview", "Show document preview to the right", "View", "Ctrl+Shift+V"),
-    ("previewcue", "Preview edit cue…", "View", ""),
+    ("previewcue", "Preview effects…", "View", ""),
+    ("previewfollow", "Preview follows the source caret", "View", ""),
     ("previewshow", "Show the latest edit in the preview", "View", ""),
     ("previewsync", "Show the caret position in the preview", "View", ""),
     (

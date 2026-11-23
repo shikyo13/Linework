@@ -17,6 +17,10 @@
   // then both edges close on its middle.
   const ENTER = 110, FADE = 70, IDLE = 550, FOLD = 140, LINGER = 900;
   const FOLD_EASE = "cubic-bezier(.35,0,.32,1)";
+  // Typed text stays warm for INK and pasted text stays washed for ECHO. The
+  // host keeps its traces for the same two times. A deletion's ghost lasts
+  // GHOST, and a link is peeked at after the pointer rests on it for DWELL.
+  const INK = 900, ECHO = 1200, GHOST = 720, DWELL = 240, SLOTS = 8;
   const SPACE = /\s/;
   // Scripts written without spaces between words. A stretch of these is split
   // by the platform's word segmenter instead of at white space.
@@ -25,8 +29,14 @@
   const S = {
     doc: null, ui: null, view: "", rev: -1, mapped: false, live: false,
     edit: null, played: 0, span: null,
-    opts: {style: "pill", letters: false, margin: false, dim: 23, calm: false, click: true},
+    opts: {
+      style: "pill", letters: false, margin: false, dim: 23, calm: false, click: true,
+      ink: true, echo: true, ghosts: true, peek: true, mirror: true, follow: false, tasks: true,
+    },
     host: "", anim: null, barAnim: null, poolAnim: null, holdEnd: 0, queued: false,
+    // Traces being painted, the selection and caret the host last reported,
+    // and the caret position the page last scrolled to.
+    slots: [], want: null, followed: -1, peeks: 0,
   };
   const post = message => {
     const host = window.chrome && window.chrome.webview;
@@ -136,6 +146,8 @@
         // within this document instead of a navigation to the shell.
         const href = tag === "a" ? n.getAttribute("href") || "" : "";
         if (href.startsWith("#")) target.setAttribute("href", "about:srcdoc" + href);
+        // Any other destination is kept as inert text, to show on hover.
+        else if (href) target.setAttribute("data-href", href.slice(0, 2048));
         if (tag === "img") {
           const src = (n.getAttribute("src") || "").trim();
           if (/^data:image\/(png|jpeg|gif|webp|avif|bmp|svg\+xml)[;,]/i.test(src)) target.src = src;
@@ -148,6 +160,12 @@
         }
         if (tag === "input") {
           target.type = "checkbox"; target.defaultChecked = n.hasAttribute("checked"); target.disabled = true;
+          // A task box that knows where its `[ ]` is can be ticked from here.
+          const at = Number(n.getAttribute("data-o"));
+          if (marker && n.getAttribute("data-lw") === p.nonce && Number.isSafeInteger(at) && at >= 0) {
+            target.setAttribute("data-o", at + base - top);
+            target.disabled = !(p.live && S.opts.tasks);
+          }
         }
         put(parent, target);
       }
@@ -653,6 +671,267 @@
     }
   }
 
+  // ---- traces: typed text settles from a warm color, pasted text from a wash ----
+  // The text is painted through the highlight registry. No node is added to
+  // the page, so nothing shifts and nothing becomes part of a selection. Each
+  // trace owns one slot. The fade is an animated variable on the blocks that
+  // hold the text, restarted at the trace's age whenever a block is replaced.
+  function quiet(slot) {
+    for (const a of slot.anims) a.cancel();
+    slot.anims = []; slot.els = null;
+  }
+  function release(slot, reg) {
+    if (slot.name) reg.delete(slot.name);
+    quiet(slot);
+    slot.id = 0; slot.name = null; slot.born = 0;
+  }
+  /** The top-level blocks from one to another, or the whole page if many. */
+  function between(root, a, b) {
+    const list = [];
+    for (let n = a; n && list.length < 24; n = n.nextElementSibling) {
+      list.push(n);
+      if (n === b) return list;
+    }
+    return a === b || !b ? list.slice(0, 1) : [root];
+  }
+  function spanOf(root, from, to) {
+    const a = point(root, from, false), z = point(root, to, true);
+    if (!a.node || !z.node) return null;
+    const range = S.doc.createRange();
+    range.setStart(a.node, a.i); range.setEnd(z.node, z.i);
+    return range.collapsed ? null : {range, a: a.block, z: z.block};
+  }
+  /** Paint the traces the host reported with this page. */
+  function paint(marks, root, win) {
+    const reg = win.CSS && win.CSS.highlights;
+    if (!reg || !win.Highlight) return;
+    const o = S.opts, now = performance.now(), used = new Set();
+    for (const [id, pasted, from, to, age] of marks) {
+      const life = pasted ? ECHO : INK;
+      if ((pasted ? !o.echo : !o.ink) || !(age < life)) continue;
+      let slot = S.slots.find(x => x.id === id);
+      if (!slot) {
+        slot = S.slots.find(x => !x.id) || S.slots.reduce((a, b) => (a.born <= b.born ? a : b));
+        release(slot, reg);
+        slot.id = id;
+      }
+      used.add(slot);
+      const name = (pasted ? "lw-echo" : "lw-ink") + slot.n;
+      if (slot.name && slot.name !== name) reg.delete(slot.name);
+      slot.name = name;
+      const span = spanOf(root, from, to);
+      if (!span) { reg.delete(name); quiet(slot); continue; }
+      reg.set(name, new win.Highlight(span.range));
+      const els = between(root, span.a, span.z), born = now - age;
+      const kept = slot.els && slot.els.length === els.length && els.every((el, i) => el === slot.els[i])
+        && Math.abs(born - slot.born) < 40 && slot.anims.every(a => a.playState === "running");
+      if (kept) continue;
+      quiet(slot);
+      // Typed text settles into the color it has where it stands. That color
+      // rides on the same timeline, so no page node is touched.
+      const prop = (pasted ? "--lw-e" : "--lw-k") + slot.n, tone = "--lw-c" + slot.n;
+      const holder = span.range.startContainer.parentElement;
+      const own = holder ? win.getComputedStyle(holder).color : "";
+      const step = (value, offset) => ({[prop]: value, [tone]: own, offset});
+      slot.anims = els.map(el => {
+        const a = el.animate([step("100%", 0), step("100%", pasted ? 0.18 : 0.3), step("0%", 1)], {duration: life, easing: "ease-out"});
+        a.currentTime = age;
+        return a;
+      });
+      slot.els = els; slot.born = born;
+      // When the fade is over the text is plain page text again.
+      const last = slot.anims[0];
+      if (last) last.onfinish = () => { if (slot.anims[0] === last) release(slot, reg); };
+    }
+    for (const slot of S.slots) if (slot.id && !used.has(slot)) release(slot, reg);
+  }
+  /** Rules for the slots. They follow the reading styles in the page head. */
+  function slotRules(d) {
+    let css = "";
+    for (let i = 0; i < SLOTS; i++) {
+      css += `::highlight(lw-ink${i}){color:color-mix(in srgb,var(--warm) var(--lw-k${i},0%),var(--lw-c${i},var(--text)))}`
+        + `::highlight(lw-echo${i}){background-color:color-mix(in srgb,var(--accent) calc(var(--lw-e${i},0%)*.3),transparent);`
+        + `text-decoration:underline 2px color-mix(in srgb,var(--accent) var(--lw-e${i},0%),transparent)}`;
+    }
+    const style = d.createElement("style");
+    style.textContent = css;
+    return style;
+  }
+
+  // ---- deletion ghosts: what was removed lingers above the join ----
+  /** The rendered text a typed deletion is about to remove, or "". */
+  function doomed(root, e) {
+    const span = spanOf(root, e.at, e.at + e.del);
+    if (!span) return "";
+    const text = span.range.toString().replace(/\s+/g, " ").trim();
+    return text.replace(/\s/g, "").length >= 2 ? text.slice(0, 120) : "";
+  }
+  /** Float the removed text over the place it left. The page text stays put. */
+  function ghost(root, e, text, win) {
+    const ui = S.ui, d = S.doc;
+    const p = point(root, e.at, true), q = point(root, e.at, false);
+    const pick = p.node && p.gap <= (q.node ? q.gap : Infinity) ? p : q;
+    const tip = pick.node ? caretRect(pick.node, pick.i) : null;
+    if (!ui || !tip || tip.bottom <= 0 || tip.top >= win.innerHeight) return;
+    const el = d.createElement("div");
+    el.className = "lw-ghost";
+    el.textContent = text;
+    const host = pick.node.parentElement, cs = host ? win.getComputedStyle(host) : null;
+    if (cs) {
+      el.style.fontFamily = cs.fontFamily; el.style.fontWeight = cs.fontWeight; el.style.fontStyle = cs.fontStyle;
+      el.style.fontSize = (parseFloat(cs.fontSize) || 15) * 0.86 + "px";
+    }
+    // Nothing the ghost draws may widen or lengthen the page.
+    const sw = d.documentElement.scrollWidth;
+    el.style.maxWidth = Math.max(60, Math.min(sw - 8, 520)) + "px";
+    while (ui.ghosts.childElementCount > 3) ui.ghosts.firstElementChild.remove();
+    ui.ghosts.append(el);
+    const base = ui.ghosts.getBoundingClientRect(), w = el.offsetWidth, h = el.offsetHeight;
+    el.style.left = Math.max(2, Math.min(tip.x - base.left - 5, sw - w - 2)) + "px";
+    el.style.top = Math.max(0, tip.top - base.top - h + 4) + "px";
+    const calm = S.opts.calm || calmSystem.matches;
+    const a = el.animate(calm
+      ? [{opacity: 1}, {opacity: 1, offset: 0.85}, {opacity: 0}]
+      : [{opacity: 0, transform: "translateY(5px)"}, {opacity: 1, transform: "none", offset: 0.14},
+        {opacity: 0.92, transform: "none", offset: 0.5}, {opacity: 0, transform: "translateY(-7px)"}],
+    {duration: GHOST, easing: "ease-out"});
+    a.onfinish = a.oncancel = () => el.remove();
+  }
+
+  // ---- the source selection and caret, as the host last reported them ----
+  /** Scroll so a target is comfortably in view. False if it already was. */
+  function bring(win, t, band) {
+    const vh = win.innerHeight;
+    if (t.tip.top >= vh * band && t.tip.bottom <= vh * (1 - band)) return false;
+    const top = Math.max(0, win.scrollY + t.tip.top - vh * 0.38);
+    const far = Math.abs(top - win.scrollY) > vh * 2.5;
+    win.scrollTo({left: win.scrollX, top, behavior: far || S.opts.calm || calmSystem.matches ? "instant" : "smooth"});
+    return true;
+  }
+  /**
+   * Mirror the source selection and, if asked to, keep the source caret in
+   * view. News for a revision the page has not drawn yet waits for it.
+   */
+  function follow() {
+    const w = S.want, root = article(), win = frame.contentWindow;
+    const reg = win && win.CSS && win.CSS.highlights;
+    const live = !!(w && root && S.mapped && w.rev === S.rev);
+    if (reg && win.Highlight) {
+      const span = live && S.opts.mirror && w.z > w.a ? spanOf(root, w.a, w.z) : null;
+      if (span) reg.set("lw-sel", new win.Highlight(span.range)); else reg.delete("lw-sel");
+    }
+    if (live && S.opts.follow && w.c >= 0 && w.c !== S.followed) {
+      S.followed = w.c;
+      const t = targetAt(root, w.c);
+      if (t) bring(win, t, 0.1);
+    }
+  }
+  function track(rev, a, z, c) {
+    S.want = {rev, a, z, c};
+    follow();
+    return true;
+  }
+
+  // ---- peek: a link's destination, or the Markdown behind a block ----
+  const card = $("peek"), stage = $("stage");
+  const P = {el: null, kind: "", timer: 0, token: 0, x: 0, y: 0};
+  function hidePeek() {
+    clearTimeout(P.timer);
+    P.el = null; P.kind = "";
+    card.classList.remove("on");
+  }
+  const part = (cls, text) => {
+    const n = document.createElement(cls === "pre" ? "pre" : "div");
+    if (cls !== "pre") n.className = cls;
+    n.textContent = text;
+    return n;
+  };
+  /** Show the card under a box given in frame coordinates, or above it. */
+  function showPeek(r, parts) {
+    card.replaceChildren(...parts);
+    card.style.left = "0px"; card.style.top = "0px";
+    const w = card.offsetWidth, h = card.offsetHeight, W = stage.clientWidth, H = stage.clientHeight;
+    let y = r.bottom + 8;
+    if (y + h > H - 8) y = Math.max(8, r.top - h - 8);
+    card.style.left = Math.max(8, Math.min(r.left, W - w - 8)) + "px";
+    card.style.top = y + "px";
+    card.classList.add("on");
+  }
+  const slug = text => text.trim().toLowerCase().replace(/[^\p{L}\p{N}\s_-]/gu, "").replace(/\s+/g, "-");
+  /** The element a link inside the page leads to: by id, else by heading text. */
+  function landing(d, id) {
+    let name = id;
+    try { name = decodeURIComponent(id); } catch (_) { name = id; }
+    const to = d.getElementById(id) || d.getElementById(name);
+    if (to) return to;
+    const want = name.toLowerCase();
+    for (const h of d.querySelectorAll("h1,h2,h3,h4,h5,h6")) if (slug(h.textContent) === want) return h;
+    return null;
+  }
+  function linkPeek(a) {
+    if (P.el !== a || !a.isConnected) return;
+    const href = a.getAttribute("href") || "";
+    let parts;
+    if (href.startsWith("about:srcdoc#")) {
+      const to = landing(S.doc, href.slice(13));
+      if (to) {
+        const after = to.nextElementSibling;
+        let text = after ? after.textContent.replace(/\s+/g, " ").trim() : "";
+        if (text.length > 190) text = text.slice(0, 190).replace(/\s\S*$/, "") + "…";
+        parts = [part("k", "On this page"), part("t", to.textContent.trim())];
+        if (text) parts.push(part("x", text));
+      } else parts = [part("k", "On this page"), part("x", "No heading matches " + href.slice(12))];
+    } else {
+      const to = a.getAttribute("data-href") || "";
+      let host = "";
+      try { host = new URL(to).host; } catch (_) { host = ""; }
+      parts = [part("k", host ? "Link" : "Link to a file or a relative address")];
+      if (host) parts.push(part("t", host));
+      parts.push(part("x", to || "(empty)"));
+    }
+    P.kind = "link";
+    showPeek(a.getBoundingClientRect(), parts);
+  }
+  /** Ask the host for the source of one top-level block. */
+  function blockPeek(block, x, y) {
+    const at = block.__b || 0, next = block.nextElementSibling;
+    const len = next ? (next.__b || 0) - at : 4096;
+    if (len <= 0) return;
+    P.el = block; P.kind = "wait"; P.x = x; P.y = y; P.token = ++S.peeks;
+    post({t: "peek", view: S.view, rev: S.rev, at, len: Math.min(len, 4096), token: P.token});
+  }
+  /** The host's answer to `blockPeek`. */
+  function peeked(token, text) {
+    if (token !== P.token || P.kind !== "wait" || !P.el || !P.el.isConnected) return true;
+    let shown = String(text).replace(/\s+$/, "");
+    if (shown.length > 1500) shown = shown.slice(0, 1500) + "…";
+    P.kind = "src";
+    showPeek({left: P.x, top: P.y - 6, bottom: P.y + 12}, [part("k", "Markdown source"), part("pre", shown)]);
+    return true;
+  }
+  function onMove(ev) {
+    if (!S.opts.peek || !S.live) return;
+    const el = ev.target && ev.target.nodeType === Node.ELEMENT_NODE ? ev.target : null, root = article();
+    if (!el || !root || !root.contains(el)) { if (P.kind) hidePeek(); return; }
+    if ((ev.ctrlKey || ev.metaKey) && S.mapped) {
+      let block = el;
+      while (block && block.parentNode !== root) block = block.parentNode;
+      if (block && block.nodeType === Node.ELEMENT_NODE) {
+        if (P.el !== block || (P.kind !== "src" && P.kind !== "wait")) { hidePeek(); blockPeek(block, ev.clientX, ev.clientY); }
+        return;
+      }
+    }
+    const a = el.closest("a[href],a[data-href]");
+    if (a) {
+      if (P.el !== a) { hidePeek(); P.el = a; P.kind = "dwell"; P.timer = setTimeout(linkPeek, DWELL, a); }
+      return;
+    }
+    if (P.kind) hidePeek();
+  }
+  function onKeyUp(ev) {
+    if ((ev.key === "Control" || ev.key === "Meta") && (P.kind === "src" || P.kind === "wait")) hidePeek();
+  }
+
   // ---- the newest edit: where it is, and the button that offers it ----
   function measure() {
     const root = article(), win = frame.contentWindow;
@@ -782,6 +1061,17 @@
   function onClick(ev) {
     const d = S.doc;
     if (!d || ev.button !== 0) return;
+    const box = ev.target && ev.target.closest ? ev.target.closest("input[type=checkbox][data-o]") : null;
+    if (box) {
+      // The source is what changes. The box turns when the page is redrawn
+      // from it, so the two can never disagree.
+      ev.preventDefault();
+      const root = article();
+      let block = box;
+      while (block && block.parentNode !== root) block = block.parentNode;
+      if (block && !box.disabled) post({t: "task", view: S.view, rev: S.rev, at: (block.__b || 0) + Number(box.getAttribute("data-o"))});
+      return;
+    }
     const link = ev.target && ev.target.closest ? ev.target.closest("a[href]") : null;
     if (link) {
       // Nothing in this pane navigates. A link to a place on the page
@@ -789,11 +1079,7 @@
       ev.preventDefault();
       const href = link.getAttribute("href") || "";
       if (href.startsWith("about:srcdoc#") && !(ev.altKey && S.mapped)) {
-        const id = href.slice(13);
-        let to = d.getElementById(id);
-        if (!to) {
-          try { to = d.getElementById(decodeURIComponent(id)); } catch (_) { to = null; }
-        }
+        const to = landing(d, href.slice(13));
         if (to) to.scrollIntoView();
         return;
       }
@@ -829,6 +1115,7 @@
   }
   function onDown(ev) {
     if (!panel.hidden) openPanel(false);
+    if (P.kind) hidePeek();
     // The second press of a double click selects the word in the source,
     // so the page does not also select it here.
     if (ev.detail === 2 && ev.button === 0 && jumps(ev) && hit(ev)) ev.preventDefault();
@@ -836,6 +1123,7 @@
   function onKey(ev) {
     if (ev.key !== "Escape" || ev.defaultPrevented) return;
     ev.preventDefault();
+    if (P.kind) hidePeek();
     if (!panel.hidden) { openPanel(false); toggle.focus(); }
     else post({t: "focus"});
   }
@@ -855,10 +1143,28 @@
       return el;
     };
     const cue = make("lw-cue"), pool = make("lw-pool"), spot = make("lw-spot"), bar = make("lw-bar");
+    const ghosts = make("lw-ghosts");
     cue.setAttribute("aria-hidden", "true");
+    ghosts.setAttribute("aria-hidden", "true");
     cue.append(pool, spot, bar);
-    d.body.append(cue);
-    S.ui = {cue, pool, spot, bar};
+    d.body.append(cue, ghosts);
+    S.ui = {cue, pool, spot, bar, ghosts};
+    S.slots = Array.from({length: SLOTS}, (_, n) => ({n, id: 0, name: null, els: null, anims: [], born: 0}));
+    S.want = null; S.followed = -1;
+    hidePeek();
+    if (win.CSS && win.CSS.registerProperty) {
+      for (let i = 0; i < SLOTS; i++) {
+        for (const k of ["k", "e"]) {
+          try {
+            win.CSS.registerProperty({name: `--lw-${k}${i}`, syntax: "<percentage>", inherits: true, initialValue: "0%"});
+          } catch (_) { /* already registered for this page */ }
+        }
+      }
+    }
+    d.addEventListener("mousemove", onMove);
+    d.addEventListener("keyup", onKeyUp);
+    d.documentElement.addEventListener("mouseleave", hidePeek);
+    win.addEventListener("scroll", () => { if (P.kind) hidePeek(); }, {passive: true});
     d.addEventListener("click", onClick);
     d.addEventListener("dblclick", onDouble);
     d.addEventListener("mousedown", onDown);
@@ -869,6 +1175,19 @@
   }
 
   // ---- the controls in the preview header ----
+  const EXTRAS = ["ink", "echo", "ghosts", "peek", "mirror", "follow", "tasks"];
+  /** Bring what is on the page in line with settings that just changed. */
+  function settle_opts() {
+    const o = S.opts, root = article(), win = frame.contentWindow;
+    const reg = win && win.CSS && win.CSS.highlights;
+    if (root) for (const box of root.querySelectorAll("input[data-o]")) box.disabled = !(S.live && o.tasks);
+    if (reg) for (const slot of S.slots) {
+      if (slot.id && slot.name && (slot.name.startsWith("lw-ink") ? !o.ink : !o.echo)) release(slot, reg);
+    }
+    if (!o.peek && P.kind) hidePeek();
+    if (!o.follow) S.followed = -1;
+    follow();
+  }
   function reflect() {
     const o = S.opts;
     for (const radio of panel.querySelectorAll('input[name="lw-style"]')) radio.checked = radio.value === o.style;
@@ -878,6 +1197,7 @@
     $("cue-margin").checked = o.margin;
     $("cue-calm").checked = o.calm;
     $("cue-click").checked = o.click;
+    for (const key of EXTRAS) $("fx-" + key).checked = o[key];
   }
   function collect() {
     const picked = panel.querySelector('input[name="lw-style"]:checked');
@@ -888,6 +1208,7 @@
       dim: Math.max(0, Math.min(45, Math.round(Number($("cue-dim").value) || 0))),
       calm: $("cue-calm").checked,
       click: $("cue-click").checked,
+      ...Object.fromEntries(EXTRAS.map(key => [key, $("fx-" + key).checked])),
     };
   }
   /**
@@ -905,8 +1226,11 @@
       letters: !!cue.letters, margin: !!cue.margin,
       dim: Math.max(0, Math.min(45, Math.round(Number(cue.dim) || 0))),
       calm: !!cue.calm, click: cue.click !== false,
+      ink: cue.ink !== false, echo: cue.echo !== false, ghosts: cue.ghosts !== false, peek: cue.peek !== false,
+      mirror: cue.mirror !== false, follow: !!cue.follow, tasks: cue.tasks !== false,
     };
     reflect();
+    settle_opts();
     return true;
   }
   /** Show the newest edit with the settings as they are now. */
@@ -935,6 +1259,7 @@
   panel.addEventListener("input", () => {
     S.opts = collect();
     $("cue-dim-value").textContent = S.opts.dim + "%";
+    settle_opts();
     demo();
   });
   panel.addEventListener("change", () => {
@@ -956,8 +1281,10 @@
     d.documentElement.classList.toggle("light", light);
     $("format").textContent = p.kind;
     if (!d.head.firstElementChild || !d.head.firstElementChild.nextElementSibling) {
-      d.head.append(d.importNode($("reading").content, true));
+      d.head.append(d.importNode($("reading").content, true), slotRules(d));
     }
+    // Settings first: the page is built with them.
+    if (p.cue) adopt(p.cue);
     const out = build(d, p);
     const notice = $("notice");
     const text = ((p.notice || "") + (out.limited ? " Preview limited to the first 20,000 nodes." : "")).trim();
@@ -969,11 +1296,16 @@
     // A deletion is judged on the text the reader was looking at, which is
     // still on the page at this point if no update was skipped.
     if (e && same && e.kind === "type" && !e.add && e.del > 0 && S.rev === e.prev) e.mode = classify(root, e);
+    // So is what a deletion took: its text is read before it is gone.
+    const lost = e && same && S.opts.ghosts && e.kind === "type" && e.del >= 2 && S.rev === e.prev && !e.quiet
+      ? doomed(root, e) : "";
     patch(root, out, same, win);
+    if (S.view !== p.view) S.followed = -1;
     S.view = p.view; S.rev = p.rev; S.mapped = mapped;
     toggle.hidden = !(S.live && mapped);
     if (toggle.hidden && !panel.hidden) openPanel(false);
-    if (p.cue) adopt(p.cue);
+    if (P.kind && (!P.el || !P.el.isConnected)) hidePeek();
+    paint(mapped && Array.isArray(p.marks) ? p.marks : [], root, win);
     // An edit plays once. Drawing the same page again (a theme change, a
     // return to its tab) keeps it available without replaying it.
     const known = !!(e && S.edit && e.serial === S.edit.serial);
@@ -981,12 +1313,21 @@
     if (known && S.edit.mode && !e.mode) e.mode = S.edit.mode;
     if (e) S.played = e.serial;
     S.edit = e;
-    const t = measure();
-    if (fresh) present(t, e.kind === "type" ? IDLE : LINGER);
+    let t = measure();
+    // With Follow on, an edit out of view is brought in before its cue plays.
+    if (fresh && t && S.opts.follow && (t.box.top < 0 || t.box.bottom > win.innerHeight)) {
+      settle(win, t);
+      t = measure();
+    }
+    // Pasted text is marked by its wash, not by the typing cue.
+    if (fresh && e.kind === "paste" && S.opts.echo) stop();
+    else if (fresh) present(t, e.kind === "type" ? IDLE : LINGER);
     else if (!known) stop();
+    if (fresh && lost && e.serial !== S.ghosted) { S.ghosted = e.serial; ghost(root, e, lost, win); }
+    follow();
     sync();
     return true;
   }
 
-  window.__lw = {render, options, show, rest, reveal, where};
+  window.__lw = {render, options, show, rest, reveal, where, track, peeked};
 })();
