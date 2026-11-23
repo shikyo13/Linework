@@ -84,6 +84,9 @@ impl App {
             );
             e.set_occurrence_highlight(self.prefs.highlight);
         }
+        for p in 0..2 {
+            self.effect_styles(p);
+        }
     }
     pub(crate) fn sync_marks(&self, pane: usize) {
         let terms = self.assigned[pane]

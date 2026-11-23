@@ -57,6 +57,7 @@ impl App {
     /// where, and the steps of an undo or redo are gathered for the flash.
     pub(super) fn note_native_edit(&mut self, i: usize, at: u64, del: u64, add: u64, flags: i32) {
         let (id, rev) = (self.buffers[i].id, self.buffers[i].rev);
+        self.heat_edit(i, at, add);
         let kind = if flags & BY_UNDO != 0 {
             EditKind::Undo
         } else if flags & BY_REDO != 0 {

@@ -10,10 +10,12 @@ mod events;
 mod editor_resize;
 mod forms;
 mod frame;
+mod glide;
 mod grammar_ui;
 mod launch;
 mod macro_manager;
 mod macros;
+mod mdsmart;
 mod minimap;
 mod npp;
 mod project_ui;
@@ -68,6 +70,7 @@ fn run() -> Result<(), String> {
         }
         let mut app = App::new(h)?;
         sidebar_grip::start(h);
+        glide::start(h);
         npp::initialize(&mut app);
         ShowWindow(hwnd(h), SW_SHOWNORMAL);
         app.layout();
@@ -96,7 +99,10 @@ fn run() -> Result<(), String> {
             {
                 continue;
             }
-            if m.message == WM_CHAR && app.global_char(m.hwnd as isize, m.wParam as u16) {
+            if m.message == WM_CHAR
+                && (app.global_char(m.hwnd as isize, m.wParam as u16)
+                    || app.smart_char(m.hwnd as isize, m.wParam as u16))
+            {
                 continue;
             }
             TranslateMessage(&m);

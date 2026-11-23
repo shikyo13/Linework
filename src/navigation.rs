@@ -165,6 +165,7 @@ impl App {
             "minimap" => self.prefs.document_map,
             "docpreview" => self.prefs.document_preview && self.preview_kind().is_some(),
             "previewfollow" => self.prefs.preview_cues.follow,
+            "paragraphfocus" => self.prefs.editor_effects.paragraph_focus,
             "whitespace" => self.prefs.whitespace,
             "markmatches" => self.prefs.highlight,
             "currentline" => self.prefs.current_line,

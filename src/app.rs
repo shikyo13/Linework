@@ -282,6 +282,8 @@ pub struct App {
     pub(crate) document_preview: crate::preview::Pane,
     /// Where the last undo or redo changed text, while the editor shows it.
     history_flash: edit_cues::HistoryFlash,
+    /// Edit heat and pair glow, as the editor panes show them.
+    polish: polish::Polish,
     /// A paste command is running and its changes are still arriving.
     pub(crate) pasting: bool,
     /// The document and revision the latest file comparison read as its revised side.
@@ -456,6 +458,7 @@ impl App {
             preview_mode: false,
             document_preview: Default::default(),
             history_flash: Default::default(),
+            polish: Default::default(),
             pasting: false,
             compared: None,
             project_include: "".into(),
@@ -795,6 +798,7 @@ impl App {
             e.send(USEPOPUP, 0, 0);
             let _ = e.set_spellcheck(pref.spell);
         });
+        self.effect_styles(p);
     }
     pub(crate) fn select(&mut self, i: usize, p: usize, offset: Option<u64>) {
         if i >= self.buffers.len() {
@@ -864,6 +868,7 @@ impl App {
         } else {
             at
         };
+        self.polish_leaving(p);
         crate::npp::switch_pane(self, p, self.buffers[i].large);
         self.margin_cache[p].set(None);
         self.wide_selection[p] = None;
@@ -939,6 +944,7 @@ impl App {
         self.paint_bookmarks(i, p);
         self.paint_global(p);
         self.paint_fold_headers(i, p);
+        self.polish_bound(p);
     }
     fn margins(&self, p: usize) {
         let Some(i) = self.assigned[p].and_then(|id| self.idx(id)) else {
@@ -1326,6 +1332,8 @@ mod lifecycle;
 mod line_tools;
 #[path = "npp_app.rs"]
 mod npp_app;
+#[path = "polish.rs"]
+mod polish;
 #[path = "search_ui.rs"]
 mod search_ui;
 #[path = "spans.rs"]

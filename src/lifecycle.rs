@@ -1312,6 +1312,9 @@ impl App {
                     }
                 }
                 self.editors[p].on_notify(&n);
+                if n.nmhdr.code == sn::SCN_UPDATEUI {
+                    self.polish_update(p, n.updated);
+                }
                 if n.nmhdr.code == sn::SCN_UPDATEUI
                     && n.updated & 4 != 0
                     && self.prefs.sync_scroll
@@ -1420,6 +1423,8 @@ impl App {
         }
         self.sublime_tick();
         self.tick_history_flash();
+        self.heat_tick();
+        crate::glide::watchdog();
         if !self.playing && !self.recording {
             if let Some(i) = self.current() {
                 if !self.buffers[i].large

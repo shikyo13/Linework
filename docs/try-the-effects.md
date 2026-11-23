@@ -38,6 +38,33 @@ pointer over the list below to see its Markdown.
 - [ ] Tick this box in the preview, then press Ctrl+Z in the source
 - [ ] Click any word in the preview and watch the source line it lands on
 
+## In the source editor
+
+These six are under **View**, **Editor effects...**. Edit heat and Paragraph
+focus start switched off, so tick them there first.
+
+Press End, then Ctrl+Home. The caret slides instead of jumping, and the
+current-line highlight slides down or up with it. Type: the caret glides from
+letter to letter.
+
+Edit a line and look at the gutter: an amber mark sits beside it and cools
+away over ten seconds. Add a line above and the mark stays with its line.
+
+Put the caret inside **this bold text**, `this code` or
+[this link](#tasks). Both ends of the markup light up.
+
+Choose **View**, **Paragraph focus**. Everything but the paragraph you are in
+is dimmed, and nothing moves.
+
+Select a word and type `*`, then `*` again: italic, then bold. Select a word
+and type `[` to make it a link. Press Ctrl+B or Ctrl+I on a word.
+
+- Put the caret at the end of this line and press Enter
+- Press Enter on the new empty item to end the list
+- Press Tab at the start of an item to nest it, Shift+Tab to lift it
+
+1. Enter after a numbered item gives the next number
+
 ## Far away
 
 The paragraphs below only make the page long enough to scroll.

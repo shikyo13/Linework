@@ -158,9 +158,14 @@ pub unsafe extern "system" fn proc(h: HWND, m: u32, w: usize, l: isize) -> isize
                 frame::rendering::present_pending(host);
                 0
             }
-            WM_ENTERSIZEMOVE => { SIZING.set(true); 0 }
+            crate::glide::TICK => {
+                crate::glide::tick();
+                0
+            }
+            WM_ENTERSIZEMOVE => { crate::glide::cancel(); SIZING.set(true); 0 }
             WM_EXITSIZEMOVE => { SIZING.set(false); push(Event::Size); 0 }
             WM_SIZE => {
+                crate::glide::cancel();
                 if w != SIZE_MINIMIZED as usize && !(SIZING.get() && crate::npp::live_resize(host)) {
                     push(Event::Size);
                 }
@@ -171,6 +176,7 @@ pub unsafe extern "system" fn proc(h: HWND, m: u32, w: usize, l: isize) -> isize
                 0
             }
             WM_DESTROY => {
+                crate::glide::shutdown();
                 crate::sidebar_grip::shutdown();
                 frame::controls::release();
                 crate::launch::unregister_window(h);
@@ -179,6 +185,11 @@ pub unsafe extern "system" fn proc(h: HWND, m: u32, w: usize, l: isize) -> isize
             }
             WM_ACTIVATE if (w & 0xffff) != WA_INACTIVE as usize => {
                 push(Event::Activated);
+                DefWindowProcW(h, m, w, l)
+            }
+            WM_ACTIVATE | WM_MOVE => {
+                // A glide's stand-in is placed in screen coordinates.
+                crate::glide::cancel();
                 DefWindowProcW(h, m, w, l)
             }
             WM_TIMER => {
@@ -344,6 +355,11 @@ pub unsafe extern "system" fn proc(h: HWND, m: u32, w: usize, l: isize) -> isize
                 let _native_plugins = crate::npp::after_notification(l, b);
                 let mut nt = *(l as *const Notification);
                 let code = nt.nmhdr.code;
+                if code == n::SCN_UPDATEUI {
+                    // Before the editor paints, so a glide starts on the
+                    // same frame as the move it stands in for.
+                    crate::glide::editor_updated(nt.nmhdr.hwnd_from, nt.updated);
+                }
                 if code == n::SCN_MODIFIED {
                     if nt.modification_type & 7 != 0 {crate::sidebar_grip::editor_changed(nt.nmhdr.hwnd_from as H);}
                     if nt.modification_type & 3 == 0 {

@@ -142,6 +142,9 @@ impl App {
         {
             return true;
         }
+        if !field && self.smart_key(k, ctrl, shift, alt) {
+            return true;
+        }
         if !field
             && ctrl
             && shift
@@ -206,6 +209,12 @@ impl App {
                 size(self.h, 130),
                 size(self.h, 40),
             ));
+            return true;
+        }
+        // The editor pastes on Shift+Insert by itself, without saying that
+        // it was a paste. Sending it through the command marks it as one.
+        if k == VK_INSERT && shift && !ctrl && !alt && !field && self.current().is_some() && f == self.edit().hwnd() {
+            self.command("paste");
             return true;
         }
         let mut chord = commands::chord(v, ctrl, shift, alt);
@@ -289,6 +298,7 @@ impl App {
             "previewcue" | "previewfollow" | "previewshow" | "previewsync" | "previewsource" => {
                 self.preview_command(id)
             }
+            "editoreffects" | "paragraphfocus" | "mdbold" | "mditalic" => self.polish_command(id),
             "minimap" => {
                 self.prefs.document_map = !self.prefs.document_map;
                 self.save_prefs();

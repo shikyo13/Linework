@@ -101,6 +101,36 @@ impl Default for PreviewCues {
         }
     }
 }
+/// The effects that live in the source editor itself. One settings key, so
+/// an older settings file loads with the defaults.
+#[derive(Clone, Copy, Serialize, Deserialize, PartialEq, Debug)]
+#[serde(default)]
+pub struct EditorEffects {
+    /// The caret slides to its new place instead of jumping.
+    pub glide_caret: bool,
+    /// The current-line highlight slides between lines.
+    pub glide_line: bool,
+    /// Edited lines get a gutter mark that cools over ten seconds.
+    pub heat: bool,
+    /// Both ends of the Markdown emphasis, code span or link around the caret glow.
+    pub pair_glow: bool,
+    /// Text outside the caret's paragraph is dimmed.
+    pub paragraph_focus: bool,
+    /// Markdown typing help: wrap a selection, continue lists, bold and italic.
+    pub smart_typing: bool,
+}
+impl Default for EditorEffects {
+    fn default() -> Self {
+        Self {
+            glide_caret: true,
+            glide_line: true,
+            heat: false,
+            pair_glow: true,
+            paragraph_focus: false,
+            smart_typing: true,
+        }
+    }
+}
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Prefs {
@@ -109,6 +139,7 @@ pub struct Prefs {
     pub document_preview: bool,
     pub preview_width: i32,
     pub preview_cues: PreviewCues,
+    pub editor_effects: EditorEffects,
     pub stacked: bool,
     pub sync_scroll: bool,
     pub language_rules: BTreeMap<String, String>,
@@ -151,6 +182,7 @@ impl Default for Prefs {
             document_preview: false,
             preview_width: 0,
             preview_cues: Default::default(),
+            editor_effects: Default::default(),
             stacked: false,
             sync_scroll: false,
             language_rules: BTreeMap::new(),

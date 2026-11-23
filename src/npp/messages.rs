@@ -547,7 +547,7 @@ pub(super) fn handle(m: u32, w: usize, l: isize) -> isize {
             create(name.as_ptr())
         },
         111 => 0,
-        113 => HOST.with_borrow_mut(|h| alloc(&mut h.indicator, 32, w, l)),
+        113 => HOST.with_borrow_mut(|h| alloc(&mut h.indicator, 30, w, l)),
         114 => -1,
         117 => {
             let data = HOST.with_borrow(|h| h.data);

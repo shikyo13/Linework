@@ -151,6 +151,10 @@ pub const COMMANDS: &[Command] = cmds![
     ("docpreview", "Show document preview to the right", "View", "Ctrl+Shift+V"),
     ("previewcue", "Preview effects…", "View", ""),
     ("previewfollow", "Preview follows the source caret", "View", ""),
+    ("editoreffects", "Editor effects…", "View", ""),
+    ("paragraphfocus", "Paragraph focus", "View", ""),
+    ("mdbold", "Markdown: bold", "Edit", ""),
+    ("mditalic", "Markdown: italic", "Edit", ""),
     ("previewshow", "Show the latest edit in the preview", "View", ""),
     ("previewsync", "Show the caret position in the preview", "View", ""),
     (
