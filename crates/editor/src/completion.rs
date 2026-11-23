@@ -166,10 +166,25 @@ impl Editor {
         let prefix = self.text_range(start, caret);
         let key = prefix.to_lowercase();
         let lang = self.language.get();
-        if !explicit && lang.name != "Markdown" {
+        // Ordinary Markdown text is prose. A list of the page's own words
+        // opening under every word typed gets in the way there, so unasked
+        // it offers only the user's own snippets. Code in a Markdown page
+        // completes as before, and asking with the shortcut lists everything.
+        let mut quiet = false;
+        if !explicit {
+            if lang.name == "Markdown" {
+                // The character just typed has no style until its line is
+                // lexed, and its style is what says prose or code.
+                let line = self.send(SCI_LINEFROMPOSITION, caret, 0).max(0) as usize;
+                let from = self.send(SCI_POSITIONFROMLINE, line, 0).max(0) as usize;
+                self.send(SCI_COLOURISE, from, caret as isize);
+            }
             let style = self.send(SCI_GETSTYLEAT, caret.saturating_sub(1), 0) as usize;
             if self.prose_styles.get().get(style).copied().unwrap_or(false) {
-                return false;
+                if lang.name != "Markdown" {
+                    return false;
+                }
+                quiet = true;
             }
         }
         let mut matches: BTreeMap<String, u8> = BTreeMap::new();
@@ -185,22 +200,29 @@ impl Editor {
                 *e = (*e).min(rank);
             }
         };
-        for label in self.snippet_labels() {
-            add(&label, 0);
-        }
-        let local = self.text_range(caret.saturating_sub(8192), caret + 8192);
-        for word in local.split(|c| !identifier(c)).filter(|s| s.len() > 1) {
-            add(word, 1);
-        }
-        for word in self.workspace_words.borrow().iter().take(10000) {
-            add(word, 2);
-        }
-        for (_slot, words) in &lang.keywords {
-            for word in words
-                .split_whitespace()
-                .filter(|w| w.chars().all(identifier))
-            {
-                add(word, 3);
+        if quiet {
+            let name = self.language();
+            for snippet in self.user_snippets.borrow().iter().filter(|s| s.matches(&name)) {
+                add(&snippet.label(), 0);
+            }
+        } else {
+            for label in self.snippet_labels() {
+                add(&label, 0);
+            }
+            let local = self.text_range(caret.saturating_sub(8192), caret + 8192);
+            for word in local.split(|c| !identifier(c)).filter(|s| s.len() > 1) {
+                add(word, 1);
+            }
+            for word in self.workspace_words.borrow().iter().take(10000) {
+                add(word, 2);
+            }
+            for (_slot, words) in &lang.keywords {
+                for word in words
+                    .split_whitespace()
+                    .filter(|w| w.chars().all(identifier))
+                {
+                    add(word, 3);
+                }
             }
         }
         if matches.is_empty() {

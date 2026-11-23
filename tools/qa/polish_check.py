@@ -43,6 +43,10 @@ Second paragraph for selection and deletion of several words in a row.
 ## Tasks
 
 Last paragraph with [outside](https://example.com/) link.
+
+```
+let paragraph_value = 1;
+```
 """ + "".join(f"\nFiller paragraph number {n} keeps the page long enough to scroll.\n" for n in range(1, 41))
 
 user32 = ctypes.WinDLL("user32", use_last_error=True)
@@ -65,6 +69,7 @@ VK_RETURN, VK_TAB, VK_DELETE, VK_INSERT, VK_CONTROL, VK_SHIFT = 0x0D, 0x09, 0x2E
 GETLENGTH, GETCHARAT, GETCURRENTPOS, GETANCHOR, GOTOPOS = 2006, 2007, 2008, 2009, 2025
 MARKERGET, GETLINEINDENTATION, SETSEL, LINEFROMPOSITION, UNDO = 2046, 2127, 2160, 2166, 2176
 INDICATORVALUEAT, GETCARETSTYLE, GETELEMENTISSET = 2507, 2513, 2756
+AUTOCACTIVE, AUTOCCANCEL, VK_SPACE = 2102, 2101, 0x20
 PAIR, DIM, FLASH, HEAT = 30, 31, 15, 0b111110
 
 results = []
@@ -376,6 +381,23 @@ def source_checks(pid, ed):
     check("smart typing: Ctrl+I makes the selection italic", ok and ed.selected() == "word")
     ed.key(0x49, ctrl=True)
     check("smart typing: Ctrl+I again takes italic off", until(lambda: ed.text() == original))
+    ed.undo_to(original)
+
+    # The completion list keeps out of the way in prose.
+    listed = lambda: ed.sci(AUTOCACTIVE)
+    ed.goto(ed.pos("in a row.", len("in a row.")))
+    ed.type(" para")
+    until(lambda: "in a row. para" in ed.text())
+    time.sleep(0.4)
+    check("completion: no list opens by itself in Markdown prose", not listed())
+    ed.key(VK_SPACE, ctrl=True)
+    check("completion: Ctrl+Space still lists the page's words", until(listed, 1.5))
+    ed.sci(AUTOCCANCEL)
+    ed.undo_to(original)
+    ed.goto(ed.pos("paragraph_value = 1;", len("paragraph_value = 1;")))
+    ed.type(" para")
+    check("completion: the list still opens by itself inside a code block", until(listed, 1.5))
+    ed.sci(AUTOCCANCEL)
     ed.undo_to(original)
 
     # Pair glow.
