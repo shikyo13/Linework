@@ -1,6 +1,6 @@
 //! Identify a small physical change from immutable piece-tree ranges. UTF-16,
 //! Save As, and edits that shift a large suffix use the ordinary staged save.
-use crate::{conflict, source::read_at, transactional, Document, Source, Stamp};
+use crate::{conflict, inplace, save_journal, source::read_at, transactional, Document, Source, Stamp};
 use sha2::{Digest, Sha256};
 use std::{fs::File, io, path::Path, sync::Arc};
 
@@ -9,8 +9,9 @@ use crate::tree::{shared_bytes, Leaves};
 /// A snapshot pinned before dropping the previous deny-write lease supplies
 /// the old revision. Check the writer's whole view, including unchanged bytes,
 /// and compute the digest of the new revision without staging its contents.
+/// With no snapshot, the recorded digest alone identifies the old revision.
 fn verify_and_hash(
-    pinned: &File, writer: &File, stamp: &Stamp, prior_digest: Option<[u8; 32]>,
+    pinned: Option<&File>, writer: &File, stamp: &Stamp, prior_digest: Option<[u8; 32]>,
     offset: u64, removed: u64, replacement: &[u8],
 ) -> io::Result<[u8; 32]> {
     let mut prior = prior_digest.map(|_| Sha256::new());
@@ -23,8 +24,10 @@ fn verify_and_hash(
         let n = (stamp.size - at).min(disk.len() as u64) as usize;
         let bytes = &mut disk[..n];
         read_at(writer, at, bytes)?;
-        read_at(pinned, at, &mut original[..n])?;
-        if *bytes != original[..n] { return Err(conflict()); }
+        if let Some(pinned) = pinned {
+            read_at(pinned, at, &mut original[..n])?;
+            if *bytes != original[..n] { return Err(conflict()); }
+        }
         if let Some(hash) = &mut prior { hash.update(&*bytes); }
         let before = offset.saturating_sub(at).min(n as u64) as usize;
         next.update(&bytes[..before]);
@@ -44,6 +47,13 @@ fn verify_and_hash(
 
 impl Document {
     pub(super) fn save_small_delta(&mut self, dest: &Path) -> io::Result<bool> {
+        self.save_small_delta_via(dest, save_journal::folder().as_deref())
+    }
+
+    /// With a journal folder the change is written straight into the file,
+    /// which stays in Windows' cache. Without one it goes through an NTFS
+    /// transaction, after which Windows drops the file from its cache.
+    fn save_small_delta_via(&mut self, dest: &Path, journal: Option<&Path>) -> io::Result<bool> {
         let Some(stamp) = self.stamp.as_ref() else { return Ok(false) };
         if self.path.as_deref() != Some(dest) || stamp.size <= 24 * 1024 * 1024
             || !self.codec.native() || self.codec != self.saved_codec || self.emit_bom != self.saved_bom
@@ -78,7 +88,18 @@ impl Document {
         let after = self.read(start, added as usize)?;
         let offset = header + start;
         let mut digest = None;
-        let committed = src.transact_range(dest, stamp, offset, removed, &after, |pinned| {
+        let committed = if let Some(journal) = journal {
+            src.patch_range(dest, stamp, offset, removed, &after, |alone, seal| {
+                inplace::rewrite(dest, stamp, offset, &before, &after, header + new_len, journal, |writer| {
+                    // Range locks kept every other byte still since the lease was
+                    // held. Only a revision known by its digest needs reading.
+                    if self.saved_disk_digest.is_some() {
+                        digest = Some(verify_and_hash(None, writer, stamp, self.saved_disk_digest, offset, removed, &after)?);
+                    }
+                    Ok(())
+                }, alone, seal)
+            })?
+        } else { src.transact_range(dest, stamp, offset, removed, &after, |pinned| {
             let mut expected_version = None;
             let commit = transactional::rewrite(dest, stamp, offset, &before, &after, header + new_len, |writer| {
                 // The writer now excludes every competing writer. Our continuously
@@ -86,7 +107,7 @@ impl Document {
                 // NTFS records every intervening transactional commit on this handle.
                 let versions = transactional::versions(pinned);
                 if self.saved_disk_digest.is_some() || !versions.is_some_and(|(base, latest)| base == latest) {
-                    digest = Some(verify_and_hash(pinned, writer, stamp, self.saved_disk_digest, offset, removed, &after)?);
+                    digest = Some(verify_and_hash(Some(pinned), writer, stamp, self.saved_disk_digest, offset, removed, &after)?);
                 }
                 expected_version = versions.and_then(|(base, latest)| {
                     latest.checked_add(u32::from(before != after)).map(|next| (base, next))
@@ -94,7 +115,7 @@ impl Document {
                 Ok(())
             })?;
             Ok(commit.map(|stamp| (stamp, expected_version)))
-        })?;
+        })? };
         let Some(stamp) = committed else { return Ok(false) };
         self.stamp = Some(stamp);
         self.saved_disk_digest = digest;
@@ -110,7 +131,18 @@ mod tests {
 
     #[test]
     fn tiny_edits_preserve_snapshots_disk_revision_and_undo() -> io::Result<()> {
+        tiny_edits(false)
+    }
+
+    #[test]
+    fn tiny_edits_written_in_place_preserve_snapshots_disk_revision_and_undo() -> io::Result<()> {
+        tiny_edits(true)
+    }
+
+    fn tiny_edits(in_place: bool) -> io::Result<()> {
         let dir = tempfile::tempdir()?;
+        let journal = dir.path().join("journal");
+        save_journal::FOR_THIS_THREAD.set(in_place.then(|| journal.clone()));
         let file = dir.path().join("tiny-edits.txt");
         let mut input = b"abcdefgh".repeat(25 * 1024 * 1024 / 8);
         fs::write(&file, &input)?;
@@ -166,6 +198,10 @@ mod tests {
         input[1000..1003].copy_from_slice(b"abc");
         input[3..6].copy_from_slice(b"new");
         assert!(fs::read(copy)? == input);
+        // The in-place path made a record for every save and removed each one.
+        assert_eq!(in_place, journal.exists());
+        assert!(!in_place || fs::read_dir(&journal)?.count() == 0);
+        save_journal::FOR_THIS_THREAD.set(None);
         Ok(())
     }
 }

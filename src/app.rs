@@ -332,6 +332,9 @@ impl App {
         }
         // Line counts of very large files, so opening one again skips the count.
         linework_storage::set_index_cache(Some(&state::profile().join("line-index")));
+        // Records that let a small change be written straight into a large
+        // file. One left by a crash is settled here, before any file is opened.
+        linework_storage::set_save_journal(Some(&state::profile().join("save-records")));
         LIGHT.set(prefs.light);
         dark_chrome(h, !prefs.light);
         let editors = [Editor::create(h, 700)?, Editor::create(h, 701)?];

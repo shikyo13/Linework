@@ -155,6 +155,20 @@ fn eligible(file: &File) -> io::Result<bool> {
     Ok(ok != 0 && flags & SUPPORTS_TRANSACTIONS != 0 && fs_name.starts_with(&[78, 84, 70, 83, 0]))
 }
 
+/// A change an in-place save can make: at most a megabyte, on the main stream,
+/// and either the whole tail of the file or a replacement of equal length.
+pub(super) fn bounded(path: &Path, expected: &Stamp, offset: u64, before: &[u8], after: &[u8], new_len: u64) -> bool {
+    let Some(name) = path.file_name() else { return false };
+    if before.len().max(after.len()) > MAX_PATCH_BYTES || name.encode_wide().any(|c| c == b':' as u16) {
+        return false;
+    }
+    let Some(old_end) = offset.checked_add(before.len() as u64) else { return false };
+    let Some(new_end) = offset.checked_add(after.len() as u64) else { return false };
+    let is_tail = old_end == expected.size && new_end == new_len;
+    let is_overwrite = before.len() == after.len() && new_len == expected.size && old_end <= expected.size;
+    is_tail || is_overwrite
+}
+
 /// Returns None only before any transaction data has been changed. A mismatch
 /// with the user's known disk revision is a conflict, never a fallback signal.
 /// For length changes the caller must supply BOTH entire tails. For equal-length
@@ -163,15 +177,7 @@ pub(super) fn rewrite(
     path: &Path, expected: &Stamp, offset: u64, before: &[u8], after: &[u8], new_len: u64,
     verify: impl FnOnce(&mut File) -> io::Result<()>,
 ) -> io::Result<Option<Stamp>> {
-    let Some(name) = path.file_name() else { return Ok(None) };
-    if before.len().max(after.len()) > MAX_PATCH_BYTES || name.encode_wide().any(|c| c == b':' as u16) {
-        return Ok(None);
-    }
-    let Some(old_end) = offset.checked_add(before.len() as u64) else { return Ok(None) };
-    let Some(new_end) = offset.checked_add(after.len() as u64) else { return Ok(None) };
-    let is_tail = old_end == expected.size && new_end == new_len;
-    let is_overwrite = before.len() == after.len() && new_len == expected.size && old_end <= expected.size;
-    if !is_tail && !is_overwrite {
+    if !bounded(path, expected, offset, before, after, new_len) {
         return Ok(None);
     }
     // A normal reader pins the public name and identity across writer close

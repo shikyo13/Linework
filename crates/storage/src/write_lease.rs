@@ -12,7 +12,7 @@ use std::{
     },
     path::Path,
     ptr,
-    sync::{mpsc, Arc},
+    sync::{mpsc, Arc, Mutex},
     thread::{self, JoinHandle},
 };
 use windows_sys::Win32::{
@@ -34,6 +34,14 @@ use windows_sys::Win32::{
 pub(super) struct Lease {
     cancel: Arc<OwnedHandle>,
     worker: Option<JoinHandle<()>>,
+    kept: Arc<Mutex<Kept>>,
+}
+
+/// What the worker does with its deny-write handle when the lease ends.
+enum Kept {
+    Closed,
+    Wanted,
+    Held(std::fs::File),
 }
 
 pub(super) struct ReadRange<'a> {
@@ -73,6 +81,20 @@ impl Drop for ReadRange<'_> {
                 &mut self.at,
             )
         };
+    }
+}
+
+/// An open section on a file, with nothing mapped. While one exists Windows
+/// refuses to cut the file short, which range locks alone do not prevent.
+pub(super) struct Uncut(#[allow(dead_code)] OwnedHandle);
+impl Uncut {
+    pub(super) fn hold(file: &std::fs::File) -> io::Result<Self> {
+        use windows_sys::Win32::System::Memory::{CreateFileMappingW, PAGE_READONLY};
+        let section = unsafe { CreateFileMappingW(file.as_raw_handle(), ptr::null(), PAGE_READONLY, 0, 0, ptr::null()) };
+        if section.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(Self(unsafe { OwnedHandle::from_raw_handle(section) }))
     }
 }
 
@@ -130,6 +152,8 @@ impl Lease {
         let path = path.to_owned();
         let expected = expected.clone();
         let source = Arc::downgrade(source);
+        let kept = Arc::new(Mutex::new(Kept::Closed));
+        let keeping = kept.clone();
         let (ready, result) = mpsc::sync_channel(1);
         let worker = thread::Builder::new()
             .name("Linework external change".into())
@@ -176,6 +200,14 @@ impl Lease {
                 // All IOCTL input/output buffers stay alive until kernel completion.
                 let ok = unsafe { GetOverlappedResult(h, &operation, &mut transferred, 1) };
                 if canceled {
+                    // The oplock is gone; the handle alone still denies writers.
+                    // If the request completed instead of being cancelled, another
+                    // program's open is already waiting on it: closing the handle
+                    // is the answer it needs, so it is never handed on.
+                    let mut kept = keeping.lock().unwrap();
+                    if ok == 0 && matches!(*kept, Kept::Wanted) {
+                        *kept = Kept::Held(file);
+                    }
                     return;
                 }
                 let Some(source) = source.upgrade() else {
@@ -208,13 +240,35 @@ impl Lease {
                     }
                 }
                 unsafe { WaitForSingleObject(stop.as_raw_handle(), INFINITE) };
+                // This handle is the only protection the original has left. A
+                // caller that asked for it takes it over; it must not just close.
+                let mut kept = keeping.lock().unwrap();
+                if matches!(*kept, Kept::Wanted) {
+                    *kept = Kept::Held(file);
+                }
             })
             .ok()?;
         let lease = Self {
             cancel,
             worker: Some(worker),
+            kept,
         };
         result.recv().ok().map(|()| lease)
+    }
+
+    /// End the oplock but keep the handle that denies writers, so the caller
+    /// can put other protection in place before any writer can open the file.
+    /// None when the lease had already been broken by another program.
+    pub(super) fn demote(mut self) -> Option<std::fs::File> {
+        *self.kept.lock().unwrap() = Kept::Wanted;
+        unsafe { SetEvent(self.cancel.as_raw_handle()) };
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+        match std::mem::replace(&mut *self.kept.lock().unwrap(), Kept::Closed) {
+            Kept::Held(file) => Some(file),
+            _ => None,
+        }
     }
 }
 

@@ -19,6 +19,12 @@ mod checkpoint;
 mod transactional;
 #[cfg(windows)]
 mod delta_save;
+#[cfg(windows)]
+mod save_journal;
+#[cfg(windows)]
+mod inplace;
+#[cfg(windows)]
+pub use save_journal::set_save_journal;
 mod parallel;
 mod search;
 mod source;
