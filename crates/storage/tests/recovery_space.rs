@@ -394,7 +394,7 @@ fn detached_eight_gib_recovers_on_a_small_volume() -> io::Result<()> {
 
 #[cfg(windows)]
 #[test]
-#[ignore = "requires the campaign fixture and a dedicated ReFS temporary volume"]
+#[ignore = "requires a large fixture file and a dedicated ReFS temporary volume"]
 fn refs_eight_gib_unaligned_clone_recovers_after_destruction() -> io::Result<()> {
     use std::{env, process::Command, time::Instant};
     const TAIL: &[u8] = b"ReFS-tail!\n";

@@ -115,9 +115,6 @@ A bundled CPython interpreter runs package code in a separate process under your
 
 On a paged UTF-8 file, the Python host asks Rust for the ranges a command reads. A sparse index translates Sublime's Unicode character positions to file offsets. Its first use scans the backing file on a worker. Subsequent commands share the index. Each returned Python string can contain up to 8 MiB of UTF-8 text. A package can process a larger range in pieces. Supported event listeners can use the same paged API. On standard documents, automatic events and scope snapshots cover up to 2 MiB. Packages that require a different interpreter ABI, a native dependency or other Sublime APIs can require changes. [Sublime Text API reference](https://www.sublimetext.com/docs/api_reference.html)
 
-The [1.2 extension test results](EXTENSION-RESULTS.md) document the exact packages, file sizes, memory measurements and saved-file checks. Use the [comparison rubric](COMPARISON-RUBRIC.md) and [fillable scorecard](COMPARISON-SCORECARD.csv) to evaluate the three editors on the same workloads.
-
-[Community research and individual sources](COMMUNITY.md)
 
 ## Build from source
 

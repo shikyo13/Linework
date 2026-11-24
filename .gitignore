@@ -8,5 +8,5 @@ __pycache__/
 Thumbs.db
 /.scratch/
 
-# Private working material, kept locally and never published
+# Local notes, not part of the project
 /docs/reference/
