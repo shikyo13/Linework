@@ -12,7 +12,7 @@ Code, notes and multi-gigabyte logs in one window, with a live Markdown preview 
 ![Windows x64](https://img.shields.io/badge/platform-Windows%20x64-2b2d3a)
 ![Built with Rust](https://img.shields.io/badge/built%20with-Rust-b7410e)
 
-<img src="docs/images/launch-film.webp" alt="Linework launch film: a 3.2 GB log opening in 0.91 seconds, the live Markdown preview, an exploded view of the interface, a race against Notepad++ and Sublime Text, and the Linework logo" width="100%">
+<img src="docs/images/launch-film.webp" alt="Linework launch film: a 3.2 GB log on screen in 0.91 seconds; ticking a task box, the gliding caret, fresh ink, Markdown bold and deletion ghosts in the live preview; a tour of the interface layers; a race against Notepad++ and Sublime Text; multiple carets, encodings and the command palette" width="100%">
 
 </div>
 
