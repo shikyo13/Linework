@@ -135,3 +135,10 @@ For the storage benchmark, allow at least 7 GiB of free scratch space. The comma
 cargo run --release --manifest-path crates/storage/Cargo.toml --example large_file -- 3
 ```
 
+## License
+
+Copyright (C) 2026 the Linework authors.
+
+Linework is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version. It is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See [LICENSE](LICENSE) for the full text.
+
+Bundled third-party components keep their own licenses, listed in [runtime/licenses](runtime/licenses) and [runtime/python/LICENSE.txt](runtime/python/LICENSE.txt): Scintilla and Lexilla, CPython, Oniguruma, the Sublime HQ syntax definitions, Spellbook (MPL 2.0), the SCOWL English dictionary and the Rust crates in Cargo.lock.
