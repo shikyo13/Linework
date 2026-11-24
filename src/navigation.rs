@@ -166,6 +166,7 @@ impl App {
             "docpreview" => self.prefs.document_preview && self.preview_kind().is_some(),
             "previewfollow" => self.prefs.preview_cues.follow,
             "paragraphfocus" => self.prefs.editor_effects.paragraph_focus,
+            "encodingdetect" => self.prefs.encoding.auto_detect,
             "whitespace" => self.prefs.whitespace,
             "markmatches" => self.prefs.highlight,
             "currentline" => self.prefs.current_line,

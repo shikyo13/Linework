@@ -131,9 +131,30 @@ impl Default for EditorEffects {
         }
     }
 }
+/// How files are read and new files are written.
+#[derive(Clone, Serialize, Deserialize, PartialEq, Debug)]
+#[serde(default)]
+pub struct EncodingPrefs {
+    /// Guess the encoding of a file that is not UTF-8 from its bytes.
+    pub auto_detect: bool,
+    /// Used for files that are not UTF-8 when guessing is off.
+    pub fallback: String,
+    /// The encoding a new file is saved in.
+    pub new_files: String,
+}
+impl Default for EncodingPrefs {
+    fn default() -> Self {
+        Self {
+            auto_detect: true,
+            fallback: "windows-1252".into(),
+            new_files: "UTF-8".into(),
+        }
+    }
+}
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Prefs {
+    pub encoding: EncodingPrefs,
     pub sidebar_width: i32,
     pub document_map: bool,
     pub document_preview: bool,
@@ -177,6 +198,7 @@ pub struct Prefs {
 impl Default for Prefs {
     fn default() -> Self {
         Self {
+            encoding: Default::default(),
             sidebar_width: 270,
             document_map: false,
             document_preview: false,

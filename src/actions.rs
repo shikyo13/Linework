@@ -3,6 +3,21 @@ use crate::{macros, selection};
 use linework_project::Diagnostic;
 use windows_sys::Win32::Graphics::Gdi::ScreenToClient;
 
+/// The encoding list from Notepad++ and Sublime Text, filterable by typing.
+/// Returns the label `Document` takes. The last entry asks for any label.
+pub(super) fn choose_encoding(h: H, title: &str, hex: bool) -> Option<String> {
+    let list: Vec<&(&str, &str)> = linework_storage::ENCODINGS
+        .iter()
+        .filter(|e| hex || e.1 != "Hexadecimal")
+        .collect();
+    let mut names: Vec<String> = list.iter().map(|e| format!("{}    {}", e.0, e.1)).collect();
+    names.push("Other encoding label…".into());
+    let k = forms::pick(h, title, &names, "")?;
+    match list.get(k) {
+        Some(e) => Some(e.1.to_string()),
+        None => forms::input(h, "Encoding", "Encoding label, for example cp437 or koi8-r", ""),
+    }
+}
 pub(super) fn pick(h: H, title: &str, options: &[&str]) -> Option<usize> {
     forms::pick(
         h,
@@ -299,6 +314,7 @@ impl App {
                 self.preview_command(id)
             }
             "editoreffects" | "paragraphfocus" | "mdbold" | "mditalic" => self.polish_command(id),
+            "encodingdetect" | "encodingfallback" | "encodingnew" => self.encoding_settings(id),
             "minimap" => {
                 self.prefs.document_map = !self.prefs.document_map;
                 self.save_prefs();
@@ -1218,38 +1234,16 @@ impl App {
             }
             return;
         }
-        let choices = [
-            "UTF-8",
-            "UTF-8 BOM",
-            "UTF-16 LE",
-            "UTF-16 BE",
-            "windows-1252",
-            "windows-1251",
-            "Shift_JIS",
-            "GB18030",
-            "Big5",
-            "EUC-KR",
-            "ISO-8859-2",
-            "Other encoding…",
-        ];
-        let Some(k) = pick(
-            self.h,
-            if id == "encoding" {
-                "Convert encoding on save"
-            } else {
-                "Reopen file with encoding"
-            },
-            &choices,
-        ) else {
-            return;
-        };
-        let enc = if k < choices.len() - 1 {
-            choices[k].into()
+        let now = self.buffers[i].doc.encoding_name();
+        let title = if id == "encoding" {
+            format!("Save with encoding (now {now})")
         } else {
-            let Some(s) = forms::input(self.h, "Encoding", "Encoding label", "") else {
-                return;
-            };
-            s
+            format!("Reopen with encoding (now {now})")
+        };
+        // Saving as hexadecimal would read the text as hex digits, so it is
+        // only offered for reopening.
+        let Some(enc) = choose_encoding(self.h, &title, id == "recode") else {
+            return;
         };
         if id == "recode" {
             if self.buffers[i].dirty {
@@ -1278,6 +1272,47 @@ impl App {
             }
             Err(e) => self.notice(e.to_string()),
         }
+    }
+    /// The three encoding settings: guessing on or off, the encoding used
+    /// when guessing is off, and the encoding of new files.
+    fn encoding_settings(&mut self, id: &str) {
+        let e = self.prefs.encoding.clone();
+        match id {
+            "encodingdetect" => {
+                self.prefs.encoding.auto_detect = !e.auto_detect;
+                self.notice(if !e.auto_detect {
+                    "Files that are not UTF-8 will have their encoding guessed from their bytes"
+                } else {
+                    "Files that are not UTF-8 will be read as the fallback encoding"
+                });
+            }
+            "encodingfallback" => {
+                let title = format!("Encoding for files that are not UTF-8 (now {})", e.fallback);
+                let Some(enc) = choose_encoding(self.h, &title, false) else { return };
+                if let Err(err) = linework_storage::set_detection(false, &enc) {
+                    self.notice(err.to_string());
+                    return;
+                }
+                self.notice(format!(
+                    "Fallback encoding: {enc}{}",
+                    if e.auto_detect { ". It is used when Detect encoding is off" } else { "" }
+                ));
+                self.prefs.encoding.fallback = enc;
+            }
+            _ => {
+                let title = format!("Encoding for new files (now {})", e.new_files);
+                let Some(enc) = choose_encoding(self.h, &title, false) else { return };
+                if let Err(err) = Document::empty_as(&enc) {
+                    self.notice(err.to_string());
+                    return;
+                }
+                self.notice(format!("New files will be saved as {enc}"));
+                self.prefs.encoding.new_files = enc;
+            }
+        }
+        let e = &self.prefs.encoding;
+        let _ = linework_storage::set_detection(e.auto_detect, &e.fallback);
+        self.save_prefs();
     }
     pub(super) fn context(&mut self, x: i32, y: i32, source: H) {
         let mut pt = POINT { x, y };

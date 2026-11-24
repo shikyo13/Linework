@@ -327,6 +327,9 @@ pub struct App {
 impl App {
     pub fn new(h: H) -> Result<Self, String> {
         let (prefs, settings_warning) = state::load_prefs();
+        if linework_storage::set_detection(prefs.encoding.auto_detect, &prefs.encoding.fallback).is_err() {
+            let _ = linework_storage::set_detection(prefs.encoding.auto_detect, "windows-1252");
+        }
         LIGHT.set(prefs.light);
         dark_chrome(h, !prefs.light);
         let editors = [Editor::create(h, 700)?, Editor::create(h, 701)?];
@@ -672,7 +675,8 @@ impl App {
             self.untitled += 1;
             name = format!("Untitled {}", self.untitled);
         }
-        self.add(Document::empty(), None, name, self.active, None);
+        let doc = Document::empty_as(&self.prefs.encoding.new_files).unwrap_or_else(|_| Document::empty());
+        self.add(doc, None, name, self.active, None);
     }
     fn add(
         &mut self,

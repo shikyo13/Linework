@@ -1703,8 +1703,18 @@ impl App {
                             .unwrap_or_default()
                             .to_string_lossy()
                             .into_owned();
+                        let enc = doc.encoding_name();
                         self.add(doc, Some(path.clone()), name, pane, st);
                         self.status_at = Instant::now() - Duration::from_secs(6);
+                        if !enc.starts_with("UTF-") {
+                            // Say so when a file is not Unicode, so a wrong guess
+                            // is noticed and fixed before anything is saved.
+                            self.notice(if enc == "Hexadecimal" {
+                                "Showing raw bytes. Saving writes the hex digits back as bytes".to_string()
+                            } else {
+                                format!("Read as {enc}: the file is not UTF-8. File, Reopen with encoding changes it")
+                            });
+                        }
                         if let Some((at,col)) = jump {
                             if col > 0 {
                                 self.goto_line_col(at, col)
@@ -1717,22 +1727,37 @@ impl App {
                         if e.contains("binary data")
                             || e.contains("Reopen with its original encoding") =>
                     {
-                        let encodings = [
-                            "UTF-8",
-                            "UTF-16 LE",
-                            "UTF-16 BE",
-                            "windows-1252",
-                            "Shift_JIS",
-                        ];
-                        if let Some(n) =
-                            actions::pick(self.h, "Open as text with encoding", &encodings)
-                        {
+                        // Binary files read as text are gibberish whatever the
+                        // encoding, so the hexadecimal view leads the list.
+                        let binary = e.contains("binary data");
+                        let title = if binary {
+                            "This is a binary file, not text. Open it as hexadecimal or as text in"
+                        } else {
+                            "Open as text with encoding"
+                        };
+                        let enc = if binary {
+                            match actions::pick(
+                                self.h,
+                                title,
+                                &["Hexadecimal (raw bytes, safe to edit and save)", "Text in an encoding…"],
+                            ) {
+                                Some(0) => Some("Hexadecimal".to_string()),
+                                Some(_) => actions::choose_encoding(self.h, "Open as text with encoding", false),
+                                None => None,
+                            }
+                        } else {
+                            actions::choose_encoding(self.h, title, true)
+                        };
+                        if let Some(enc) = enc {
                             let tx = self.tx.clone();
                             self.pending.insert(state::key(&path));
+                            self.notice(format!(
+                                "Opening {} as {enc}…",
+                                path.file_name().unwrap_or_default().to_string_lossy()
+                            ));
                             std::thread::spawn(move || {
-                                let r = Document::open_as(&path, encodings[n]).map_err(|e| {
-                                    format!("Could not decode as {}: {e}", encodings[n])
-                                });
+                                let r = Document::open_as(&path, &enc)
+                                    .map_err(|e| format!("Could not decode as {enc}: {e}"));
                                 let _ = tx.send(Worker::Open(path, r, pane, st));
                             });
                         }

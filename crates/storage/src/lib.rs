@@ -27,6 +27,7 @@ mod tree;
 pub use search::SearchOptions;
 
 use codec::Codec;
+pub use codec::{set_detection, ENCODINGS};
 use serde::{Deserialize, Serialize};
 use source::{read_at, Source};
 use std::collections::{HashMap, HashSet};
@@ -195,6 +196,18 @@ impl Document {
             version: 0,
         }
     }
+    /// An empty document that will be saved in `encoding`. It starts clean.
+    pub fn empty_as(encoding: &str) -> io::Result<Self> {
+        let mut d = Self::empty();
+        d.codec = match Codec::named(encoding)? {
+            Codec::Hex => return Err(invalid("A new file cannot start as hexadecimal")),
+            c => c,
+        };
+        d.saved_codec = d.codec;
+        d.emit_bom = !d.codec.bom().is_empty();
+        d.saved_bom = d.emit_bom;
+        Ok(d)
+    }
     pub fn open(path: &Path) -> io::Result<Self> {
         Self::open_core(path, None)
     }
@@ -224,7 +237,7 @@ impl Document {
                 if codec == Codec::Bom {
                     return Err(invalid("The UTF-8 BOM conflicts with invalid text. Reopen with its original encoding."));
                 }
-                codec = Codec::named("windows-1252")?;
+                codec = codec::guess(&bytes, true);
             } else {
                 ordinary = Some(bytes);
             }
@@ -243,7 +256,16 @@ impl Document {
             let source = Source::external(Arc::new(file), head, len, &path)?;
             (source.clone(), len, vec![source])
         } else {
-            let (f,digest) = codec.decode(file, &first[..head as usize])?;
+            let guessed = forced.is_none() && matches!(codec, Codec::Other(_) | Codec::Table(_));
+            let (f, digest) = match codec.decode(file.try_clone()?, &first[..head as usize]) {
+                // A guess that does not decode cleanly falls back to Windows
+                // 1252, which gives every byte a character and saves it back.
+                Err(_) if guessed && codec != Codec::named("windows-1252")? => {
+                    codec = Codec::named("windows-1252")?;
+                    codec.decode(file, &first[..head as usize])?
+                }
+                r => r?,
+            };
             saved_disk_digest = Some(digest);
             let n = f.metadata()?.len();
             first.resize(n.min(32768) as usize, 0);
