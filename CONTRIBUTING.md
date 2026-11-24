@@ -45,7 +45,7 @@ to keep the run away from your own profile in `%LOCALAPPDATA%\Linework`.
 | `installer/` | `build.py`, which builds the per-user MSI with WiX |
 | `tests/acceptance/` | End-to-end checks that drive a packaged build on a private Windows desktop |
 | `tools/` | `build.ps1`, the editor-effects check and the installer payload check |
-| `docs/` | User walkthroughs |
+| `docs/` | The editor-effects walkthrough and the README's screenshots and clips (`docs/images`) |
 
 The three crates under `crates/` are separate Cargo projects with their own
 lock files.
@@ -73,7 +73,7 @@ packaged build; run any of them with `--help` for its arguments.
 ## Packaging
 
 Stage a release folder holding `Linework.exe` (the release binary renamed),
-the `runtime` folder without `__pycache__` folders, `README.md`,
+the `runtime` folder without `__pycache__` folders, `USER-GUIDE.md`,
 `NOTEPAD-PLUGINS.md` and `LICENSE`. Then:
 
 ```powershell

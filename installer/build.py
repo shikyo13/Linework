@@ -16,7 +16,7 @@ ROOT = HERE.parent
 NS = "http://wixtoolset.org/schemas/v4/wxs"
 GUID_NAMESPACE = uuid.UUID("0b4c21bf-0b4a-46e6-9e14-cecf823d0950")
 DOCS = (
-    "README.md", "NOTEPAD-PLUGINS.md", "LICENSE",
+    "USER-GUIDE.md", "NOTEPAD-PLUGINS.md", "LICENSE",
 )
 ADDITIONAL_TYPES = """
 asc asciidoc adoc bashrc bib ccproj cl cmakelist coffee config cshtml csv cu cuh
