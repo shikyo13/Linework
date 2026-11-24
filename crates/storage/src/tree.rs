@@ -13,8 +13,8 @@ pub(crate) struct Node {
     pub len: u64,
     pub body: Body,
     height: u8,
-    first: u8,
-    last: u8,
+    pub(crate) first: u8,
+    pub(crate) last: u8,
     breaks: OnceLock<u64>,
     pub(crate) char_count: OnceLock<u64>,
     complete: OnceLock<()>,
@@ -86,7 +86,56 @@ pub(crate) fn leaf(src: Arc<Source>, at: u64, len: u64) -> io::Result<Root> {
         complete: Default::default(),
     })))
 }
-fn split(root: Root, pos: u64) -> io::Result<(Root, Root)> {
+/// A leaf whose edge bytes and line-break count the caller already knows, so
+/// creating it reads nothing from its source. `breaks` counts the piece on its
+/// own: a final CR is a break even when the next piece starts with LF.
+pub(crate) fn piece(
+    src: Arc<Source>,
+    at: u64,
+    len: u64,
+    first: u8,
+    last: u8,
+    breaks: u64,
+) -> Arc<Node> {
+    debug_assert!(len != 0);
+    Arc::new(Node {
+        len,
+        height: 1,
+        first,
+        last,
+        body: Body::Leaf(src, at),
+        breaks: OnceLock::from(breaks),
+        char_count: Default::default(),
+        complete: Default::default(),
+    })
+}
+/// A balanced tree over leaves in document order, built in one pass.
+pub(crate) fn build(nodes: &[Arc<Node>]) -> Root {
+    match nodes {
+        [] => None,
+        [one] => Some(one.clone()),
+        _ => {
+            let (a, b) = nodes.split_at(nodes.len().div_ceil(2));
+            Some(branch(build(a)?, build(b)?))
+        }
+    }
+}
+/// Every leaf in document order.
+pub(crate) fn leaves(root: &Root) -> Vec<Arc<Node>> {
+    let mut out = Vec::new();
+    let mut stack: Vec<&Arc<Node>> = root.iter().collect();
+    while let Some(node) = stack.pop() {
+        match &node.body {
+            Body::Leaf(..) => out.push(node.clone()),
+            Body::Branch(left, right) => {
+                stack.push(right);
+                stack.push(left);
+            }
+        }
+    }
+    out
+}
+pub(crate) fn split(root: Root, pos: u64) -> io::Result<(Root, Root)> {
     let n = match root {
         Some(n) => n,
         None => return Ok((None, None)),
@@ -169,6 +218,26 @@ impl Node {
                 r.read(0, &mut out[n..])
             }
             Body::Branch(l, r) => r.read(pos - l.len, out),
+        }
+    }
+    /// Like `read`, with the caller choosing how each source is read.
+    pub fn read_via(
+        &self,
+        pos: u64,
+        out: &mut [u8],
+        read: &mut impl FnMut(&Arc<Source>, u64, &mut [u8]) -> io::Result<()>,
+    ) -> io::Result<()> {
+        if out.is_empty() {
+            return Ok(());
+        }
+        match &self.body {
+            Body::Leaf(s, at) => read(s, at + pos, out),
+            Body::Branch(l, r) if pos < l.len => {
+                let n = (l.len - pos).min(out.len() as u64) as usize;
+                l.read_via(pos, &mut out[..n], read)?;
+                r.read_via(0, &mut out[n..], read)
+            }
+            Body::Branch(l, r) => r.read_via(pos - l.len, out, read),
         }
     }
     fn prefix(&self, n: u64) -> io::Result<u64> {

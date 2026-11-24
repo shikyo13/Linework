@@ -330,6 +330,8 @@ impl App {
         if linework_storage::set_detection(prefs.encoding.auto_detect, &prefs.encoding.fallback).is_err() {
             let _ = linework_storage::set_detection(prefs.encoding.auto_detect, "windows-1252");
         }
+        // Line counts of very large files, so opening one again skips the count.
+        linework_storage::set_index_cache(Some(&state::profile().join("line-index")));
         LIGHT.set(prefs.light);
         dark_chrome(h, !prefs.light);
         let editors = [Editor::create(h, 700)?, Editor::create(h, 701)?];

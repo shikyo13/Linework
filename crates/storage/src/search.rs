@@ -1,8 +1,10 @@
-use super::{Document, invalid};
+use super::{parallel, Document, invalid};
 use memchr::memmem;
 use regex::bytes::{Regex, RegexBuilder};
 #[path = "replace_stream.rs"]
 mod replacing;
+#[path = "splice.rs"]
+mod splicing;
 #[path = "search_cursor.rs"]
 mod streaming;
 use std::{
@@ -12,6 +14,11 @@ use std::{
 };
 
 const CHUNK: u64 = 1024 * 1024;
+/// Chunks searched on the calling thread first, so a match close to the
+/// starting point is found without starting any threads.
+const DIRECT: u64 = 4;
+/// Fewer remaining chunks than this are not worth starting threads for.
+const PARALLEL_MIN: u64 = 12;
 const FULL_REGEX: u64 = 24 * 1024 * 1024;
 #[derive(Clone, Copy, Debug)]
 pub struct SearchOptions {
@@ -37,9 +44,88 @@ struct Search<'a> {
     query: &'a str,
     opt: SearchOptions,
     pattern: Option<Regex>,
+    fold: Option<Fold>,
     streamed: Option<streaming::Regex>,
     cancel: &'a AtomicBool,
     scope: Range<u64>,
+}
+/// A quicker way to find plain ASCII text in any letter case, when the text
+/// has at least two characters in a row that have no case, such as the "=503"
+/// of "status=503". Those are found exactly, and the letters around them are
+/// compared as ASCII. Unicode has two characters beyond ASCII that match an
+/// ASCII letter without regard to case: the long s matches "s" and the Kelvin
+/// sign matches "k". On meeting a non-ASCII byte where an s or a k is due, the
+/// caller searches that stretch with the general pattern, so the matches are
+/// always the general pattern's.
+#[derive(Clone)]
+struct Fold {
+    lower: Vec<u8>,
+    run: Range<usize>,
+    finder: memmem::Finder<'static>,
+}
+impl Fold {
+    fn new(query: &str) -> Option<Self> {
+        if !query.is_ascii() {
+            return None;
+        }
+        let lower = query.to_ascii_lowercase().into_bytes();
+        let mut run = 0..0;
+        let mut start = 0;
+        for i in 0..=lower.len() {
+            if lower.get(i).is_none_or(u8::is_ascii_alphabetic) {
+                if i - start > run.len() {
+                    run = start..i;
+                }
+                start = i + 1;
+            }
+        }
+        (run.len() >= 2).then(|| Self {
+            finder: memmem::Finder::new(&lower[run.clone()]).into_owned(),
+            lower,
+            run,
+        })
+    }
+    /// Does the text match with its caseless run at `buf[at..]`? `None` when
+    /// only the general pattern can tell.
+    fn check(&self, buf: &[u8], start: usize) -> Option<bool> {
+        let before = (0..self.run.start).rev();
+        for k in before.chain(self.run.end..self.lower.len()) {
+            let (want, got) = (self.lower[k], buf[start + k]);
+            if got.to_ascii_lowercase() != want {
+                return if got >= 0x80 && matches!(want, b's' | b'k') {
+                    None
+                } else {
+                    Some(false)
+                };
+            }
+        }
+        Some(true)
+    }
+    /// The matches that start in `from..stop`, leftmost first and not overlapping.
+    fn scan(&self, buf: &[u8], from: usize, stop: usize) -> Option<Vec<Range<usize>>> {
+        let mut hits = Vec::new();
+        let mut floor = from;
+        let mut at = from + self.run.start;
+        while at < buf.len() {
+            let Some(found) = self.finder.find(&buf[at..]) else {
+                break;
+            };
+            let start = at + found - self.run.start;
+            at += found + 1;
+            if start >= stop {
+                break;
+            }
+            let end = start + self.lower.len();
+            if start < floor || end > buf.len() {
+                continue;
+            }
+            if self.check(buf, start)? {
+                hits.push(start..end);
+                floor = end;
+            }
+        }
+        Some(hits)
+    }
 }
 type Groups<'a> = dyn Fn(usize) -> Option<Range<u64>> + 'a;
 type Visitor<'a> = dyn FnMut(Range<u64>, Option<&Groups<'_>>) -> io::Result<bool> + 'a;
@@ -86,11 +172,13 @@ impl<'a> Search<'a> {
         } else {
             None
         };
+        let plain = !opt.regex && !opt.case_sensitive && !opt.whole_word && !opt.backwards;
         Ok(Self {
             d,
             query: q,
             opt,
             pattern,
+            fold: plain.then(|| Fold::new(q)).flatten(),
             streamed,
             cancel,
             scope,
@@ -123,41 +211,123 @@ impl<'a> Search<'a> {
                 visit,
             );
         }
-        let mut pos = if self.opt.backwards {
-            range.end
+        let count = (range.end - range.start).div_ceil(CHUNK);
+        let workers = parallel::threads();
+        let direct = if workers < 2 || count < DIRECT + PARALLEL_MIN {
+            count
         } else {
-            range.start
+            DIRECT
         };
+        // A forward match never overlaps the one before it, including one that
+        // ends in the next chunk: each chunk is searched from that end.
+        let mut floor = range.start;
+        let mut bytes = Vec::new();
+        for k in 0..direct {
+            self.check()?;
+            let (left, right) = self.bounds(&range, k);
+            let from = if self.opt.backwards { left } else { left.max(floor) };
+            if from >= right {
+                continue;
+            }
+            let origin = self.load(left, right, &mut bytes, |at, out| self.d.read_into(at, out))?;
+            let mut step = |hit: Range<u64>, groups: Option<&Groups<'_>>| {
+                floor = hit.end;
+                visit(hit, groups)
+            };
+            if self.matches(&bytes, origin, &(from..right), captures, &mut step)? {
+                return Ok(true);
+            }
+        }
+        if direct == count {
+            return Ok(false);
+        }
+        // The rest is searched by several threads, each with its own handle to
+        // the file. Their matches are replayed here in document order.
+        let rest = (count - direct) as usize;
+        let found = |k: usize, (reader, bytes, search): &mut (parallel::Reader<'_>, Vec<u8>, Search<'_>)| {
+            search.check()?;
+            let (left, right) = search.bounds(&range, direct + k as u64);
+            let origin = search.load(left, right, bytes, |at, out| reader.read_into(at, out))?;
+            let mut hits = Vec::new();
+            search.matches(bytes, origin, &(left..right), false, &mut |hit, _| {
+                hits.push(((hit.start - left) as u32, (hit.end - hit.start) as u32));
+                Ok(false)
+            })?;
+            Ok(hits)
+        };
+        parallel::ordered(
+            rest,
+            workers.min(rest),
+            || (parallel::Reader::new(self.d), Vec::new(), self.fork()),
+            found,
+            |k, hits: Vec<(u32, u32)>| {
+                let (left, right) = self.bounds(&range, direct + k as u64);
+                let from = floor;
+                if !self.opt.backwards && hits.first().is_some_and(|h| left + u64::from(h.0) < from) {
+                    // The thread started at the chunk's first byte, inside the
+                    // previous match. Search this chunk again from its end.
+                    if from >= right {
+                        return Ok(false);
+                    }
+                    let origin =
+                        self.load(left, right, &mut bytes, |at, out| self.d.read_into(at, out))?;
+                    return self.matches(&bytes, origin, &(from..right), false, &mut |hit, groups| {
+                        floor = hit.end;
+                        visit(hit, groups)
+                    });
+                }
+                for (start, len) in hits {
+                    let start = left + u64::from(start);
+                    floor = start + u64::from(len);
+                    if visit(start..floor, None)? {
+                        return Ok(true);
+                    }
+                }
+                Ok(false)
+            },
+        )
+    }
+    /// The same search for another thread. A copied pattern has its own scratch space.
+    fn fork(&self) -> Search<'a> {
+        Search {
+            d: self.d,
+            query: self.query,
+            opt: self.opt,
+            pattern: self.pattern.clone(),
+            fold: self.fold.clone(),
+            streamed: None,
+            cancel: self.cancel,
+            scope: self.scope.clone(),
+        }
+    }
+    fn bounds(&self, range: &Range<u64>, k: u64) -> (u64, u64) {
+        if self.opt.backwards {
+            let right = range.end - k * CHUNK;
+            (right.saturating_sub(CHUNK).max(range.start), right)
+        } else {
+            let left = range.start + k * CHUNK;
+            (left, (left + CHUNK).min(range.end))
+        }
+    }
+    /// Read a chunk with the bytes around it that a match starting inside it
+    /// can touch. Returns the document offset of the first byte read.
+    fn load(
+        &self,
+        left: u64,
+        right: u64,
+        bytes: &mut Vec<u8>,
+        mut read: impl FnMut(u64, &mut [u8]) -> io::Result<()>,
+    ) -> io::Result<u64> {
         let overlap = if self.opt.case_sensitive {
             self.query.len() as u64
         } else {
             self.query.chars().count() as u64 * 4
         };
-        while if self.opt.backwards {
-            pos > range.start
-        } else {
-            pos < range.end
-        } {
-            self.check()?;
-            let left = if self.opt.backwards {
-                pos.saturating_sub(CHUNK).max(range.start)
-            } else {
-                pos
-            };
-            let right = if self.opt.backwards {
-                pos
-            } else {
-                (pos + CHUNK).min(range.end)
-            };
-            let origin = left.saturating_sub(4);
-            let end = (right + overlap + 4).min(self.d.len());
-            let bytes = self.d.read(origin, end.saturating_sub(origin) as usize)?;
-            if self.matches(&bytes, origin, &(left..right), captures, visit)? {
-                return Ok(true);
-            }
-            pos = if self.opt.backwards { left } else { right };
-        }
-        Ok(false)
+        let origin = left.saturating_sub(4);
+        let end = (right + overlap + 4).min(self.d.len());
+        bytes.resize(end.saturating_sub(origin) as usize, 0);
+        read(origin, bytes)?;
+        Ok(origin)
     }
     fn matches(
         &self,
@@ -196,6 +366,19 @@ impl<'a> Search<'a> {
                     at = m.end() + usize::from(m.is_empty());
                 }
             } else {
+                let stop = (range.end - origin).min(buf.len() as u64) as usize;
+                if let Some(hits) = self.fold.as_ref().and_then(|fold| fold.scan(buf, off, stop)) {
+                    for hit in hits {
+                        let hit = origin + hit.start as u64..origin + hit.end as u64;
+                        if hit.end > self.scope.end {
+                            break;
+                        }
+                        if visit(hit, None)? {
+                            return Ok(true);
+                        }
+                    }
+                    return Ok(false);
+                }
                 let mut at = off;
                 while let Some(m) = re.find_at(buf, at) {
                     self.check()?;
@@ -425,25 +608,29 @@ impl Document {
         options.backwards = false;
         let search = Search::new(self, query, options, cancel, scope.clone())?;
         self.check_original()?;
-        let template = replacing::Template::new(&search, replacement);
-        let mut edits = replacing::Batch::new(self, cancel);
-        search.scan(
-            scope.start..scope.end + 1,
-            template.captures(),
-            &mut |hit, groups| {
-                if hit.start >= edits.end() && hit.end <= scope.end {
-                    observe(hit.clone(), template.length(groups)?);
-                    edits.push(hit, &template, groups)?;
-                }
-                Ok(false)
-            },
-        )?;
-        let (count, change) = edits.finish()?;
+        let (count, change) = if options.regex {
+            let template = replacing::Template::new(&search, replacement);
+            let mut edits = replacing::Batch::new(self, cancel);
+            search.scan(
+                scope.start..scope.end + 1,
+                template.captures(),
+                &mut |hit, groups| {
+                    if hit.start >= edits.end() && hit.end <= scope.end {
+                        observe(hit.clone(), template.length(groups)?);
+                        edits.push(hit, &template, groups)?;
+                    }
+                    Ok(false)
+                },
+            )?;
+            edits.finish()?
+        } else {
+            splicing::replace(self, &search, replacement.as_bytes(), &mut observe)?
+        };
         search.check()?;
         self.check_original()?;
         match change {
             replacing::Change::Sparse(edits) => self.replace_many(&edits)?,
-            replacing::Change::File(root) => self.commit(root)?,
+            replacing::Change::Whole(root) => self.commit(root)?,
         }
         Ok(count)
     }
@@ -504,7 +691,7 @@ impl Document {
         self.check_original()?;
         match changes {
             replacing::Change::Sparse(v) => self.replace_many(&v)?,
-            replacing::Change::File(root) => self.commit(root)?,
+            replacing::Change::Whole(root) => self.commit(root)?,
         }
         Ok((set, caret))
     }

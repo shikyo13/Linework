@@ -16,8 +16,8 @@ use std::{
 };
 
 const BLOCK: usize = 256 * 1024;
-const SPARSE_MATCHES: usize = 1024;
-const SPARSE_BYTES: u64 = 2 * 1024 * 1024;
+pub(super) const SPARSE_MATCHES: usize = 1024;
+pub(super) const SPARSE_BYTES: u64 = 2 * 1024 * 1024;
 
 enum Part<'a> {
     Text(Cow<'a, [u8]>),
@@ -156,7 +156,8 @@ impl<'a> Reader<'a> {
 type Edit = (u64, u64, Vec<u8>);
 pub(super) enum Change {
     Sparse(Vec<Edit>),
-    File(Root),
+    /// The complete edited document.
+    Whole(Root),
 }
 pub(super) struct Batch<'a> {
     reader: Reader<'a>,
@@ -179,6 +180,35 @@ impl<'a> Batch<'a> {
     }
     pub fn end(&self) -> u64 {
         self.end
+    }
+    /// Continue as a streamed batch. `assembled` already holds the edited text
+    /// of the document's `start..end`, and `count` matches went into it.
+    pub fn resume(
+        doc: &'a Document,
+        cancel: &'a AtomicBool,
+        start: u64,
+        assembled: Root,
+        end: u64,
+        count: usize,
+    ) -> io::Result<Self> {
+        let mut batch = Self::new(doc, cancel);
+        let mut out = BufWriter::with_capacity(BLOCK, tempfile::tempfile()?);
+        batch.reader.copy(0..start, &mut out)?;
+        if let Some(root) = &assembled {
+            let mut block = vec![0; BLOCK];
+            let mut at = 0;
+            while at < root.len {
+                batch.reader.check()?;
+                let n = (root.len - at).min(BLOCK as u64) as usize;
+                root.read(at, &mut block[..n])?;
+                out.write_all(&block[..n])?;
+                at += n as u64;
+            }
+        }
+        batch.writer = Some(out);
+        batch.end = end;
+        batch.count = count;
+        Ok(batch)
     }
     fn spill(&mut self) -> io::Result<()> {
         let mut out = BufWriter::with_capacity(BLOCK, tempfile::tempfile()?);
@@ -227,7 +257,7 @@ impl<'a> Batch<'a> {
         self.reader.check()?;
         let n = file.metadata()?.len();
         let root = tree::leaf(Source::file(Arc::new(file), 0, n)?, 0, n)?;
-        Ok((self.count, Change::File(root)))
+        Ok((self.count, Change::Whole(root)))
     }
 }
 

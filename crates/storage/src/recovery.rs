@@ -540,7 +540,7 @@ impl Document {
         // extended directory form even when the destination doesn't exist yet.
         let parent = std::fs::canonicalize(parent)?;
         let path = parent.join(name);
-        let mut file = NamedTempFile::new_in(&parent)?;
+        let file = NamedTempFile::new_in(&parent)?;
         let (base, saved_patch, basis) = self.archive(&parent, cancel)?;
         let v3 = saved_patch.is_some()
             || base
@@ -567,20 +567,22 @@ impl Document {
             bom: self.emit_bom,
             length: self.len(),
         })?;
-        file.write_all(magic)?;
-        file.write_all(&(h.len() as u64).to_le_bytes())?;
-        file.write_all(&h)?;
+        // A document assembled from many pieces has a short record for each.
+        let mut out = io::BufWriter::with_capacity(256 * 1024, file.as_file());
+        out.write_all(magic)?;
+        out.write_all(&(h.len() as u64).to_le_bytes())?;
+        out.write_all(&h)?;
         let mut scratch = vec![0; 256 * 1024];
         visit_spans(&basis, &self.root, cancel, |span| {
             match span {
                 Span::Copy(at, len) => {
-                    file.write_all(&[1])?;
-                    file.write_all(&at.to_le_bytes())?;
-                    file.write_all(&len.to_le_bytes())?;
+                    out.write_all(&[1])?;
+                    out.write_all(&at.to_le_bytes())?;
+                    out.write_all(&len.to_le_bytes())?;
                 }
                 Span::Literal(source, mut at, len) => {
-                    file.write_all(&[2])?;
-                    file.write_all(&len.to_le_bytes())?;
+                    out.write_all(&[2])?;
+                    out.write_all(&len.to_le_bytes())?;
                     let end = at + len;
                     while at < end {
                         if cancel.load(Ordering::Relaxed) {
@@ -588,15 +590,16 @@ impl Document {
                         }
                         let n = (end - at).min(scratch.len() as u64) as usize;
                         source.read(at, &mut scratch[..n])?;
-                        file.write_all(&scratch[..n])?;
+                        out.write_all(&scratch[..n])?;
                         at += n as u64;
                     }
                 }
             }
             Ok(true)
         })?;
-        file.write_all(&[0])?;
-        file.flush()?;
+        out.write_all(&[0])?;
+        out.flush()?;
+        drop(out);
         file.as_file().sync_all()?;
         file.persist(path).map_err(|e| e.error)?;
         Ok(())

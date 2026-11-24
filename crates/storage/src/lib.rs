@@ -19,6 +19,7 @@ mod checkpoint;
 mod transactional;
 #[cfg(windows)]
 mod delta_save;
+mod parallel;
 mod search;
 mod source;
 #[cfg(windows)]
@@ -28,6 +29,7 @@ pub use search::SearchOptions;
 
 use codec::Codec;
 pub use codec::{set_detection, ENCODINGS};
+pub use source::set_index_cache;
 use serde::{Deserialize, Serialize};
 use source::{read_at, Source};
 use std::collections::{HashMap, HashSet};
@@ -598,11 +600,12 @@ impl Document {
         #[cfg(windows)]
         if same_file && self.save_small_delta(&dest)? { return Ok(()); }
         let mut tmp = NamedTempFile::new_in(dir)?;
-        let checkpoint = {
-            let mut output = revision::CheckpointWriter::new(&mut tmp);
-            self.codec.write(self, &mut output, self.emit_bom)?;
-            output.finish()
-        };
+        let head = if self.emit_bom { self.codec.bom().len() as u64 } else { 0 };
+        let expected = self.codec.native().then(|| self.len() + head);
+        let staged = revision::Staged::new(tmp.as_file(), tmp.path(), expected);
+        let checkpoint = revision::stage(staged, |mut output| {
+            self.codec.write(self, &mut output, self.emit_bom)
+        })?;
         tmp.flush()?;
         tmp.as_file().sync_all()?;
         let checkpoint_stamp = Stamp::from(tmp.as_file())?;

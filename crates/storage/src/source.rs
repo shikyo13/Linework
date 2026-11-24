@@ -8,9 +8,14 @@ use std::thread;
 #[cfg(windows)]
 #[path = "source_delta.rs"]
 mod delta;
+#[path = "line_cache.rs"]
+mod cache;
+pub use cache::set_index_cache;
 
 pub(crate) const PAGE: usize = 65536;
 const BATCH: usize = PAGE * 32;
+/// Batches per thread below which a line index is not worth more threads.
+const PARALLEL_BATCHES: usize = 8;
 const SLOTS: usize = 12;
 
 pub(crate) fn read_at(f: &File, mut pos: u64, mut dst: &mut [u8]) -> io::Result<()> {
@@ -31,9 +36,49 @@ pub(crate) fn read_at(f: &File, mut pos: u64, mut dst: &mut [u8]) -> io::Result<
     Ok(())
 }
 
+/// One thread's own file objects for a disk source. Windows completes reads
+/// on a synchronous handle one at a time, so threads sharing the document's
+/// handle cannot read in parallel. A file that cannot be opened again, such as
+/// an exclusive temporary file, is read through the shared handle.
+#[derive(Default)]
+pub(crate) struct Lane {
+    original: Option<Option<File>>,
+    copy: Option<Option<File>>,
+}
+#[cfg(windows)]
+fn reopen(file: &File) -> Option<File> {
+    use std::os::windows::io::{AsRawHandle, FromRawHandle};
+    use windows_sys::Win32::{
+        Foundation::INVALID_HANDLE_VALUE,
+        Storage::FileSystem::{
+            ReOpenFile, FILE_GENERIC_READ, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+        },
+    };
+    // Share everything, as the document's own handle does: this handle must
+    // never be the reason another program's open or rename fails.
+    let handle = unsafe {
+        ReOpenFile(
+            file.as_raw_handle(),
+            FILE_GENERIC_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            0,
+        )
+    };
+    (handle != INVALID_HANDLE_VALUE).then(|| unsafe { File::from_raw_handle(handle) })
+}
+#[cfg(not(windows))]
+fn reopen(_: &File) -> Option<File> {
+    None
+}
+fn own<'a>(slot: &'a mut Option<Option<File>>, shared: &'a File) -> &'a File {
+    slot.get_or_insert_with(|| reopen(shared))
+        .as_ref()
+        .unwrap_or(shared)
+}
+
 // Count CR, LF and CRLF as single terminators. On AVX2 hosts 32 input
 // positions, including pairs crossing adjacent vectors, are tested together.
-fn count(bytes: &[u8], next: Option<u8>) -> u64 {
+pub(crate) fn count(bytes: &[u8], next: Option<u8>) -> u64 {
     #[cfg(target_arch = "x86_64")]
     if bytes.len() >= 64 && std::is_x86_feature_detected!("avx2") {
         return unsafe { count_avx2(bytes, next) };
@@ -440,12 +485,77 @@ impl Source {
         }
         Ok(())
     }
+    /// Count the line breaks of one batch, page by page.
+    fn tally(&self, lane: &mut Lane, batch: u64, buffer: &mut Vec<u8>) -> io::Result<Vec<u32>> {
+        let pos = batch * BATCH as u64;
+        let length = (self.len - pos).min(BATCH as u64) as usize;
+        let read = length + usize::from(pos + (length as u64) < self.len);
+        buffer.resize(BATCH + 1, 0);
+        self.read_lane(lane, pos, &mut buffer[..read])?;
+        Ok((0..length)
+            .step_by(PAGE)
+            .map(|i| {
+                let end = (i + PAGE).min(length);
+                count(&buffer[i..end], buffer[..read].get(end).copied()) as u32
+            })
+            .collect())
+    }
+    /// A large file is counted by several threads, each with its own handle.
+    /// The directory still grows from the start, so the indexed part of the
+    /// document is usable while the rest is counted.
     fn index(weak: Weak<Source>) {
+        let Some(len) = weak.upgrade().map(|s| s.len) else {
+            return;
+        };
+        if weak.upgrade().is_some_and(|source| source.load_index()) {
+            return;
+        }
+        let batches = len.div_ceil(BATCH as u64) as usize;
+        let workers = crate::parallel::threads().min(batches / PARALLEL_BATCHES);
+        if workers < 2 {
+            return Self::index_alone(weak);
+        }
+        // Every step takes the source again, so closing the document ends the
+        // work after the batches in hand.
+        let gone = || io::Error::from(io::ErrorKind::Interrupted);
+        let mut total = 0u64;
+        let result = crate::parallel::ordered(
+            batches,
+            workers,
+            || (Lane::default(), Vec::new()),
+            |batch, (lane, buffer)| {
+                let source = weak.upgrade().ok_or_else(gone)?;
+                source.tally(lane, batch as u64, buffer)
+            },
+            |batch, pages| {
+                let source = weak.upgrade().ok_or_else(gone)?;
+                let directory: Vec<u64> = pages
+                    .into_iter()
+                    .map(|n| {
+                        total += u64::from(n);
+                        total
+                    })
+                    .collect();
+                source.counts.write().unwrap().extend(directory);
+                let done = ((batch + 1) as u64 * BATCH as u64).min(source.len);
+                source.prefix.store(done, Ordering::Release);
+                Ok(false)
+            },
+        );
+        if let Some(source) = weak.upgrade() {
+            match result {
+                Ok(_) => source.store_index(),
+                Err(e) => *source.error.lock().unwrap() = Some(e.to_string()),
+            }
+        }
+    }
+    fn index_alone(weak: Weak<Source>) {
         let mut buffer = vec![0; BATCH + 1];
         let mut pos = 0;
         let mut count_total = 0;
         while let Some(s) = weak.upgrade() {
             if pos == s.len {
+                s.store_index();
                 return;
             }
             let length = (s.len - pos).min(BATCH as u64) as usize;
@@ -492,6 +602,31 @@ impl Source {
                 Ok(())
             }
         }
+    }
+    pub(crate) fn on_disk(&self) -> bool {
+        matches!(self.backing, Backing::Disk(..))
+    }
+    /// The same bytes as `raw`, read through the calling thread's own handles.
+    pub(crate) fn read_lane(&self, lane: &mut Lane, pos: u64, dst: &mut [u8]) -> io::Result<()> {
+        let Backing::Disk(shared, origin) = &self.backing else {
+            return self.raw(pos, dst);
+        };
+        if let Some(copy) = self.private_file() {
+            return read_at(own(&mut lane.copy, copy), pos, dst);
+        }
+        let file = own(&mut lane.original, shared);
+        #[cfg(windows)]
+        let result = match &self.external {
+            Some(external) => external.delta.read().unwrap().read(file, *origin, pos, dst),
+            None => read_at(file, origin + pos, dst),
+        };
+        #[cfg(not(windows))]
+        let result = read_at(file, origin + pos, dst);
+        // A conflicting open may have been released during this read.
+        if let Some(copy) = self.private_file() {
+            return read_at(own(&mut lane.copy, copy), pos, dst);
+        }
+        result
     }
     fn page(&self, index: u64) -> io::Result<Arc<Page>> {
         let slot = index as usize % SLOTS;
