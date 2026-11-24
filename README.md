@@ -12,13 +12,13 @@ Code, notes and multi-gigabyte logs in one window, with a live Markdown preview 
 ![Windows x64](https://img.shields.io/badge/platform-Windows%20x64-2b2d3a)
 ![Built with Rust](https://img.shields.io/badge/built%20with-Rust-b7410e)
 
-<img src="docs/images/hero.png" alt="Linework with the file explorer, a Markdown file and its live preview side by side" width="100%">
+<img src="docs/images/launch-film.webp" alt="Linework launch film: a 3.2 GB log opening in 0.91 seconds, the live Markdown preview, an exploded view of the interface, a race against Notepad++ and Sublime Text, and the Linework logo" width="100%">
 
 </div>
 
 ## Why Linework
 
-- **Opens huge files instantly.** A 3 GiB log is ready in under a second, using about 70 MiB of memory. Search, replace, multi-cursor editing, undo and save work across the whole file.
+- **Opens huge files instantly.** The end of a 3.2 GB log is on screen in under a second, using about 64 MiB of memory. Search, replace, multi-cursor editing, undo and save work across the whole file.
 - **Live preview for Markdown, HTML, SVG, CSV and TSV.** Edits appear as you type, and the preview shows what changed without moving the page.
 - **Markdown help built in.** Bold, italic and links on a selection, lists that continue themselves, and task boxes you can tick in the preview.
 - **Encodings done right.** Files that aren't UTF-8 are recognized automatically, the Notepad++ and Sublime Text encoding list is one search away, and binary files open as editable hexadecimal.
@@ -52,13 +52,13 @@ Linework reads large files straight from disk through a piece tree with a backgr
 
 <img src="docs/images/large-file.webp" alt="Opening a 2 GiB log file, jumping to its end, typing a note and returning to the top" width="100%">
 
-Measured opening the same 3,221,225,600-byte UTF-8 log (25,165,826 lines) on Windows 11 with a Ryzen 7 9800X3D, 96 GiB RAM and NVMe storage, with the file already in the disk cache. Lower is better.
+Measured for the launch film: each editor opened the same 3,221,225,600-byte UTF-8 log (25,165,826 lines) at its last line, run on its own with word wrap off, on Windows 11 with a Ryzen 7 9800X3D, 96 GiB RAM and NVMe storage, file already in the disk cache. Ready means the end of the file is on screen and the window has stopped changing. Lower is better.
 
-| Editor | Time until the whole file is ready | Memory at that point |
+| Editor | Time until the end of the file is on screen | Memory at that point |
 |-|-:|-:|
-| **Linework 1.1** | **0.82 s** | **70 MiB** |
-| Notepad++ 8.9.9.1 | 3.18 to 3.37 s | 3,339 MiB |
-| Sublime Text build 4215 | 17.9 to 24.6 s | 1,903 to 2,014 MiB |
+| **Linework 1.7.0** | **0.91 s** | **64 MiB** |
+| Notepad++ 8.9.9.1 | 3.28 s | 3,329 MiB |
+| Sublime Text build 4215 | 71.0 s (49 to 78 s over five more runs) | 10,504 MiB |
 
 ### Encodings done right, and binary files too
 
