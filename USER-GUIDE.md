@@ -104,7 +104,8 @@ The installer puts `lw.exe` next to `Linework.exe` and adds that folder to your 
 | `lw count [-i] [-F] [-w] [output options] PATTERN PATH` | Prints the number of matches in a file, or `path:count` per file of a folder |
 | `lw lines FILE FROM [TO]` | Prints lines FROM to TO, counted from 1 |
 | `lw info FILE` | Prints the size, line count, encoding and line ends |
-| `lw replace [-i] [-F] [-w] [--dry-run] OLD NEW FILE` | Replaces every match and saves, or only counts with `--dry-run` |
+| `lw replace [-i] [-F] [-w] [--dry-run] [--json] OLD NEW PATH` | Replaces every match in a file or a folder and saves, or shows each changed line before and after with `--dry-run` |
+| `lw undo [--list] [CHANGE]` | Undoes the last replace, or the one named; `--list` shows the recent ones |
 | `lw files [--hidden] [--no-ignore] FOLDER` | Lists the files a folder search would read |
 | `lw defs [output options] NAME PATH` | Prints where NAME is defined in code |
 | `lw uses [output options] NAME PATH` | Prints where NAME is used in code, leaving out comments and strings |
@@ -121,6 +122,8 @@ The installer puts `lw.exe` next to `Linework.exe` and adds that folder to your 
 The files of a folder search are printed in path order, so the same search gives the same output each time.
 
 `find` and `count` also take conditions, each of which may repeat: `--near PATTERN N` keeps a line only when PATTERN matches within N lines before or after it, `--and PATTERN` keeps only files that also contain PATTERN, and `--not PATTERN` keeps only files that do not. With conditions, `count` on a single file counts the matching lines that pass them.
+
+`lw replace` on a folder changes the files a search for OLD would show. Each file is changed and saved by the editor's engine, in its own encoding, and is not saved if it changed on disk since it was read. In a pattern replacement, `$1` or `${1}` inserts a captured group; write `${1}x` when a letter or digit follows, since `$1x` names a group called `1x`. Before any file is saved, the edits that will be made in it (each place, the new text and the text it replaces) are written to a change record in the `changes` folder of the profile. `lw undo` reads that record and restores each file only if every changed place still holds the text the replace put there; a file edited since is left as it is and reported, and the change can be undone again once it is dealt with. A replace stopped partway through, by a crash or power cut, can be undone the same way: files that were never saved are left alone. On the machine described above, replacing in 2,000 small files took 2.9 s, and undoing it 2.9 s. A change record takes about 50 bytes per replacement; deleting old records is safe once their changes need no undoing.
 
 `lw defs` and `lw uses` use the same Tree-sitter grammars and rules as the editor's outline and references: a definition comes from the language's tags, a use is an identifier in parsed code, so a name in a comment or a string is neither. Markdown headings and the other line outlines count as definitions. Only files that contain NAME as a whole word are parsed, and files over 4 MiB are not. Finding the 1,733 uses of `useState` in a 29,498-file tree took 0.93 s.
 

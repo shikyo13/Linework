@@ -5,7 +5,8 @@
 //!   lw find    [-i] [-F] [-w] [-m N] PATTERN FILE   matching lines as line:text
 //!   lw lines   FILE FROM [TO]                  lines FROM to TO, counted from 1
 //!   lw info    FILE                            size, lines, encoding, line ends
-//!   lw replace [-i] [-F] [-w] [--dry-run] OLD NEW FILE   replace all and save
+//!   lw replace [-i] [-F] [-w] [--dry-run] OLD NEW FILE   replace all and save, or preview
+//!   lw undo    [--list] [CHANGE]                undo a replace from its record
 //!   lw files   [--hidden] [--no-ignore] FOLDER    the files a search would read
 //!
 //! PATTERN is a regular expression unless it holds no special character or -F
@@ -25,7 +26,8 @@ const USAGE: &str = "usage:
   lw find    [-i] [-F] [-w] [-m N] [OUTPUT] [CONDITIONS] PATTERN FILE
   lw lines   FILE FROM [TO]
   lw info    FILE
-  lw replace [-i] [-F] [-w] [--dry-run] OLD NEW FILE
+  lw replace [-i] [-F] [-w] [--dry-run] [--json] OLD NEW FILE
+  lw undo    [--list] [CHANGE]       undo the last replace, or the one named
   lw files   [--hidden] [--no-ignore] FOLDER
   lw defs    [OUTPUT] NAME FILE    where NAME is defined in code
   lw uses    [OUTPUT] NAME FILE    where NAME is used in code, not in comments or strings
@@ -63,6 +65,7 @@ struct Args {
     scope: bool,
     stats: bool,
     budget: Option<usize>,
+    list: bool,
     near: Vec<(String, u64)>,
     and: Vec<String>,
     not: Vec<String>,
@@ -104,7 +107,7 @@ impl Args {
 }
 
 fn parse(args: impl Iterator<Item = String>) -> Result<Args, String> {
-    let mut a = Args { ignore_case: false, fixed: false, word: false, dry_run: false, hidden: false, no_ignore: false, account: false, samples: None, most: usize::MAX, threads: None, json: false, heading: false, scope: false, stats: false, budget: None, near: Vec::new(), and: Vec::new(), not: Vec::new(), rest: Vec::new() };
+    let mut a = Args { ignore_case: false, fixed: false, word: false, dry_run: false, hidden: false, no_ignore: false, account: false, samples: None, most: usize::MAX, threads: None, json: false, heading: false, scope: false, stats: false, budget: None, list: false, near: Vec::new(), and: Vec::new(), not: Vec::new(), rest: Vec::new() };
     let mut args = args.peekable();
     let mut plain = false;
     while let Some(arg) = args.next() {
@@ -122,6 +125,7 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Args, String> {
             "--heading" => a.heading = true,
             "--scope" => a.scope = true,
             "--stats" => a.stats = true,
+            "--list" => a.list = true,
             "--budget" => {
                 let n = args.next().ok_or("--budget needs a number of bytes")?;
                 a.budget = Some(n.parse().map_err(|_| format!("--budget needs a number of bytes, not {n}"))?);
@@ -436,18 +440,177 @@ fn run() -> Result<i32, String> {
             writeln!(out, "bytes {}\nlines {}\nencoding {}\nline ends {}", doc.len(), doc.line_count(), doc.encoding_name(), ends).map_err(io)?;
             0
         }
-        ("replace", [old, new, file]) => {
+        ("replace", [old, new, target]) => {
             // Records that let a small change be written straight into a large
             // file; one left by a crash is settled here before the file is opened.
             linework_storage::set_save_journal(Some(&profile.join("save-records")));
-            let mut doc = open(file).map_err(io)?;
-            let count = doc.replace_all(old, new, options(&a, old)).map_err(io)?;
-            if count != 0 && !a.dry_run {
-                let path = doc.path().map(Path::to_owned).ok_or("the file has no path")?;
-                doc.save(&path).map_err(io)?;
+            let searched = options(&a, old);
+            let style = a.style();
+            // In a folder, the files a search for OLD would show.
+            let files: Vec<String> = if Path::new(target).is_dir() {
+                use linework_search::sweep;
+                let mut walk = linework_search::walk::Options { hidden: a.hidden, ignore: !a.no_ignore, batch: 8, ..Default::default() };
+                if let Some(threads) = a.threads {
+                    walk.threads = threads;
+                }
+                let shown = target.trim_end_matches(['/', '\\']);
+                let query = a.query(old)?;
+                let name = |path: &str, _: &[u8], _: &[sweep::LineHit], out: &mut Vec<u8>| -> u64 {
+                    out.extend_from_slice(format!("{shown}/{path}").as_bytes());
+                    1
+                };
+                let gathered = sweep::tree_with(Path::new(target), walk, &query, &name).map_err(io)?;
+                sweep::in_order(&gathered).into_iter().map(|(_, part)| String::from_utf8_lossy(part).into_owned()).collect()
+            } else {
+                vec![target.clone()]
+            };
+            let changes = profile.join("changes");
+            let mut record = if a.dry_run { None } else { Some(change::Record::start(&changes, &env::args().collect::<Vec<_>>()).map_err(io)?) };
+            let mut budget = report::Budget::new(a.budget);
+            let (mut replaced, mut changed, mut failed) = (0usize, 0usize, 0usize);
+            // In batches: plan on several threads, keep the batch's record on disk,
+            // then save its files on several threads, so their disk flushes overlap.
+            for batch in files.chunks(256) {
+                let plans = change::each(batch, |path| change::plan(Path::new(path), old, new, searched, a.dry_run, WIDEST as usize, &cancel));
+                let mut ready = Vec::new();
+                for (path, plan) in batch.iter().zip(plans) {
+                    match plan {
+                        Ok(Some(planned)) => ready.push((path, planned)),
+                        Ok(None) => {}
+                        Err(e) => {
+                            eprintln!("lw: {path}: {e}");
+                            failed += 1;
+                        }
+                    }
+                }
+                let ready: Vec<(&String, change::Planned, bool)> = if let Some(record) = &mut record {
+                    record.keep(&ready.iter().map(|(_, p)| p).collect::<Vec<_>>()).map_err(io)?;
+                    let saved = change::each_owned(ready, |(path, mut planned)| {
+                        let result = planned.doc.save(&planned.path);
+                        (path, planned, result)
+                    });
+                    let mut kept = Vec::new();
+                    for (path, planned, result) in saved {
+                        match result {
+                            Ok(()) => {
+                                record.saved(&planned.path).map_err(io)?;
+                                kept.push((path, planned, true));
+                            }
+                            Err(e) => {
+                                eprintln!("lw: {path}: not changed: {e}");
+                                failed += 1;
+                            }
+                        }
+                    }
+                    kept
+                } else {
+                    ready.into_iter().map(|(path, planned)| (path, planned, false)).collect()
+                };
+                for (path, planned, _) in ready {
+                    replaced += planned.edits.len();
+                    changed += 1;
+                    let mut text = Vec::new();
+                    match (a.dry_run, style.json) {
+                        (true, true) => {
+                            for (line, before, after) in &planned.lines {
+                                let value = serde_json::json!({"path": path, "line": line, "before": String::from_utf8_lossy(before), "after": String::from_utf8_lossy(after)});
+                                text.extend_from_slice(value.to_string().as_bytes());
+                                text.push(b'\n');
+                            }
+                        }
+                        (true, false) => {
+                            text.extend_from_slice(format!("{path}\n").as_bytes());
+                            for (line, before, after) in &planned.lines {
+                                text.extend_from_slice(format!("  {line} - ").as_bytes());
+                                text.extend_from_slice(before);
+                                text.extend_from_slice(format!("\n  {line} + ").as_bytes());
+                                text.extend_from_slice(after);
+                                text.push(b'\n');
+                            }
+                            text.push(b'\n');
+                        }
+                        (false, true) => {
+                            text.extend_from_slice(serde_json::json!({"path": path, "replacements": planned.edits.len()}).to_string().as_bytes());
+                            text.push(b'\n');
+                        }
+                        (false, false) => text.extend_from_slice(format!("{path}: {} replaced\n", planned.edits.len()).as_bytes()),
+                    }
+                    budget.write(&mut out, &text).map_err(io)?;
+                }
             }
-            writeln!(out, "{count}").map_err(io)?;
-            i32::from(count == 0)
+            if let Some(record) = &mut record {
+                record.finish().map_err(io)?;
+            }
+            let id = record.as_ref().map(|r| r.id.clone());
+            if let (Some(id), 0) = (&id, changed) {
+                // Nothing was changed: no record to keep.
+                let _ = std::fs::remove_file(changes.join(format!("{id}.jsonl")));
+            }
+            if a.json {
+                let value = serde_json::json!({"summary": {
+                    "files_changed": changed, "replacements": replaced, "saved": !a.dry_run,
+                    "change": if changed == 0 { None } else { id.clone() }, "failed": failed,
+                    "output_bytes": budget.written, "cut_short": budget.cut,
+                    "seconds": (began.elapsed().as_secs_f64() * 1000.0).round() / 1000.0,
+                }});
+                writeln!(out, "{value}").map_err(io)?;
+            } else if a.dry_run {
+                writeln!(out, "{replaced} replacements in {changed} files would be made; nothing was saved").map_err(io)?;
+            } else if let (Some(id), true) = (&id, changed != 0) {
+                writeln!(out, "{replaced} replacements in {changed} files saved; undo with: lw undo {id}").map_err(io)?;
+            }
+            out.flush().map_err(io)?;
+            if failed != 0 {
+                eprintln!("lw: {failed} files could not be changed");
+                2
+            } else {
+                i32::from(changed == 0)
+            }
+        }
+        ("undo", rest) if rest.len() <= 1 => {
+            let changes = profile.join("changes");
+            let records = change::records(&changes).map_err(io)?;
+            if a.list {
+                for r in records.iter().rev().take(20) {
+                    let edits: usize = r.files.iter().map(|f| f.edits.len()).sum();
+                    let state = if r.undone { "  undone" } else { "" };
+                    writeln!(out, "{}  {} files, {edits} replacements{state}  {}", r.id, r.files.len(), r.command.iter().skip(1).cloned().collect::<Vec<_>>().join(" "))
+                        .map_err(io)?;
+                }
+                return Ok(0);
+            }
+            let chosen = match rest.first() {
+                Some(id) => records.iter().find(|r| &r.id == id).ok_or(format!("no change {id}; lw undo --list shows them"))?,
+                None => records.iter().rev().find(|r| !r.undone && !r.files.is_empty()).ok_or("no change to undo")?,
+            };
+            if chosen.undone {
+                return Err(format!("change {} was already undone", chosen.id));
+            }
+            linework_storage::set_save_journal(Some(&profile.join("save-records")));
+            let (mut restored, mut refused) = (0usize, 0usize);
+            // The files are restored on several threads; each is checked before it is touched.
+            let files: Vec<&change::Changed> = chosen.files.iter().rev().collect();
+            let results = change::each(&files, |file| change::revert(&file.path, file.length, &file.edits));
+            for (file, result) in files.iter().zip(results) {
+                match result {
+                    Ok(()) => {
+                        restored += 1;
+                        writeln!(out, "{}: restored", file.path.display()).map_err(io)?;
+                    }
+                    // A save that was never marked done: the file holds the
+                    // change only if the save got through; otherwise there is nothing to undo.
+                    Err(_) if !file.saved => {}
+                    Err(e) => {
+                        refused += 1;
+                        eprintln!("lw: {}: not restored: {e}", file.path.display());
+                    }
+                }
+            }
+            if refused == 0 {
+                change::mark_undone(&changes, &chosen.id).map_err(io)?;
+            }
+            writeln!(out, "{restored} files restored, {refused} left as they are").map_err(io)?;
+            i32::from(refused != 0) * 2
         }
         ("files", [folder]) => {
             let mut options = linework_search::walk::Options { hidden: a.hidden, ignore: !a.no_ignore, ..Default::default() };
@@ -593,6 +756,7 @@ fn run() -> Result<i32, String> {
 }
 
 mod account;
+mod change;
 mod report;
 mod sampler;
 
