@@ -313,6 +313,20 @@ impl Document {
     pub fn len(&self) -> u64 {
         self.root.as_ref().map_or(0, |n| n.len)
     }
+    /// The file this document is, unchanged: its only piece is the whole of one
+    /// source on disk, so its offsets are that source's. Scans of such a
+    /// document can read with a lead (`lead.rs`).
+    pub(crate) fn sole_source(&self) -> Option<&std::sync::Arc<source::Source>> {
+        let node = self.root.as_ref()?;
+        match &node.body {
+            tree::Body::Leaf(source, 0) if node.len == source.len && source.on_disk() => Some(source),
+            _ => None,
+        }
+    }
+    /// A lead for a scan of this document from `from` to its end, when it is one file on disk.
+    pub(crate) fn lead(&self, from: u64) -> Option<source::Lead> {
+        self.sole_source()?.lead(from)
+    }
     pub fn is_empty(&self) -> bool {
         self.root.is_none()
     }

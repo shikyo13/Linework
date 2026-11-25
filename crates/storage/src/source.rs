@@ -11,6 +11,9 @@ mod delta;
 #[path = "line_cache.rs"]
 mod cache;
 pub use cache::set_index_cache;
+#[path = "lead.rs"]
+mod lead;
+pub(crate) use lead::Lead;
 
 pub(crate) const PAGE: usize = 65536;
 const BATCH: usize = PAGE * 32;
@@ -160,6 +163,8 @@ pub(crate) struct Source {
     counts: RwLock<Vec<u64>>,
     cache: Mutex<[Option<Arc<Page>>; SLOTS]>,
     error: Mutex<Option<String>>,
+    /// What scans with a lead have left mapped in Windows' cache (see `lead.rs`).
+    views: Mutex<lead::Views>,
 }
 impl Source {
     pub fn file(file: Arc<File>, origin: u64, len: u64) -> io::Result<Arc<Self>> {
@@ -200,6 +205,7 @@ impl Source {
             counts: RwLock::new(vec![0]),
             cache: Default::default(),
             error: Mutex::new(None),
+            views: Default::default(),
         });
         if len <= PAGE as u64 {
             let mut buf = vec![0; len as usize];
@@ -241,6 +247,7 @@ impl Source {
             counts: RwLock::new(counts),
             cache: Default::default(),
             error: Mutex::new(None),
+            views: Default::default(),
         })
     }
     pub(crate) fn disk_at(&self,at:u64)->io::Result<Option<(File,u64)>>{
@@ -497,12 +504,18 @@ impl Source {
         Ok(())
     }
     /// Count the line breaks of one batch, page by page.
-    fn tally(&self, lane: &mut Lane, batch: u64, buffer: &mut Vec<u8>) -> io::Result<Vec<u32>> {
+    fn tally(&self, lane: &mut Lane, lead: Option<&Lead>, batch: u64, buffer: &mut Vec<u8>) -> io::Result<Vec<u32>> {
         let pos = batch * BATCH as u64;
         let length = (self.len - pos).min(BATCH as u64) as usize;
         let read = length + usize::from(pos + (length as u64) < self.len);
         buffer.resize(BATCH + 1, 0);
-        self.read_lane(lane, pos, &mut buffer[..read])?;
+        match lead {
+            Some(lead) => {
+                lead.advance(lane, pos)?;
+                lead.read(self, lane, pos, &mut buffer[..read])?;
+            }
+            None => self.read_lane(lane, pos, &mut buffer[..read])?,
+        }
         Ok((0..length)
             .step_by(PAGE)
             .map(|i| {
@@ -530,13 +543,15 @@ impl Source {
         // work after the batches in hand.
         let gone = || io::Error::from(io::ErrorKind::Interrupted);
         let mut total = 0u64;
+        // The lead holds the source weakly, so closing the document still ends the count.
+        let lead = weak.upgrade().and_then(|source| source.lead(0));
         let result = crate::parallel::ordered(
             batches,
             workers,
             || (Lane::default(), Vec::new()),
             |batch, (lane, buffer)| {
                 let source = weak.upgrade().ok_or_else(gone)?;
-                source.tally(lane, batch as u64, buffer)
+                source.tally(lane, lead.as_ref(), batch as u64, buffer)
             },
             |batch, pages| {
                 let source = weak.upgrade().ok_or_else(gone)?;

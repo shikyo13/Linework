@@ -236,13 +236,15 @@ pub(super) fn replace(
         }
         dense
     } else {
+        let lead = doc.lead(range.start);
         parallel::ordered(
             chunks as usize,
             workers,
-            || (parallel::Reader::new(doc), Vec::new(), search.fork()),
+            || (parallel::Reader::led(doc, lead.as_ref()), Vec::new(), search.fork()),
             |k, (reader, bytes, search)| {
                 search.check()?;
                 let (left, right) = search.bounds(&range, k as u64);
+                reader.ahead(left)?;
                 census(search, &starts, left, (left, right), bytes, |at, out| {
                     reader.read_into(at, out)
                 })

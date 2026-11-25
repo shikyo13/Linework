@@ -1,7 +1,7 @@
 //! Scan a large document on several threads and deliver the results in order.
 use crate::{
     invalid,
-    source::{Lane, Source},
+    source::{Lane, Lead, Source},
     Document,
 };
 use std::{
@@ -23,13 +23,36 @@ pub(crate) fn threads() -> usize {
 pub(crate) struct Reader<'a> {
     doc: &'a Document,
     lanes: Vec<(usize, Lane)>,
+    /// The scan's lead, when its document is one file read in order (see `lead.rs`).
+    lead: Option<&'a Lead>,
 }
 impl<'a> Reader<'a> {
-    pub(crate) fn new(doc: &'a Document) -> Self {
+    /// A reader for one thread of a scan, with the scan's lead if it has one.
+    pub(crate) fn led(doc: &'a Document, lead: Option<&'a Lead>) -> Self {
         Self {
             doc,
             lanes: Vec::new(),
+            lead,
         }
+    }
+    fn lane(lanes: &mut Vec<(usize, Lane)>, source: &Arc<Source>) -> usize {
+        let key = Arc::as_ptr(source) as usize;
+        match lanes.iter().position(|(k, _)| *k == key) {
+            Some(slot) => slot,
+            None => {
+                lanes.push((key, Lane::default()));
+                lanes.len() - 1
+            }
+        }
+    }
+    /// Before reading the chunk at `offset`: keep the lead ahead of it. The
+    /// document of a scan with a lead is one file, so its offsets are the file's.
+    pub(crate) fn ahead(&mut self, offset: u64) -> io::Result<()> {
+        let (Some(lead), Some(source)) = (self.lead, self.doc.sole_source()) else {
+            return Ok(());
+        };
+        let slot = Self::lane(&mut self.lanes, source);
+        lead.advance(&mut self.lanes[slot].1, offset)
     }
     pub(crate) fn read_into(&mut self, offset: u64, dst: &mut [u8]) -> io::Result<()> {
         let len = self.doc.len();
@@ -39,20 +62,16 @@ impl<'a> Reader<'a> {
         let Some(root) = &self.doc.root else {
             return Ok(());
         };
-        let lanes = &mut self.lanes;
+        let (lanes, lead) = (&mut self.lanes, self.lead);
         root.read_via(offset, dst, &mut |source: &Arc<Source>, at, out| {
             if !source.on_disk() {
                 return source.read(at, out);
             }
-            let key = Arc::as_ptr(source) as usize;
-            let slot = match lanes.iter().position(|(k, _)| *k == key) {
-                Some(slot) => slot,
-                None => {
-                    lanes.push((key, Lane::default()));
-                    lanes.len() - 1
-                }
-            };
-            source.read_lane(&mut lanes[slot].1, at, out)
+            let slot = Self::lane(lanes, source);
+            match lead.filter(|lead| lead.is(source)) {
+                Some(lead) => lead.read(source, &mut lanes[slot].1, at, out),
+                None => source.read_lane(&mut lanes[slot].1, at, out),
+            }
         })
     }
 }

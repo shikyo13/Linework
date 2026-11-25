@@ -212,27 +212,87 @@ impl LineEnds {
     }
 }
 
-/// Counts line breaks forward from the start of a document, for matches that
-/// arrive in order.
-struct LineCounter<'a> {
+/// The lines of matches that arrive in order, read forward through the
+/// document once: each match's line number, where its line starts, and its
+/// text. It holds the bytes from the current line's start (or, on a line longer
+/// than `widest`, from a quarter of `widest` before the match) to as far as it
+/// has read, so many matches cost one pass over the text, whatever their number.
+struct Lines<'a> {
     d: &'a Document,
-    pos: u64,
-    breaks: u64,
-    block: Vec<u8>,
     ends: LineEnds,
+    widest: usize,
+    /// Bytes of the document from `at`.
+    buf: Vec<u8>,
+    at: u64,
+    /// Line ends are counted up to here, and `breaks` is their number.
+    counted: u64,
+    breaks: u64,
+    /// Where the line holding `counted` starts.
+    start: u64,
 }
-impl LineCounter<'_> {
-    /// The line, counted from 0, that holds `at`. `at` never goes backwards.
-    fn line_of(&mut self, at: u64) -> io::Result<u64> {
-        while self.pos < at {
-            let n = (at - self.pos).min(CHUNK) as usize;
-            // One byte more, to tell a lone CR from the CR of a CRLF.
-            self.block.resize((n as u64 + 1).min(self.d.len() - self.pos) as usize, 0);
-            self.d.read_into(self.pos, &mut self.block)?;
-            self.breaks += self.ends.count(&self.block[..n], self.block.get(n).copied());
-            self.pos += n as u64;
+impl<'a> Lines<'a> {
+    /// From `from`, which lies on the line starting at `start`, with `breaks` line ends before it.
+    fn new(d: &'a Document, ends: LineEnds, widest: usize, from: u64, start: u64, breaks: u64) -> Self {
+        Self { d, ends, widest, buf: Vec::new(), at: start, counted: from, breaks, start }
+    }
+    /// Reads forward until the bytes reach `upto`, and one byte past it to tell a
+    /// lone CR from the CR of a CRLF.
+    fn fill(&mut self, upto: u64) -> io::Result<()> {
+        let want = (upto + 1).min(self.d.len());
+        while self.at + (self.buf.len() as u64) < want {
+            let from = self.at + self.buf.len() as u64;
+            let n = (want - from).max(CHUNK.min(self.d.len() - from)) as usize;
+            let old = self.buf.len();
+            self.buf.resize(old + n, 0);
+            self.d.read_into(from, &mut self.buf[old..])?;
+        }
+        Ok(())
+    }
+    /// The number of line ends before `hit` (never before an earlier one), and
+    /// where its line starts.
+    fn number(&mut self, hit: u64) -> io::Result<u64> {
+        if hit > self.counted {
+            self.fill(hit)?;
+            let (from, to) = ((self.counted - self.at) as usize, (hit - self.at) as usize);
+            self.breaks += self.ends.count(&self.buf[from..to], self.buf.get(to).copied());
+            if let Some(b) = self.ends.begin(&self.buf[..to], to).filter(|&b| b > from || self.at + b as u64 > self.start) {
+                self.start = self.at + b as u64;
+            }
+            self.counted = hit;
         }
         Ok(self.breaks)
+    }
+    /// The line holding `hit`, numbered by `number` just before: its start,
+    /// where its text starts, its text without its line end (at most `widest`
+    /// bytes), and whether the text was cut there.
+    fn text(&mut self, hit: u64) -> io::Result<Kept> {
+        let widest = self.widest as u64;
+        let len = self.d.len();
+        let from = if hit - self.start < widest / 2 { self.start } else { hit - widest / 4 };
+        let limit = (from + widest).min(len);
+        // Read forward only as far as the line's end, or the limit.
+        let mut end = None;
+        let mut look = hit;
+        while end.is_none() && look < limit {
+            // Twice as far from the text's start each time, at least 4 KiB.
+            let next = (look + (look - from).max(4096)).min(limit);
+            self.fill(next)?;
+            let (a, b) = ((look - self.at) as usize, (next - self.at) as usize);
+            end = self.ends.end(&self.buf[a..b], 0, false).map(|e| look + e as u64);
+            look = next;
+        }
+        let stop = end.unwrap_or(limit);
+        let text = self.buf[(from - self.at) as usize..(stop - self.at) as usize].to_vec();
+        let cut = end.is_none() && limit < len;
+        // Let go of what no later match can need, once it is most of the
+        // buffer, so the bytes still needed move rarely.
+        let keep = if hit - self.start > widest { hit - widest / 4 } else { self.start };
+        let dead = keep.saturating_sub(self.at) as usize;
+        if dead >= CHUNK as usize && dead * 2 >= self.buf.len() {
+            self.buf.drain(..dead);
+            self.at = keep;
+        }
+        Ok((self.start, from, text, cut))
     }
 }
 /// Where the line holding `buf[upto]` starts in `buf`, or `None` when no line
@@ -363,11 +423,14 @@ impl<'a> Search<'a> {
             return Ok(false);
         }
         // The rest is searched by several threads, each with its own handle to
-        // the file. Their matches are replayed here in document order.
+        // the file. Their matches are replayed here in document order. A
+        // forward scan reads with a lead (`lead.rs`).
         let rest = (count - direct) as usize;
+        let lead = if self.opt.backwards { None } else { self.d.lead(self.bounds(&range, direct).0) };
         let found = |k: usize, (reader, bytes, search): &mut (parallel::Reader<'_>, Vec<u8>, Search<'_>)| {
             search.check()?;
             let (left, right) = search.bounds(&range, direct + k as u64);
+            reader.ahead(left)?;
             let origin = search.load(left, right, bytes, |at, out| reader.read_into(at, out))?;
             let mut hits = Vec::new();
             search.matches(bytes, origin, &(left..right), false, &mut |hit, _| {
@@ -379,7 +442,7 @@ impl<'a> Search<'a> {
         parallel::ordered(
             rest,
             workers.min(rest),
-            || (parallel::Reader::new(self.d), Vec::new(), self.fork()),
+            || (parallel::Reader::led(self.d, lead.as_ref()), Vec::new(), self.fork()),
             found,
             |k, hits: Vec<(u32, u32)>| {
                 let (left, right) = self.bounds(&range, direct + k as u64);
@@ -741,10 +804,18 @@ impl Document {
         if search.opt.regex {
             // A pattern searches the whole text or streams it: take its matches
             // in order and count the lines up to each in one forward pass.
-            let mut counter = LineCounter { d: self, pos: scope.start, breaks: breaks_before, block: Vec::new(), ends };
+            let start = self.line_text(scope.start, 0, ends)?.0;
+            let mut lines = Lines::new(self, ends, widest, scope.start, start, breaks_before);
+            let mut shown = None;
             return search.scan(scope.start..scope.end + 1, false, &mut |hit, _| {
-                let line = counter.line_of(hit.start)?;
-                emit(line, hit, None)
+                let line = lines.number(hit.start)?;
+                // A line is shown once, at its first match.
+                if shown == Some(line) {
+                    return Ok(false);
+                }
+                shown = Some(line);
+                let kept = lines.text(hit.start)?;
+                emit(line, hit, Some(kept))
             });
         }
         let range = scope.clone();
@@ -787,13 +858,15 @@ impl Document {
             }
             return Ok(false);
         }
+        let lead = self.lead(range.start);
         parallel::ordered(
             count,
             workers,
-            || (parallel::Reader::new(self), Vec::new(), search.fork()),
+            || (parallel::Reader::led(self, lead.as_ref()), Vec::new(), search.fork()),
             |k, (reader, own, search): &mut (parallel::Reader<'_>, Vec<u8>, Search<'_>)| {
                 search.check()?;
                 let (left, right) = search.bounds(&range, k as u64);
+                reader.ahead(left)?;
                 let origin = search.load(left, right, own, |at, out| reader.read_into(at, out))?;
                 search.piece(own, origin, left, right, left, widest, ends)
             },
@@ -819,16 +892,18 @@ impl Document {
         }
         let chunks = upto.div_ceil(CHUNK) as usize;
         let mut total = 0u64;
+        let lead = self.lead(0);
         parallel::ordered(
             chunks,
             parallel::threads().min(chunks),
-            || (parallel::Reader::new(self), Vec::new()),
+            || (parallel::Reader::led(self, lead.as_ref()), Vec::new()),
             |k, (reader, bytes): &mut (parallel::Reader<'_>, Vec<u8>)| {
                 if cancel.load(Ordering::Relaxed) {
                     return Err(io::Error::new(io::ErrorKind::Interrupted, "Count cancelled"));
                 }
                 let left = k as u64 * CHUNK;
                 let right = (left + CHUNK).min(upto);
+                reader.ahead(left)?;
                 // One byte more, to tell a lone CR from the CR of a CRLF.
                 bytes.resize(((right + 1).min(self.len()) - left) as usize, 0);
                 reader.read_into(left, bytes)?;
