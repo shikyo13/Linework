@@ -626,16 +626,32 @@ impl Document {
     pub fn find_lines(
         &self,
         query: &str,
-        mut options: SearchOptions,
+        options: SearchOptions,
         widest: usize,
         cancel: &AtomicBool,
         visit: &mut dyn FnMut(&FoundLine) -> io::Result<bool>,
     ) -> io::Result<bool> {
-        if query.is_empty() || self.is_empty() {
+        self.find_lines_in(query, options, 0..self.len(), 0, widest, cancel, visit)
+    }
+    /// `find_lines` for the matches that start in `scope`, numbering lines from
+    /// `breaks_before`, the number of line breaks before `scope.start`
+    /// (`count_breaks` gives it).
+    #[allow(clippy::too_many_arguments)]
+    pub fn find_lines_in(
+        &self,
+        query: &str,
+        mut options: SearchOptions,
+        scope: Range<u64>,
+        breaks_before: u64,
+        widest: usize,
+        cancel: &AtomicBool,
+        visit: &mut dyn FnMut(&FoundLine) -> io::Result<bool>,
+    ) -> io::Result<bool> {
+        if query.is_empty() || self.is_empty() || scope.is_empty() {
             return Ok(false);
         }
         options.backwards = false;
-        let search = Search::new(self, query, options, cancel, 0..self.len())?;
+        let search = Search::new(self, query, options, cancel, scope.clone())?;
         let mut last = None;
         let mut emit = |line: u64, first: Range<u64>, found: Option<(u64, Vec<u8>)>| -> io::Result<bool> {
             if last == Some(line) {
@@ -651,15 +667,15 @@ impl Document {
         if search.opt.regex {
             // A pattern searches the whole text or streams it: take its matches
             // in order and count the lines up to each in one forward pass.
-            let mut counter = LineCounter { d: self, pos: 0, breaks: 0, block: Vec::new() };
-            return search.scan(0..self.len() + 1, false, &mut |hit, _| {
+            let mut counter = LineCounter { d: self, pos: scope.start, breaks: breaks_before, block: Vec::new() };
+            return search.scan(scope.start..scope.end + 1, false, &mut |hit, _| {
                 let line = counter.line_of(hit.start)?;
                 emit(line, hit, None)
             });
         }
-        let range = 0..self.len();
-        let count = range.end.div_ceil(CHUNK) as usize;
-        let (mut base, mut floor) = (0u64, 0u64);
+        let range = scope.clone();
+        let count = (range.end - range.start).div_ceil(CHUNK) as usize;
+        let (mut base, mut floor) = (breaks_before, scope.start);
         let mut bytes = Vec::new();
         // Matches never overlap the one before them, including one that ends in
         // the next piece. A piece whose first match starts inside the previous
@@ -709,6 +725,42 @@ impl Document {
             },
             take,
         )
+    }
+    /// The number of line breaks before `upto`, by the line index's rule for CR,
+    /// LF and CRLF: from the index when it covers `upto`, otherwise counted on
+    /// several threads.
+    pub fn count_breaks(&self, upto: u64, cancel: &AtomicBool) -> io::Result<u64> {
+        let upto = upto.min(self.len());
+        if upto == 0 {
+            return Ok(0);
+        }
+        if self.indexed_bytes() >= upto {
+            return Ok(self.line_of(upto));
+        }
+        let chunks = upto.div_ceil(CHUNK) as usize;
+        let mut total = 0u64;
+        parallel::ordered(
+            chunks,
+            parallel::threads().min(chunks),
+            || (parallel::Reader::new(self), Vec::new()),
+            |k, (reader, bytes): &mut (parallel::Reader<'_>, Vec<u8>)| {
+                if cancel.load(Ordering::Relaxed) {
+                    return Err(io::Error::new(io::ErrorKind::Interrupted, "Count cancelled"));
+                }
+                let left = k as u64 * CHUNK;
+                let right = (left + CHUNK).min(upto);
+                // One byte more, to tell a lone CR from the CR of a CRLF.
+                bytes.resize(((right + 1).min(self.len()) - left) as usize, 0);
+                reader.read_into(left, bytes)?;
+                let n = (right - left) as usize;
+                Ok(source::count(&bytes[..n], bytes.get(n).copied()))
+            },
+            |_, n| {
+                total += n;
+                Ok(false)
+            },
+        )?;
+        Ok(total)
     }
     /// Where the line holding `at` starts, and its text without its line break,
     /// at most `widest` bytes. Reads only around `at`.
@@ -910,6 +962,40 @@ impl Document {
 #[cfg(test)]
 mod found_line_tests {
     use super::*;
+
+    /// A search over part of the text numbers lines as the whole search does,
+    /// and the break count before any place is the line index's.
+    #[test]
+    fn part_of_the_text_is_numbered_as_the_whole() -> io::Result<()> {
+        let breaks: [&[u8]; 3] = [b"\n", b"\r\n", b"\r"];
+        let mut text = Vec::new();
+        for n in 0..300_000usize {
+            text.extend_from_slice(if n % 7 == 0 { b"x needle y" } else { b"plain" });
+            text.extend_from_slice(breaks[n % 3]);
+        }
+        let mut d = Document::empty();
+        d.replace(0, 0, &text)?;
+        let cancel = AtomicBool::new(false);
+        let options = SearchOptions { case_sensitive: true, wrap: false, ..Default::default() };
+        let mut whole = Vec::new();
+        d.find_lines("needle", options, 1 << 20, &cancel, &mut |l| {
+            whole.push(l.clone());
+            Ok(false)
+        })?;
+        for at in [0, 1, 3, 1_000_001, d.len() / 2 + 5, d.len() - 3, d.len()] {
+            assert_eq!(d.count_breaks(at, &cancel)?, d.line_of(at), "breaks before {at}");
+        }
+        let scope = d.len() / 3 + 2..2 * d.len() / 3;
+        let mut part = Vec::new();
+        d.find_lines_in("needle", options, scope.clone(), d.count_breaks(scope.start, &cancel)?, 1 << 20, &cancel, &mut |l| {
+            part.push(l.clone());
+            Ok(false)
+        })?;
+        let expected: Vec<_> = whole.into_iter().filter(|l| scope.contains(&l.first.start)).collect();
+        assert!(expected.len() > 1000);
+        assert_eq!(part, expected);
+        Ok(())
+    }
 
     /// Lines numbered in the search's own pass carry the numbers, starts and
     /// text the line index gives: across pieces, with CR, LF and CRLF breaks, a
