@@ -14,7 +14,10 @@ use std::{
 };
 
 /// The commands lw has; any other first word is a pattern for `lw find`.
+#[cfg(not(target_os = "macos"))]
 const COMMANDS: &[&str] = &["find", "count", "lines", "info", "replace", "undo", "changes", "files", "defs", "uses", "open", "serve", "help"];
+#[cfg(target_os = "macos")]
+const COMMANDS: &[&str] = &["find", "count", "lines", "info", "replace", "undo", "changes", "files", "defs", "uses", "open", "serve", "help", "kept"];
 
 /// Messages for whoever runs lw (an output cut short, a file that could not be
 /// read): on the error stream, or while `lw serve` runs a tool, kept to go
@@ -57,13 +60,99 @@ fn profile() -> PathBuf {
 /// Where the kept copies of projects' text live: in the profile when one is
 /// named, else with the system's other caches, which can be made again.
 #[cfg(target_os = "macos")]
+fn kept_folder() -> Option<PathBuf> {
+    match env::var_os("LINEWORK_PROFILE") {
+        Some(profile) => Some(PathBuf::from(profile).join("kept")),
+        None => env::var_os("HOME").map(|home| PathBuf::from(home).join("Library/Caches/Linework/kept")),
+    }
+}
+
+/// The same, unless LW_KEPT=0 says to search without the kept copies.
+#[cfg(target_os = "macos")]
 fn kept_home() -> Option<PathBuf> {
     if env::var_os("LW_KEPT").is_some_and(|v| v == "0") {
         return None;
     }
-    match env::var_os("LINEWORK_PROFILE") {
-        Some(profile) => Some(PathBuf::from(profile).join("kept")),
-        None => env::var_os("HOME").map(|home| PathBuf::from(home).join("Library/Caches/Linework/kept")),
+    kept_folder()
+}
+
+/// A size as people write it: 512M, 8G, 1.5G, or plain bytes.
+#[cfg(target_os = "macos")]
+fn size_of_words(text: &str) -> Result<u64, String> {
+    let (number, factor) = match text.as_bytes().last().map(u8::to_ascii_uppercase) {
+        Some(b'K') => (&text[..text.len() - 1], 1u64 << 10),
+        Some(b'M') => (&text[..text.len() - 1], 1 << 20),
+        Some(b'G') => (&text[..text.len() - 1], 1 << 30),
+        Some(b'T') => (&text[..text.len() - 1], 1 << 40),
+        _ => (text, 1),
+    };
+    number.parse::<f64>().ok().filter(|n| n.is_finite() && *n >= 0.0).map(|n| (n * factor as f64) as u64).ok_or_else(|| format!("{text} is not a size; write for example 512M, 8G or 0"))
+}
+
+#[cfg(target_os = "macos")]
+fn size_in_words(bytes: u64) -> String {
+    match bytes {
+        b if b >= 1 << 30 => format!("{:.1} GB", b as f64 / (1u64 << 30) as f64),
+        b if b >= 1 << 20 => format!("{:.1} MB", b as f64 / (1u64 << 20) as f64),
+        b if b >= 1 << 10 => format!("{:.1} KB", b as f64 / 1024.0),
+        b => format!("{b} bytes"),
+    }
+}
+
+/// lw kept: the kept copies of projects' text. Lists them, clears them, or shows and sets their limit.
+#[cfg(target_os = "macos")]
+fn kept(words: &[String], out: &mut dyn Write) -> Result<i32, String> {
+    use linework_search::kept as store;
+    let io = |e: io::Error| e.to_string();
+    let home = kept_folder().ok_or("no home folder to keep copies in")?;
+    let went = |(gone, freed): (usize, u64)| format!("{gone} kept {} removed, {} freed", if gone == 1 { "copy" } else { "copies" }, size_in_words(freed));
+    match words {
+        [] => {
+            // Copies of projects that are gone, and anything past the limit, go first.
+            store::trim(&home);
+            let mut all = store::stores(&home);
+            all.sort_by(|a, b| b.used.cmp(&a.used));
+            for one in &all {
+                let ago = one.used.elapsed().map_or(0, |age| age.as_secs());
+                let used = match ago {
+                    a if a < 2 * 3600 => "in the last hour or two".to_owned(),
+                    a if a < 2 * 86400 => format!("{} hours ago", a / 3600),
+                    a => format!("{} days ago", a / 86400),
+                };
+                writeln!(out, "{:>9}  {:>9} files  used {used:<24} {}", size_in_words(one.bytes), one.files, one.project.display()).map_err(io)?;
+            }
+            let total: u64 = all.iter().map(|one| one.bytes).sum();
+            writeln!(
+                out,
+                "{} in {} kept {}; the limit is {} (lw kept limit SIZE changes it, lw kept clear removes them)",
+                size_in_words(total),
+                all.len(),
+                if all.len() == 1 { "copy" } else { "copies" },
+                size_in_words(store::limit(&home))
+            )
+            .map_err(io)?;
+            Ok(i32::from(all.is_empty()))
+        }
+        [word] if word == "clear" => {
+            writeln!(out, "{}", went(store::clear(&home, None))).map_err(io)?;
+            Ok(0)
+        }
+        [word, folder] if word == "clear" => {
+            let cleared = store::clear(&home, Some(Path::new(folder)));
+            writeln!(out, "{}", went(cleared)).map_err(io)?;
+            Ok(i32::from(cleared.0 == 0))
+        }
+        [word] if word == "limit" => {
+            writeln!(out, "{}", size_in_words(store::limit(&home))).map_err(io)?;
+            Ok(0)
+        }
+        [word, size] if word == "limit" => {
+            let bytes = size_of_words(size)?;
+            let trimmed = store::set_limit(&home, bytes).map_err(io)?;
+            writeln!(out, "the limit is {}; {}", size_in_words(bytes), went(trimmed)).map_err(io)?;
+            Ok(0)
+        }
+        _ => Err("lw kept, lw kept clear [FOLDER] or lw kept limit [SIZE]; see lw help kept".into()),
     }
 }
 
@@ -273,6 +362,8 @@ fn execute(argv: Vec<String>, mut out: &mut dyn Write) -> Result<i32, String> {
             i32::from(!undone.refused.is_empty()) * 2
         }
         ("defs" | "uses", [name, target]) => code_places(&s, command == "defs", name, target, began, out)?,
+        #[cfg(target_os = "macos")]
+        ("kept", words) => kept(words, out)?,
         // The files added, changed or removed in a folder since the last look, then a new snapshot.
         ("changes", [folder]) if Path::new(folder).is_dir() => {
             // A snapshot is of the whole folder, so the next look compares like with like.

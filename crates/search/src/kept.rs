@@ -38,6 +38,10 @@ pub const MOST: u64 = 4 << 20;
 const SETTLE: u64 = 2_000_000_000;
 /// Space of replaced files is reclaimed when it passes this much and half the store.
 const WASTE: u64 = 64 << 20;
+/// All the kept copies together take at most this much unless `lw kept limit` says otherwise.
+pub const LIMIT: u64 = 8 << 30;
+/// A store's time of last use is written again only when it is older than this (seconds).
+const USED_EVERY: u64 = 3600;
 const HEADER: usize = 56;
 const RECORD: usize = 56;
 
@@ -228,6 +232,8 @@ pub struct Kept {
     shelf: Option<Shelf>,
     /// For naming the files each thread writes.
     writers: AtomicU64,
+    /// How many more bytes this store may take before it reaches the limit; found when first needed.
+    room: OnceLock<AtomicU64>,
 }
 
 /// What one thread found changed, with the new bytes already written to a file of its own.
@@ -263,7 +269,15 @@ impl Kept {
             _ => {}
         }
         let shelf = Shelf::open(&folder);
-        Some(Self { folder, top: named.to_vec(), prefix, shelf, writers: AtomicU64::new(0) })
+        if shelf.is_some() {
+            // When it was last used, for choosing what goes when the limit is passed.
+            let used = folder.join("used");
+            let stale = fs::metadata(&used).and_then(|m| m.modified()).map_or(true, |t| t.elapsed().map_or(true, |age| age.as_secs() > USED_EVERY));
+            if stale {
+                let _ = fs::write(&used, b"");
+            }
+        }
+        Some(Self { folder, top: named.to_vec(), prefix, shelf, writers: AtomicU64::new(0), room: OnceLock::new() })
     }
 
     /// Puts a file's name as the store knows it into `key`.
@@ -299,6 +313,17 @@ impl Kept {
         if size > MOST || modified == 0 || now().saturating_sub(modified.max(changed)) < SETTLE {
             return;
         }
+        // No store grows past the limit: what does not fit is read from the disk every time.
+        let room = self.room.get_or_init(|| {
+            let limit = self.folder.parent().map_or(LIMIT, limit);
+            // A little is held back for the store's own small files.
+            AtomicU64::new(limit.saturating_sub(size_of(&self.folder) + 8192))
+        });
+        // The bytes, the record, the name, and the file's share of the index's table.
+        let wanted = bytes.len() as u64 + RECORD as u64 + fresh.key.len() as u64 + 16;
+        if room.fetch_update(Ordering::AcqRel, Ordering::Acquire, |left| left.checked_sub(wanted)).is_err() {
+            return;
+        }
         if fresh.file.is_none() {
             let number = self.writers.fetch_add(1, Ordering::Relaxed);
             let path = self.folder.join(format!("new-{}-{number}", std::process::id()));
@@ -327,6 +352,11 @@ impl Kept {
             for path in new_files {
                 let _ = fs::remove_file(path);
             }
+            return;
+        }
+        let _ = fs::write(self.folder.join("used"), b"");
+        if let Some(home) = self.folder.parent() {
+            trim(home);
         }
     }
 
@@ -467,6 +497,98 @@ impl Kept {
     }
 }
 
+/// One project's kept copy, as `lw kept` lists it.
+pub struct About {
+    /// The project's top folder.
+    pub project: PathBuf,
+    /// Where its store is.
+    pub folder: PathBuf,
+    pub bytes: u64,
+    pub files: u64,
+    /// When a search last used it, to the hour.
+    pub used: SystemTime,
+}
+
+fn size_of(folder: &Path) -> u64 {
+    fs::read_dir(folder).map_or(0, |entries| entries.flatten().filter_map(|e| e.metadata().ok()).map(|m| m.len()).sum())
+}
+
+/// The most all kept copies under `home` may take together.
+pub fn limit(home: &Path) -> u64 {
+    fs::read_to_string(home.join("limit")).ok().and_then(|text| text.trim().parse().ok()).unwrap_or(LIMIT)
+}
+
+/// Sets the limit, and removes the copies used longest ago until the rest fit.
+pub fn set_limit(home: &Path, bytes: u64) -> io::Result<(usize, u64)> {
+    fs::create_dir_all(home)?;
+    fs::write(home.join("limit"), bytes.to_string())?;
+    Ok(trim(home))
+}
+
+/// Where the kept copy of the project holding `path` is, whether or not there is one yet.
+pub fn folder_for(home: &Path, path: &Path) -> Option<PathBuf> {
+    let absolute = std::path::absolute(path).ok()?;
+    let top = absolute.ancestors().find(|folder| folder.join(".git").exists()).unwrap_or(&absolute);
+    Some(home.join(format!("{:016x}", mix(top.as_os_str().as_bytes(), 2))))
+}
+
+/// Every kept copy under `home`.
+pub fn stores(home: &Path) -> Vec<About> {
+    let Ok(entries) = fs::read_dir(home) else { return Vec::new() };
+    entries
+        .flatten()
+        .filter_map(|entry| {
+            let folder = entry.path();
+            let project = PathBuf::from(OsStr::from_bytes(&fs::read(folder.join("root")).ok()?));
+            let files = fs::read(folder.join("index")).ok().filter(|i| i.len() >= HEADER && &i[..8] == MAGIC).map_or(0, |i| u64::from_le_bytes(i[16..24].try_into().unwrap()));
+            let used = fs::metadata(folder.join("used")).or_else(|_| fs::metadata(folder.join("index"))).and_then(|m| m.modified()).unwrap_or(UNIX_EPOCH);
+            Some(About { project, bytes: size_of(&folder), files, used, folder })
+        })
+        .collect()
+}
+
+/// Removes one store, unless a search is updating it this moment. Searches
+/// reading it go on undisturbed: what they have mapped stays until they end.
+fn remove(folder: &Path) -> bool {
+    let Ok(lock) = File::create(folder.join("lock")) else { return false };
+    if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        return false;
+    }
+    fs::remove_dir_all(folder).is_ok()
+}
+
+/// Removes the kept copy of the project holding `project`, or every copy with None.
+/// Returns how many went and the bytes they took.
+pub fn clear(home: &Path, project: Option<&Path>) -> (usize, u64) {
+    let only = project.and_then(|path| folder_for(home, path));
+    let (mut gone, mut freed) = (0, 0);
+    for store in stores(home) {
+        if only.as_ref().is_none_or(|folder| *folder == store.folder) && remove(&store.folder) {
+            gone += 1;
+            freed += store.bytes;
+        }
+    }
+    (gone, freed)
+}
+
+/// Removes the copies of projects that are gone, then those used longest ago
+/// until what is left fits the limit. Returns how many went and their bytes.
+pub fn trim(home: &Path) -> (usize, u64) {
+    let most = limit(home);
+    let mut all = stores(home);
+    all.sort_by_key(|store| store.used);
+    let mut total: u64 = all.iter().map(|store| store.bytes).sum();
+    let (mut gone, mut freed) = (0, 0);
+    for store in &all {
+        if (!store.project.exists() || total > most) && remove(&store.folder) {
+            total -= store.bytes;
+            gone += 1;
+            freed += store.bytes;
+        }
+    }
+    (gone, freed)
+}
+
 /// Has the system put a file's bytes on the disk itself, so that a store swapped in is whole even after a power cut.
 fn flush(file: &File) -> io::Result<()> {
     if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_FULLFSYNC) } == 0 {
@@ -480,7 +602,7 @@ mod tests {
     use super::*;
 
     fn store(folder: &Path, top: &Path) -> Kept {
-        Kept { folder: folder.to_path_buf(), top: top.as_os_str().as_bytes().to_vec(), prefix: Vec::new(), shelf: Shelf::open(folder), writers: AtomicU64::new(0) }
+        Kept { folder: folder.to_path_buf(), top: top.as_os_str().as_bytes().to_vec(), prefix: Vec::new(), shelf: Shelf::open(folder), writers: AtomicU64::new(0), room: OnceLock::new() }
     }
 
     fn keep(kept: &Kept, fresh: &mut Fresh, name: &str, size: u64, stamp: u64, bytes: &[u8], kind: Kind) {
@@ -567,6 +689,45 @@ mod tests {
         damaged[last] ^= 1;
         fs::write(folder.join("index"), &damaged).unwrap();
         assert!(store(&folder, &top).bytes(b"a.txt", 7, 5000, 5000, false).is_none());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_copies_used_longest_ago_go_first_when_the_limit_is_passed() {
+        let dir = std::env::temp_dir().join(format!("lw-kept-limit-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let home = dir.join("kept");
+        let make = |name: &str, project: &Path, bytes: usize, seconds_ago: i64| {
+            let folder = home.join(name);
+            fs::create_dir_all(&folder).unwrap();
+            fs::write(folder.join("root"), project.as_os_str().as_bytes()).unwrap();
+            fs::write(folder.join("text-0"), vec![b'x'; bytes]).unwrap();
+            let used = folder.join("used");
+            fs::write(&used, b"").unwrap();
+            let then = libc::timeval { tv_sec: (now() / 1_000_000_000) as i64 - seconds_ago, tv_usec: 0 };
+            let path = std::ffi::CString::new(used.as_os_str().as_bytes()).unwrap();
+            assert_eq!(unsafe { libc::utimes(path.as_ptr(), [then, then].as_ptr()) }, 0);
+        };
+        let (old, new) = (dir.join("old-project"), dir.join("new-project"));
+        fs::create_dir_all(&old).unwrap();
+        fs::create_dir_all(&new).unwrap();
+        make("one", &old, 3000, 5000);
+        make("two", &new, 3000, 10);
+        make("three", &dir.join("gone-project"), 100, 1);
+        assert_eq!(limit(&home), LIMIT);
+        assert_eq!(stores(&home).len(), 3);
+        // The copy of the project that is gone goes whatever its age, then the one used longest ago.
+        let (gone, _) = set_limit(&home, 4000).unwrap();
+        assert_eq!(gone, 2);
+        assert_eq!(limit(&home), 4000);
+        let left = stores(&home);
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].project, new);
+        // Clearing by any folder of a project removes that project's copy only.
+        assert_eq!(clear(&home, Some(&old)).0, 0);
+        fs::rename(home.join("two"), folder_for(&home, &new).unwrap()).unwrap();
+        assert_eq!(clear(&home, Some(&new)).0, 1);
+        assert!(stores(&home).is_empty());
         let _ = fs::remove_dir_all(&dir);
     }
 }

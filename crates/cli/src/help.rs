@@ -707,6 +707,36 @@ the size of the log. A log that is not in time order (for example one whose
 clock goes back) gives a span that is right around its ends only."#,
     },
     Topic {
+        name: "kept",
+        summary: "(macOS) The kept copies of projects' text: list them, clear them, limit them",
+        usage: "lw kept\n       lw kept clear [FOLDER]\n       lw kept limit [SIZE]",
+        body: r#"On macOS lw keeps a copy of each project's text, so that a folder search
+opens only the files that changed since the last one. Opening files is most of
+a folder search there, and a search of a project already kept is about three
+times as fast. A project is the nearest folder above with a .git, else the
+folder searched.
+
+A file is answered from the copy only while its size, modified time and change
+time are what they were when it was kept; any other file is read, and kept
+again. Files over 4 MiB, and files changed in the last two seconds, are never
+kept. The output of a search is the same with the copies and without.
+
+  lw kept                  each kept copy: its size, files, when it was last
+                           used and its project, then the total and the limit
+  lw kept clear            remove every kept copy
+  lw kept clear FOLDER     remove the copy of the project FOLDER is in
+  lw kept limit            show the most all copies may take together
+  lw kept limit SIZE       set it: 512M, 8G, 1.5G, or 0 to keep nothing
+
+The limit is 8 GB until set. When the copies pass it, those used longest ago
+are removed; the copy of a project whose folder is gone is removed too. No one
+copy grows past the limit: what does not fit is read from the disk each time.
+
+Setting LW_KEPT=0 searches without the copies and keeps nothing. They are in
+~/Library/Caches/Linework/kept, or in kept/ of the folder LINEWORK_PROFILE
+names, and may be deleted at any time."#,
+    },
+    Topic {
         name: "profile",
         summary: "What lw keeps between runs, and where",
         usage: "",
@@ -732,7 +762,7 @@ only the files that changed since the last one.
                   text files of 4 MiB or less. A file is answered from the
                   copy only while its size, modified time and change time are
                   what they were when it was kept. It may be deleted at any
-                  time. LW_KEPT=0 searches without it."#,
+                  time. LW_KEPT=0 searches without it; see lw help kept."#,
     },
 ];
 
