@@ -619,6 +619,9 @@ impl Run<'_> {
         &self, root: &Path, prefix: &str, options: walk::Options, order: Order, output: &mut Output, totals: &mut Totals, errors: &Mutex<Vec<String>>,
     ) -> io::Result<()> {
         let look = &self.look;
+        // On macOS a walk for names alone is the quicker one: sizes and times are asked for only when the order needs them.
+        #[cfg(target_os = "macos")]
+        let options = walk::Options { details: matches!(order, Order::Modified | Order::Accessed | Order::Created), ..options };
         // Listing reads no file: the walk alone. Each thread gathers its paths, each one a part of the output.
         let gathered = walk::walk(root, options, sweep::Gathered::default, |gathered, found| {
             let from = gathered.out.len();

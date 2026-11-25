@@ -152,6 +152,12 @@ struct Layer {
     prepend: String,
     /// `.rgignore`, `.ignore`, then the Git files, each deciding before the next.
     files: Vec<Rules>,
+    /// Where the Git files (`.gitignore`, `.git/info/exclude`) start in `files`.
+    git_from: usize,
+    /// The folder holds a `.git`: it is the top of a repository. As in ripgrep,
+    /// the Git files of folders above it say nothing about what is inside it,
+    /// so a repository inside another is judged by its own.
+    git_root: bool,
     parent: Option<Arc<Layer>>,
 }
 
@@ -236,8 +242,9 @@ fn read(folder: &[u8], name: &str, fold: bool) -> Option<Rules> {
     read_rules(Path::new(OsStr::from_bytes(&path)), fold)
 }
 
-/// The ignore files of one folder that the options apply, in the order they bind.
-fn files(folder: &[u8], names: &[&str], in_git: bool, git_root: bool, options: &Options) -> Vec<Rules> {
+/// The ignore files of one folder that the options apply, in the order they
+/// bind, and where the Git files start among them.
+fn files(folder: &[u8], names: &[&str], in_git: bool, git_root: bool, options: &Options) -> (Vec<Rules>, usize) {
     let mut out = Vec::new();
     if options.ignore_dot {
         for name in [".rgignore", ".ignore"] {
@@ -246,6 +253,7 @@ fn files(folder: &[u8], names: &[&str], in_git: bool, git_root: bool, options: &
             }
         }
     }
+    let git_from = out.len();
     if in_git && options.ignore_vcs {
         if names.contains(&".gitignore") {
             out.extend(read(folder, ".gitignore", options.ignore_fold));
@@ -254,12 +262,14 @@ fn files(folder: &[u8], names: &[&str], in_git: bool, git_root: bool, options: &
             out.extend(read(folder, ".git/info/exclude", options.ignore_fold));
         }
     }
-    out
+    (out, git_from)
 }
 
 /// What the ignore files say about a path, and which rule said it.
 fn verdict(layer: &Option<Arc<Layer>>, relative: &str, is_folder: bool, joined: &mut String) -> Option<(Verdict, String)> {
     let mut next = layer.as_ref();
+    // Set once the top of the nearest repository has been passed on the way up.
+    let mut left_repository = false;
     while let Some(layer) = next {
         let path: &str = if layer.prepend.is_empty() {
             &relative[layer.strip.min(relative.len())..]
@@ -269,11 +279,13 @@ fn verdict(layer: &Option<Arc<Layer>>, relative: &str, is_folder: bool, joined: 
             joined.push_str(relative);
             joined
         };
-        for rules in &layer.files {
+        let heard = if left_repository { &layer.files[..layer.git_from] } else { &layer.files[..] };
+        for rules in heard {
             if let Some(decided) = rules.decide(path.as_bytes(), is_folder) {
                 return Some((decided.verdict, format!("{} in {}", decided.rule, decided.source)));
             }
         }
+        left_repository |= layer.git_root;
         next = layer.parent.as_ref();
     }
     None
@@ -372,12 +384,12 @@ pub fn walk<S: Send>(
         if !extra.is_empty() {
             // Matched from the base folder (the current one, as in ripgrep).
             let prepend = base.as_deref().and_then(|from| below(&absolute, from)).unwrap_or_default();
-            layer = Some(Arc::new(Layer { strip: 0, prepend, files: extra, parent: None }));
+            layer = Some(Arc::new(Layer { strip: 0, prepend, git_from: extra.len(), git_root: false, files: extra, parent: None }));
         }
         if in_git && options.ignore_vcs && options.ignore_global {
             if let Some(global) = global_ignore(options.ignore_fold) {
                 let prepend = git_top.as_deref().and_then(|top| below(&absolute, top)).unwrap_or_default();
-                layer = Some(Arc::new(Layer { strip: 0, prepend, files: vec![global], parent: layer }));
+                layer = Some(Arc::new(Layer { strip: 0, prepend, files: vec![global], git_from: 1, git_root: false, parent: layer }));
             }
         }
         if options.ignore_parent {
@@ -385,12 +397,13 @@ pub fn walk<S: Send>(
             for folder in above.iter().rev() {
                 let present: Vec<&str> =
                     [".rgignore", ".ignore", ".gitignore"].into_iter().filter(|name| folder.join(name).is_file()).collect();
-                let found = files(&native(folder), &present, in_git, folder.join(".git").exists(), &options);
-                if found.is_empty() {
+                let git_root = folder.join(".git").exists();
+                let (found, git_from) = files(&native(folder), &present, in_git, git_root, &options);
+                if found.is_empty() && !git_root {
                     continue;
                 }
                 let prepend = below(&absolute, folder).unwrap_or_default();
-                layer = Some(Arc::new(Layer { strip: 0, prepend, files: found, parent: layer }));
+                layer = Some(Arc::new(Layer { strip: 0, prepend, files: found, git_from, git_root, parent: layer }));
             }
         }
     }
@@ -767,10 +780,10 @@ fn folder<S>(
         in_git |= git_root;
         if !special.is_empty() {
             let reading = account::begin();
-            let found = files(&job.native, &special, in_git, git_root, &options);
+            let (found, git_from) = files(&job.native, &special, in_git, git_root, &options);
             account::end(Step::IgnoreFiles, reading);
-            if !found.is_empty() {
-                layer = Some(Arc::new(Layer { strip: job.relative.len(), prepend: String::new(), files: found, parent: layer }));
+            if !found.is_empty() || git_root {
+                layer = Some(Arc::new(Layer { strip: job.relative.len(), prepend: String::new(), files: found, git_from, git_root, parent: layer }));
             }
         }
     }
