@@ -308,25 +308,113 @@ pub fn search_with_streams<'a>(
         report.cancelled = cancel.load(Ordering::Relaxed);
         return Ok(report);
     }
-    for entry in walker(&req.root, req.hidden) {
-        if cancel.load(Ordering::Relaxed) || report.truncated {
-            break;
+    if report.truncated || cancel.load(Ordering::Relaxed) {
+        report.cancelled = cancel.load(Ordering::Relaxed);
+        return Ok(report);
+    }
+    let (files, full) = search_disk(req, &re, &skip, &clean, &include, &exclude, memory, report.hits.len(), cancel)?;
+    for file in files {
+        report.files_scanned += file.scanned as usize;
+        report.binary_skipped += file.binary as usize;
+        report.truncated |= file.truncated;
+        if let Some(e) = file.error {
+            report.errors.push(format!("{}: {e}", file.path.display()));
         }
-        let entry = match entry {
-            Ok(e) => e,
-            Err(e) => {
-                report.errors.push(e.to_string());
-                continue;
-            }
-        };
-        if !entry.file_type().is_some_and(|t| t.is_file()) {
-            continue;
+        if let Some(source) = file.source {
+            report.sources.insert(SourceKey::File(file.path), source);
         }
-        let path = entry.path();
-        if skip.contains(&path_key(path)) || !allowed(path, &req.root, &include, &exclude) {
-            continue;
+        report.hits.extend(file.hits);
+    }
+    if report.hits.len() > req.max_hits {
+        report.hits.truncate(req.max_hits);
+        report.truncated = true;
+    }
+    report.truncated |= full;
+    report.cancelled = cancel.load(Ordering::Relaxed);
+    Ok(report)
+}
+
+/// Folders below the root that a folder search never enters.
+const SKIPPED_FOLDERS: &[&str] = &[".git", ".hg", ".svn", "node_modules", ".venv"];
+/// The most memory a search's results may take.
+const RESULT_MEMORY: usize = 32 * 1024 * 1024;
+
+/// What searching one file on disk produced.
+#[derive(Default)]
+struct FileResult {
+    path: PathBuf,
+    hits: Vec<Hit>,
+    source: Option<Source>,
+    error: Option<String>,
+    scanned: bool,
+    binary: bool,
+    memory: usize,
+    truncated: bool,
+}
+
+/// Searches the files under the root on several threads, with the shared
+/// walker and the editor's rules for which folders and files count. Results
+/// come back in path order, whatever order the threads finished in. The flag is
+/// true when the result limit or the memory limit stopped the search early.
+#[allow(clippy::too_many_arguments)]
+fn search_disk(
+    req: &SearchRequest,
+    re: &Regex,
+    skip: &HashSet<String>,
+    clean: &HashMap<String, u64>,
+    include: &GlobSet,
+    exclude: &GlobSet,
+    memory_so_far: usize,
+    hits_so_far: usize,
+    cancel: &AtomicBool,
+) -> Result<(Vec<FileResult>, bool), String> {
+    use std::sync::atomic::AtomicUsize;
+    let options = linework_search::walk::Options {
+        hidden: req.hidden,
+        ignore: true,
+        batch: 8,
+        gitignore_anywhere: true,
+        skip_folders: SKIPPED_FOLDERS,
+        ..Default::default()
+    };
+    let (hits, memory, full) = (AtomicUsize::new(hits_so_far), AtomicUsize::new(memory_so_far), AtomicBool::new(false));
+    let separator = std::path::MAIN_SEPARATOR_STR;
+    let lists = linework_search::walk::walk(&req.root, options, Vec::<FileResult>::new, |done, found| {
+        if cancel.load(Ordering::Relaxed) || full.load(Ordering::Relaxed) {
+            return;
         }
-        let from = report.hits.len();
+        let path = req.root.join(found.path.replace('/', separator));
+        if skip.contains(&path_key(&path)) || !allowed(&path, &req.root, include, exclude) {
+            return;
+        }
+        let file = search_file(req, re, path, clean, cancel);
+        let total = hits.fetch_add(file.hits.len(), Ordering::Relaxed) + file.hits.len();
+        let used = memory.fetch_add(file.memory, Ordering::Relaxed) + file.memory;
+        if total >= req.max_hits || used > RESULT_MEMORY || file.truncated {
+            full.store(true, Ordering::Relaxed);
+        }
+        if file.scanned || file.binary || file.error.is_some() {
+            done.push(file);
+        }
+    })
+    .map_err(|e| e.to_string())?;
+    let mut files: Vec<FileResult> = lists.into_iter().flatten().collect();
+    // Folder by folder, names compared as Windows compares them, so the list
+    // reads like the folder tree.
+    let key = |path: &Path| -> Vec<String> { path.components().map(|c| c.as_os_str().to_string_lossy().to_uppercase()).collect() };
+    files.sort_by_cached_key(|file| key(&file.path));
+    Ok((files, full.load(Ordering::Relaxed)))
+}
+
+/// Searches one file on disk as the editor always has: its encoding found
+/// from its first bytes, a late switch to Windows 1252 when UTF-8 fails, and
+/// a check that it did not change while it was read.
+fn search_file(req: &SearchRequest, re: &Regex, path: PathBuf, clean: &HashMap<String, u64>, cancel: &AtomicBool) -> FileResult {
+    let mut report = SearchReport::default();
+    let mut memory = 0;
+    {
+        let path = path.as_path();
+        let from = 0;
         let result = (|| -> Result<(), String> {
             let stamp: Stamp = fs::metadata(path).map_err(|e| e.to_string())?.into();
             let (reader, mut enc, bom) = match text::open_text(path) {
@@ -397,11 +485,20 @@ pub fn search_with_streams<'a>(
             scanned
         })();
         if let Err(e) = result {
-            report.errors.push(format!("{}: {e}", path.display()));
+            report.errors.push(e);
         }
     }
-    report.cancelled = cancel.load(Ordering::Relaxed);
-    Ok(report)
+    let source = report.sources.remove(&SourceKey::File(path.clone()));
+    FileResult {
+        source,
+        error: report.errors.pop(),
+        scanned: report.files_scanned > 0,
+        binary: report.binary_skipped > 0,
+        truncated: report.truncated,
+        hits: report.hits,
+        memory,
+        path,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

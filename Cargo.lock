@@ -529,6 +529,7 @@ dependencies = [
  "encoding_rs",
  "globset",
  "ignore",
+ "linework-search",
  "memchr",
  "regex",
  "serde",
@@ -544,6 +545,15 @@ dependencies = [
  "tree-sitter-python",
  "tree-sitter-rust",
  "tree-sitter-typescript",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "linework-search"
+version = "0.1.0"
+dependencies = [
+ "memchr",
+ "regex",
  "windows-sys 0.59.0",
 ]
 

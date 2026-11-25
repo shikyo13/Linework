@@ -5,6 +5,7 @@ edition = "2021"
 license = "GPL-3.0-or-later"
 
 [dependencies]
+linework-search = { path = "../search" }
 blake3 = "1.8"
 encoding_rs = "0.8"
 globset = "0.4"
