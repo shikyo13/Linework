@@ -143,6 +143,15 @@ pub fn set_detection(auto: bool, fallback: &str) -> io::Result<()> {
     Ok(())
 }
 
+/// The 256 characters of a legacy single-byte table by its label, for checking
+/// that every system reads such a file the same way. None for other encodings.
+pub fn code_page(label: &str) -> Option<[Option<char>; 256]> {
+    match Codec::named(label).ok()? {
+        Codec::Table(t) => Some(t.chars),
+        _ => None,
+    }
+}
+
 fn tables() -> &'static Vec<&'static Table> {
     static ALL: OnceLock<Vec<&'static Table>> = OnceLock::new();
     ALL.get_or_init(|| {
@@ -177,7 +186,54 @@ fn build(cp: u32, name: &'static str) -> Option<Table> {
     back.dedup_by_key(|x| x.0);
     Some(Table { name, chars, back })
 }
-#[cfg(not(windows))]
+/// The same table from macOS's own converters, asked by the Windows code page number.
+#[cfg(target_os = "macos")]
+fn build(cp: u32, name: &'static str) -> Option<Table> {
+    use std::ffi::c_void;
+    #[link(name = "CoreFoundation", kind = "framework")]
+    extern "C" {
+        fn CFStringConvertWindowsCodepageToEncoding(codepage: u32) -> u32;
+        fn CFStringIsEncodingAvailable(encoding: u32) -> u8;
+        fn CFStringCreateWithBytes(alloc: *const c_void, bytes: *const u8, count: isize, encoding: u32, external: u8) -> *const c_void;
+        fn CFStringGetLength(string: *const c_void) -> isize;
+        fn CFStringGetCharacterAtIndex(string: *const c_void, index: isize) -> u16;
+        fn CFRelease(object: *const c_void);
+    }
+    // macOS has no converter for code page 858, which is 850 with the euro sign in place of the dotless i.
+    let asked = if cp == 858 { 850 } else { cp };
+    let encoding = unsafe { CFStringConvertWindowsCodepageToEncoding(asked) };
+    if encoding == u32::MAX || unsafe { CFStringIsEncodingAvailable(encoding) } == 0 {
+        return None;
+    }
+    let mut chars = [None; 256];
+    for (b, slot) in chars.iter_mut().enumerate() {
+        let byte = b as u8;
+        let string = unsafe { CFStringCreateWithBytes(std::ptr::null(), &byte, 1, encoding, 0) };
+        if string.is_null() {
+            continue;
+        }
+        if unsafe { CFStringGetLength(string) } == 1 {
+            *slot = char::from_u32(u32::from(unsafe { CFStringGetCharacterAtIndex(string, 0) }));
+        }
+        unsafe { CFRelease(string) };
+    }
+    if cp == 858 {
+        chars[0xD5] = Some('\u{20AC}');
+    }
+    if chars[b'A' as usize] != Some('A') {
+        return None;
+    }
+    let mut back: Vec<(char, u8)> = chars
+        .iter()
+        .enumerate()
+        .filter_map(|(b, c)| c.map(|c| (c, b as u8)))
+        .collect();
+    // When two bytes show the same character, saving writes the lower one.
+    back.sort();
+    back.dedup_by_key(|x| x.0);
+    Some(Table { name, chars, back })
+}
+#[cfg(not(any(windows, target_os = "macos")))]
 fn build(_: u32, _: &'static str) -> Option<Table> {
     None
 }
@@ -228,7 +284,7 @@ impl Codec {
                     .iter()
                     .find(|t| t.name == name)
                     .map(|t| Self::Table(t))
-                    .ok_or_else(|| invalid(format!("Windows does not provide code page {cp}")));
+                    .ok_or_else(|| invalid(format!("This system does not provide code page {cp}")));
             }
         }
         let enc = Encoding::for_label(n.trim().as_bytes()).ok_or_else(|| invalid("Unknown text encoding"))?;

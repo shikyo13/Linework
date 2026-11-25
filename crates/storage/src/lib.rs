@@ -34,7 +34,7 @@ mod tree;
 pub use search::{FoundLine, LineEnds, SearchOptions};
 
 use codec::Codec;
-pub use codec::{set_detection, ENCODINGS};
+pub use codec::{code_page, set_detection, ENCODINGS};
 pub use source::{set_index_cache, set_line_indexing};
 use serde::{Deserialize, Serialize};
 use source::{read_at, Source};
