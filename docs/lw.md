@@ -1064,4 +1064,15 @@ lw shares the Linework editor's profile folder:
 
 Everything but save-records may be deleted at any time; the only loss is speed,
 or the ability to undo old changes.
+
+On macOS the profile is ~/Library/Application Support/Linework, and lw keeps
+one thing more: a copy of each project's text, so that a folder search opens
+only the files that changed since the last one.
+
+  ~/Library/Caches/Linework/kept/   (kept/ in the profile when LINEWORK_PROFILE
+                  names one) one folder per project, about the size of its
+                  text files of 4 MiB or less. A file is answered from the
+                  copy only while its size, modified time and change time are
+                  what they were when it was kept. It may be deleted at any
+                  time. LW_KEPT=0 searches without it.
 ```

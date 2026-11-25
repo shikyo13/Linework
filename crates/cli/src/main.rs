@@ -46,8 +46,25 @@ fn kept_notes() -> Vec<String> {
 /// there for the other and a save cut short by a crash is settled by either.
 fn profile() -> PathBuf {
     env::var_os("LINEWORK_PROFILE").map(PathBuf::from).unwrap_or_else(|| {
+        #[cfg(target_os = "macos")]
+        if let Some(home) = env::var_os("HOME") {
+            return PathBuf::from(home).join("Library/Application Support/Linework");
+        }
         env::var_os("LOCALAPPDATA").map(PathBuf::from).unwrap_or_else(env::temp_dir).join("Linework")
     })
+}
+
+/// Where the kept copies of projects' text live: in the profile when one is
+/// named, else with the system's other caches, which can be made again.
+#[cfg(target_os = "macos")]
+fn kept_home() -> Option<PathBuf> {
+    if env::var_os("LW_KEPT").is_some_and(|v| v == "0") {
+        return None;
+    }
+    match env::var_os("LINEWORK_PROFILE") {
+        Some(profile) => Some(PathBuf::from(profile).join("kept")),
+        None => env::var_os("HOME").map(|home| PathBuf::from(home).join("Library/Caches/Linework/kept")),
+    }
 }
 
 fn open(path: &str) -> io::Result<Document> {
@@ -145,6 +162,10 @@ fn execute(argv: Vec<String>, mut out: &mut dyn Write) -> Result<i32, String> {
             }
             if s.account {
                 linework_search::account::switch_on();
+            }
+            #[cfg(target_os = "macos")]
+            if let Some(home) = kept_home() {
+                linework_search::kept::keep_in(&home);
             }
             let sampler = s.samples.as_ref().map(|_| sampler::Sampler::start());
             let code = search::run(&s, out)?;
