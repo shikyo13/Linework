@@ -259,56 +259,86 @@ pub fn tree_with(root: &Path, options: walk::Options, query: &Query, format: &Fo
     search(root, options, query, Output::Formatted(format))
 }
 
+/// What one searching thread keeps: its results and the buffers it reuses.
+type Scratch = (Gathered, Vec<u16>, Vec<u8>, Vec<LineHit>);
+
 fn search(root: &Path, options: walk::Options, query: &Query, output: Output<'_>) -> std::io::Result<Vec<Gathered>> {
-    walk::walk(
-        root,
-        options,
-        || (Gathered::default(), Vec::<u16>::new(), Vec::<u8>::new(), Vec::<LineHit>::new()),
-        |(gathered, wide, name, hits), found| {
-            let mut content = std::mem::take(&mut gathered.content);
-            if read(found, wide, &mut content) {
-                gathered.files += 1;
-                gathered.bytes += content.len() as u64;
-                // A file with a zero byte anywhere is taken to be binary and
-                // left out, in every kind of report. ripgrep's answer for such a
-                // file depends on which of its threads reads it; this one does not.
-                let checking = account::begin();
-                // UTF-16 text is searched as UTF-8; its line numbers are the same,
-                // and positions in the output are positions in that UTF-8 text.
-                let decoded = utf16(&content);
-                let content_text: &[u8] = decoded.as_ref().map_or(&content, |text| text.as_bytes());
-                let text = memchr::memchr(0, content_text).is_none();
-                account::end(Step::Binary, checking);
-                if text {
-                    let content = content_text;
-                    let from = gathered.out.len();
-                    let matching = account::begin();
-                    match &output {
-                        Output::Plain(shown, report) => {
-                            name.clear();
-                            name.extend_from_slice(shown.as_bytes());
-                            name.push(b'/');
-                            name.extend_from_slice(found.path.as_bytes());
-                            gathered.matched_lines += lines(query, name, &content, *report, &mut gathered.out);
-                        }
-                        Output::Formatted(format) => {
-                            hits.clear();
-                            matching_lines(query, &content, true, |hit| hits.push(hit));
-                            if !hits.is_empty() {
-                                gathered.matched_lines += format(found.path, &content, hits, &mut gathered.out);
-                            }
-                        }
+    walk::walk(root, options, Scratch::default, |scratch, found| one(scratch, found, query, &output))
+        .map(|states| states.into_iter().map(|(gathered, ..)| gathered).collect())
+}
+
+/// Searches the given files under `root` (paths relative to it with `/`, and
+/// their listed sizes) on `threads` threads, as `tree_with` searches a walk's.
+pub fn listed_with(root: &Path, files: &[(String, u64)], threads: usize, query: &Query, format: &Format<'_>) -> std::io::Result<Vec<Gathered>> {
+    use std::os::windows::ffi::OsStrExt;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let base: Vec<u16> = std::path::absolute(root)?.as_os_str().encode_wide().collect();
+    let output = Output::Formatted(format);
+    let next = AtomicUsize::new(0);
+    Ok(std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..threads.clamp(1, files.len().max(1)))
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut scratch = Scratch::default();
+                    let mut wide = Vec::new();
+                    loop {
+                        let Some((path, size)) = files.get(next.fetch_add(1, Ordering::Relaxed)) else { return scratch.0 };
+                        wide.clear();
+                        wide.extend_from_slice(&base);
+                        wide.push(u16::from(b'\\'));
+                        wide.extend(path.encode_utf16().map(|unit| if unit == u16::from(b'/') { u16::from(b'\\') } else { unit }));
+                        one(&mut scratch, &Found { path, wide: &wide, size: *size, modified: 0 }, query, &output);
                     }
-                    account::end(Step::Match, matching);
-                    if gathered.out.len() > from {
-                        gathered.parts.push((found.path.to_owned(), from..gathered.out.len()));
+                })
+            })
+            .collect();
+        workers.into_iter().map(|worker| worker.join().expect("a searching thread stopped")).collect()
+    }))
+}
+
+/// Reads, decodes and searches one file, adding its output to the thread's results.
+fn one((gathered, wide, name, hits): &mut Scratch, found: &Found, query: &Query, output: &Output<'_>) {
+    let mut content = std::mem::take(&mut gathered.content);
+    if read(found, wide, &mut content) {
+        gathered.files += 1;
+        gathered.bytes += content.len() as u64;
+        // A file with a zero byte anywhere is taken to be binary and
+        // left out, in every kind of report. ripgrep's answer for such a
+        // file depends on which of its threads reads it; this one does not.
+        let checking = account::begin();
+        // UTF-16 text is searched as UTF-8; its line numbers are the same,
+        // and positions in the output are positions in that UTF-8 text.
+        let decoded = utf16(&content);
+        let content_text: &[u8] = decoded.as_ref().map_or(&content, |text| text.as_bytes());
+        let text = memchr::memchr(0, content_text).is_none();
+        account::end(Step::Binary, checking);
+        if text {
+            let content = content_text;
+            let from = gathered.out.len();
+            let matching = account::begin();
+            match output {
+                Output::Plain(shown, report) => {
+                    name.clear();
+                    name.extend_from_slice(shown.as_bytes());
+                    name.push(b'/');
+                    name.extend_from_slice(found.path.as_bytes());
+                    gathered.matched_lines += lines(query, name, &content, *report, &mut gathered.out);
+                }
+                Output::Formatted(format) => {
+                    hits.clear();
+                    matching_lines(query, &content, true, |hit| hits.push(hit));
+                    if !hits.is_empty() {
+                        gathered.matched_lines += format(found.path, &content, hits, &mut gathered.out);
                     }
                 }
             }
-            gathered.content = content;
-        },
-    )
-    .map(|states| states.into_iter().map(|(gathered, ..)| gathered).collect())
+            account::end(Step::Match, matching);
+            if gathered.out.len() > from {
+                gathered.parts.push((found.path.to_owned(), from..gathered.out.len()));
+            }
+        }
+    }
+    gathered.content = content;
 }
 
 /// Every file's part of the output, ordered by path, so the same search gives
