@@ -195,6 +195,79 @@ pub fn references(root: &Path, name: &str, cancel: &AtomicBool) -> Vec<Symbol> {
     index(root, cancel).references(name)
 }
 
+/// The definition around a place in a file: a function, class, method or
+/// type, or for line outlines such as Markdown a heading and its section.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Scope {
+    pub name: String,
+    pub kind: String,
+    /// First and last line, counted from 1.
+    pub line: u64,
+    pub end_line: u64,
+}
+
+/// For each byte offset into `text`, the innermost definition that contains
+/// it, found as the editor's outline finds definitions. A heading of a line
+/// outline reaches until the next one. None outside every definition, for
+/// languages without an outline, and for text over the outline's size limit.
+pub fn scopes(path: &Path, text: &str, offsets: &[usize]) -> Vec<Option<Scope>> {
+    let none = || vec![None; offsets.len()];
+    let Some(key) = lang(path) else { return none() };
+    if text.len() > MAX_SYMBOL_SOURCE {
+        return none();
+    }
+    // (start byte, end byte, scope); the innermost is the shortest that contains.
+    let mut found: Vec<(usize, usize, Scope)> = Vec::new();
+    if let Some(pattern) = outline_re(key) {
+        let mut at = 0;
+        let mut heads: Vec<(usize, u64, String)> = Vec::new();
+        for (row, s) in text.split_inclusive('\n').enumerate() {
+            if let Some(m) = pattern.captures(s.trim_end_matches(['\n', '\r'])).and_then(|c| c.iter().skip(1).flatten().next()) {
+                heads.push((at, row as u64 + 1, m.as_str().into()));
+            }
+            at += s.len();
+        }
+        let lines = text.split_inclusive('\n').count().max(1) as u64;
+        let kind = if key == "markdown" { "heading" } else { "definition" };
+        for (i, (start, line, name)) in heads.iter().enumerate() {
+            let (end, end_line) = heads.get(i + 1).map_or((text.len() + 1, lines), |next| (next.0, next.1 - 1));
+            found.push((*start, end, Scope { name: name.clone(), kind: kind.into(), line: *line, end_line }));
+        }
+    } else if let Some(Ok(grammar)) = grammars().get(key) {
+        let mut parser = Parser::new();
+        if parser.set_language(&grammar.lang).is_err() {
+            return none();
+        }
+        let Some(tree) = parser.parse(text, None) else { return none() };
+        let mut cursor = QueryCursor::new();
+        let mut matches = cursor.matches(&grammar.tags, tree.root_node(), text.as_bytes());
+        let labels = grammar.tags.capture_names();
+        while let Some(m) = matches.next() {
+            let Some((kind, node)) = m.captures.iter().find_map(|c| labels[c.index as usize].strip_prefix("definition.").map(|k| (k, c.node))) else {
+                continue;
+            };
+            let Some(name) = m.captures.iter().find(|c| labels[c.index as usize] == "name").and_then(|c| text.get(c.node.byte_range())) else {
+                continue;
+            };
+            if name.is_empty() || name.len() > 256 {
+                continue;
+            }
+            let scope = Scope { name: name.into(), kind: kind.into(), line: node.start_position().row as u64 + 1, end_line: node.end_position().row as u64 + 1 };
+            found.push((node.start_byte(), node.end_byte(), scope));
+        }
+    }
+    offsets
+        .iter()
+        .map(|&at| {
+            found
+                .iter()
+                .filter(|(start, end, _)| *start <= at && at < *end)
+                .min_by_key(|(start, end, _)| end - start)
+                .map(|(_, _, scope)| scope.clone())
+        })
+        .collect()
+}
+
 fn lang(path: &Path) -> Option<&'static str> {
     Some(
         match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {

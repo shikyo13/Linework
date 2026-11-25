@@ -148,6 +148,23 @@ fn native_symbols_and_references_skip_comments() {
     assert_eq!(index.complete("squ", 5), vec!["square".to_string()]);
 }
 #[test]
+fn scopes_are_the_innermost_definition_or_section() {
+    let rust = "struct S;\nimpl S {\n    fn inner(&self) {\n        let x = 1;\n    }\n}\nfn outer() {}\n// after\n";
+    let at = |needle: &str| rust.find(needle).unwrap();
+    let found = scopes(Path::new("a.rs"), rust, &[at("let x"), at("fn outer"), at("// after")]);
+    let inner = found[0].as_ref().unwrap();
+    assert_eq!((inner.name.as_str(), inner.kind.as_str(), inner.line, inner.end_line), ("inner", "method", 3, 5));
+    assert_eq!(found[1].as_ref().map(|s| s.name.as_str()), Some("outer"));
+    assert_eq!(found[2], None);
+    let md = "intro\n# One\ntext\n## Two\nmore\n";
+    let found = scopes(Path::new("a.md"), md, &[0, md.find("text").unwrap(), md.find("more").unwrap()]);
+    assert_eq!(found[0], None);
+    let one = found[1].as_ref().unwrap();
+    assert_eq!((one.name.as_str(), one.line, one.end_line), ("One", 2, 3));
+    assert_eq!(found[2].as_ref().map(|s| (s.name.as_str(), s.end_line)), Some(("Two", 5)));
+    assert!(scopes(Path::new("a.unknown"), "x", &[0])[0].is_none());
+}
+#[test]
 fn captures_build_and_real_filter_output() {
     let dir = tempfile::tempdir().unwrap();
     let report = build(
