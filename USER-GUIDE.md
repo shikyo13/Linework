@@ -100,13 +100,23 @@ The installer puts `lw.exe` next to `Linework.exe` and adds that folder to your 
 
 | Command | What it does |
 |---|---|
-| `lw find [-i] [-F] [-w] [-m N] PATTERN PATH` | Prints each matching line as `line:text` for a file, or `path:line:text` for a folder |
-| `lw count [-i] [-F] [-w] PATTERN PATH` | Prints the number of matches in a file, or `path:count` per file of a folder |
+| `lw find [-i] [-F] [-w] [-m N] [output options] PATTERN PATH` | Prints each matching line as `line:text` for a file, or `path:line:text` for a folder |
+| `lw count [-i] [-F] [-w] [output options] PATTERN PATH` | Prints the number of matches in a file, or `path:count` per file of a folder |
 | `lw lines FILE FROM [TO]` | Prints lines FROM to TO, counted from 1 |
 | `lw info FILE` | Prints the size, line count, encoding and line ends |
 | `lw replace [-i] [-F] [-w] [--dry-run] OLD NEW FILE` | Replaces every match and saves, or only counts with `--dry-run` |
 | `lw files [--hidden] [--no-ignore] FOLDER` | Lists the files a folder search would read |
 | `lw open [--dry-run] FILE[:LINE[:COLUMN]]...` | Shows files in the Linework window, at a line and column when given |
+
+`find` and `count` take output options:
+
+- `--json` prints one JSON object per matching line, with `path`, `line`, `column` (counted in characters from 1), `byte` (the first match's position in the file), `text` (without its line break) and `matches` (each match as a byte range within `text`); `count --json` prints `path` and `count` per file. The last object is a `summary` with the files searched and matched, the lines found, the bytes searched and printed, whether the output was cut short, and the seconds taken.
+- `--heading` prints each file's path once, then its lines, with a blank line between files.
+- `--scope` groups lines under the function, method, class or type around them, found with the same Tree-sitter grammars as the editor's outline, or under the Markdown heading of their section; with `--json` it adds a `scope` object with `name`, `kind`, `line` and `end_line`. It parses every file with a match, so it costs more: 1.5 s instead of 0.11 s for 52,558 lines in 9,848 files.
+- `--budget BYTES` stops printing at a line break once that much output is written, and says so.
+- `--stats` prints the totals on the error stream.
+
+The files of a folder search are printed in path order, so the same search gives the same output each time.
 
 `-i` ignores case, `-F` treats the pattern as plain text, `-w` matches whole words and `-m N` stops after N lines. A pattern with characters such as `.`, `*` or `(` is a regular expression unless `-F` is given. A folder search reads every file the `.gitignore`, `.ignore` and `.rgignore` files leave in (`.gitignore` only inside a Git work tree), skips names that start with a dot and hidden files unless `--hidden` is given, does not follow links, and leaves out any file that contains a zero byte. Lines are numbered in the same pass as the search, so a large file needs no line index first. The exit code is 0 when something matched, 1 when nothing did and 2 on an error.
 
