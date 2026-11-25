@@ -114,6 +114,7 @@ To build it yourself, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 - **[User guide](USER-GUIDE.md)** covers every feature, setting and shortcut.
 - **[Try the editor effects](docs/try-the-effects.md)** is a document to open in Linework that walks through each effect.
+- **[Performance findings](docs/performance.md)** compares Linework with eleven other editors and `lw` with ripgrep on large files, and explains where the time goes on Windows.
 - **[Notepad++ plugins](NOTEPAD-PLUGINS.md)** explains what the plugin host supports.
 - **[External tools](crates/project/TOOLS.md)** shows how to run your own commands on a selection.
 - **[Contributing](CONTRIBUTING.md)** covers building, testing and packaging.
