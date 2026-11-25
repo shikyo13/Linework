@@ -2,7 +2,7 @@
 //! command reads. A later option undoes an earlier one wherever the two
 //! decide the same thing, as in ripgrep.
 use crate::options::{self, Given, Parsed};
-use linework_search::{
+use crate::{
     input::{self, Encoding},
     matcher::{self, Case, Engine, Syntax},
     pick::{Choice, Types},
@@ -213,14 +213,22 @@ pub fn unescape(text: &str) -> Vec<u8> {
 
 impl Settings {
     /// The settings for one command line, with the configuration file's
-    /// options in front of it unless `--no-config` is given.
-    pub fn read(args: Vec<String>) -> Result<Self, String> {
+    /// options in front of it unless `--no-config` is given. A configuration
+    /// file that cannot be read is reported to `warn` and left out.
+    pub fn read(args: Vec<String>, warn: impl FnOnce(String)) -> Result<Self, String> {
         let config = if args.iter().any(|a| a == "--no-config") { Vec::new() } else { options::config().unwrap_or_else(|e| {
-            crate::note(format!("lw: {e}"));
+            warn(e);
             Vec::new()
         }) };
         let parsed = options::parse(config.into_iter().chain(args))?;
         Self::from(parsed)
+    }
+
+    /// The settings for these words alone, with no configuration file: what
+    /// the editor uses, so a search there means the same as the same words
+    /// given to lw.
+    pub fn from_words(words: impl IntoIterator<Item = String>) -> Result<Self, String> {
+        Self::from(options::parse(words)?)
     }
 
     fn from(parsed: Parsed) -> Result<Self, String> {
@@ -605,6 +613,25 @@ impl Settings {
         }
     }
 
+    /// The patterns and the paths: with `-e` or `-f` every word is a path,
+    /// otherwise the first word is the pattern (one per line unless `-U`).
+    pub fn patterns_and_paths(&self) -> Result<(Vec<String>, Vec<String>), String> {
+        let mut words = self.words.clone();
+        let mut patterns = self.patterns.clone();
+        if !self.explicit_patterns && !self.list_files {
+            if words.is_empty() {
+                return Err("lw needs a pattern to search for; lw help find shows how".into());
+            }
+            let first = words.remove(0);
+            if self.matcher.multiline {
+                patterns.push(first);
+            } else {
+                patterns.extend(first.split('\n').map(|l| l.strip_suffix('\r').unwrap_or(l).to_owned()));
+            }
+        }
+        Ok((patterns, words))
+    }
+
     /// Lines of context before and after: `-B` and `-A` outrank `-C` whichever comes first.
     pub fn context_lines(&self) -> (usize, usize) {
         let c = self.context.unwrap_or(0);
@@ -614,7 +641,7 @@ impl Settings {
     /// The input settings for files and standard input.
     pub fn input(&self) -> Result<input::Config, String> {
         let pre_globs = (!self.pre_globs.is_empty()).then(|| {
-            let rules = linework_search::ignore::Rules::from_lines(self.pre_globs.iter().map(|g| (g.as_bytes(), false)), "--pre-glob");
+            let rules = crate::ignore::Rules::from_lines(self.pre_globs.iter().map(|g| (g.as_bytes(), false)), "--pre-glob");
             (rules, self.pre_globs.iter().any(|g| !g.starts_with('!')))
         });
         Ok(input::Config { encoding: self.encoding, unpack: self.unpack, pre: self.pre.clone(), pre_globs })

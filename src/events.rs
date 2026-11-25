@@ -115,6 +115,8 @@ pub enum Event {
     Context(i32, i32, H),
     /// Something the reader did in the document preview pane.
     Preview(crate::preview::Signal),
+    /// Text changed in a field that asks for a folder search: the find bar or a search panel field.
+    SearchInput(i32),
 }
 pub fn push(e: Event) {
     EVENTS.with_borrow_mut(|q| match (q.back_mut(), e) {
@@ -305,6 +307,10 @@ pub unsafe extern "system" fn proc(h: HWND, m: u32, w: usize, l: isize) -> isize
                 if let Some(hit) = frame::hit(x, y) {
                     push(Event::Hit(hit, x, y))
                 }
+                0
+            }
+            WM_COMMAND if w >> 16 == EN_CHANGE as usize && matches!(w & 65535, 640..=647) => {
+                push(Event::SearchInput((w & 65535) as i32));
                 0
             }
             WM_COMMAND

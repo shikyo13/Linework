@@ -30,6 +30,17 @@ use windows_sys::Win32::{
     Graphics::Gdi::*,
     UI::{Input::KeyboardAndMouse::*, WindowsAndMessaging::*},
 };
+/// The search panel's fields: their control numbers and the hint each shows while empty.
+pub(crate) const PANEL_CUES: [(i32, &str); 8] = [
+    (640, "Find in folder"),
+    (641, "Replace with"),
+    (642, "Files: *.rs, src/**"),
+    (643, "Skip: tests/**, *.min.js"),
+    (644, "Types: rust, ts, md"),
+    (645, "Near: a pattern within some lines"),
+    (646, "Files that also have"),
+    (647, "Files that lack"),
+];
 const LARGE: u64 = 24 * 1024 * 1024;
 const PAGE: usize = 384 * 1024;
 
@@ -222,6 +233,8 @@ pub enum Worker {
     Report(u64, Result<SearchReport, String>),
     Build(u64, Result<BuildReport, String>),
     Applied(ApplyReport),
+    /// A folder replace undone, or why not.
+    Undone(Result<linework_project::change::Undone, String>),
     Tool(
         u64,
         u64,
@@ -270,6 +283,23 @@ pub struct App {
     job: u64,
     pub searchbox: H,
     pub replacebox: H,
+    /// The search panel's fields: find, replace, files, skip, types, near, also has, lacks.
+    pub panel_fields: [H; 8],
+    /// What the search panel asks for.
+    pub panel: linework_project::ask::Panel,
+    /// When the folder search should run again after typing stops.
+    pub search_due: Option<Instant>,
+    /// For each results row, the matches it holds, as indices into the report's hits.
+    pub row_hits: Vec<Range<usize>>,
+    /// The panel's files, conditions and context fields are shown.
+    pub panel_more: bool,
+    /// The search view holds the search panel and its results, not other results.
+    pub search_view: bool,
+    /// The next preview's results open the review window: the preview was asked
+    /// for, not re-run because the search panel's text changed.
+    pub review_next: bool,
+    /// The last folder search's totals and its lw command, as the panel shows them.
+    pub search_summary: String,
     status_left: H,
     status_right: H,
     pane_headers: [H; 2],
@@ -288,8 +318,6 @@ pub struct App {
     pub(crate) pasting: bool,
     /// The document and revision the latest file comparison read as its revised side.
     pub(crate) compared: Option<(u64, u64)>,
-    pub project_include: String,
-    pub project_exclude: String,
     findbar: bool,
     repbar: bool,
     folder_scope: bool,
@@ -378,6 +406,12 @@ impl App {
         );
         msg(searchbox, 0x1501, 1, wide("Find text…").as_ptr() as _);
         msg(replacebox, 0x1501, 1, wide("Replace with…").as_ptr() as _);
+        // The search panel's fields, shown in the sidebar's search view.
+        let panel_fields = PANEL_CUES.map(|(id, cue)| {
+            let field = child(h, id, "EDIT", "", WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL as u32);
+            msg(field, 0x1501, 1, wide(cue).as_ptr() as _);
+            field
+        });
         let status_left = child(h, 620, "STATIC", "Ready", WS_VISIBLE | 0x280);
         let status_right = child(h, 621, "STATIC", "", WS_VISIBLE | 0x282);
         // The labels expose the same pane state to MSAA and to the owner-drawn UI.
@@ -397,7 +431,10 @@ impl App {
             editors[1].hwnd(),
             scroll[0],
             scroll[1],
-        ] {
+        ]
+        .into_iter()
+        .chain(panel_fields)
+        {
             crate::chrome::theme_child(child, prefs.light);
         }
         let recovery_dir = state::profile().join("sessions").join(format!(
@@ -455,6 +492,14 @@ impl App {
             job: 0,
             searchbox,
             replacebox,
+            panel_fields,
+            panel: Default::default(),
+            search_due: None,
+            row_hits: Vec::new(),
+            panel_more: false,
+            search_view: false,
+            review_next: false,
+            search_summary: String::new(),
             status_left,
             status_right,
             pane_headers,
@@ -469,8 +514,6 @@ impl App {
             polish: Default::default(),
             pasting: false,
             compared: None,
-            project_include: "".into(),
-            project_exclude: "".into(),
             findbar: false,
             repbar: false,
             folder_scope: false,
@@ -1346,6 +1389,8 @@ mod npp_app;
 mod polish;
 #[path = "search_ui.rs"]
 mod search_ui;
+#[path = "search_panel.rs"]
+mod search_panel;
 #[path = "spans.rs"]
 mod spans;
 

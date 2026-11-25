@@ -32,6 +32,7 @@ pub enum Group {
     Other,
 }
 
+#[derive(Debug)]
 pub struct Spec {
     pub long: &'static str,
     pub short: Option<char>,
@@ -270,7 +271,7 @@ pub fn find_long(name: &str) -> Option<&'static Spec> {
     SPECS.iter().find(|s| s.long == name)
 }
 
-fn find_short(c: char) -> Option<&'static Spec> {
+pub fn find_short(c: char) -> Option<&'static Spec> {
     match SHORT_ALIASES.iter().find(|(letter, _)| *letter == c) {
         Some((_, long)) => find_long(long),
         None => SPECS.iter().find(|s| s.short == Some(c)),
@@ -301,18 +302,43 @@ fn suggest(name: &str) -> String {
     if close.is_empty() { String::new() } else { format!("; did you mean --{}?", close.join(", --")) }
 }
 
-/// Reads `args` (without the program and command names) against the table.
-pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Parsed, String> {
-    let mut parsed = Parsed::default();
-    let mut args = args.into_iter();
+/// One part of a command line as read against the table, with the words it came from.
+#[derive(Clone, Debug)]
+pub enum Piece {
+    /// An option and its value (`--near`'s is the number of lines, a line break, then the pattern).
+    Option { spec: &'static Spec, value: Option<String>, words: std::ops::Range<usize> },
+    /// A word that is not an option: a pattern or a path.
+    Word { index: usize },
+    /// `--`: every later word is not an option.
+    Separator { index: usize },
+    /// Something that cannot be read, and why.
+    Problem { message: String, words: std::ops::Range<usize> },
+}
+
+/// Reads `args` against the table, part by part, going on after a problem.
+/// `parse` is this with the first problem as its error.
+pub fn pieces(args: &[String]) -> Vec<Piece> {
+    let mut out = Vec::new();
+    let mut i = 0;
     let mut plain = false;
-    while let Some(arg) = args.next() {
+    // The next word, as an option's value.
+    let next = |i: &mut usize| -> Option<String> {
+        let value = args.get(*i + 1).cloned()?;
+        *i += 1;
+        Some(value)
+    };
+    while i < args.len() {
+        let arg = &args[i];
+        let first = i;
         if plain || arg == "-" || !arg.starts_with('-') {
-            parsed.words.push(arg);
+            out.push(Piece::Word { index: i });
+            i += 1;
             continue;
         }
         if arg == "--" {
             plain = true;
+            out.push(Piece::Separator { index: i });
+            i += 1;
             continue;
         }
         if let Some(long) = arg.strip_prefix("--") {
@@ -320,53 +346,92 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Parsed, String> {
                 Some((name, value)) => (name, Some(value.to_owned())),
                 None => (long, None),
             };
-            let spec = find_long(name).ok_or_else(|| format!("there is no option --{name}{}", suggest(name)))?;
-            let value = match (spec.takes, attached) {
-                (Nothing, Some(_)) => return Err(format!("--{name} takes no value")),
-                (Nothing, None) => None,
-                (Optional(_), value) => value,
-                (Value(_), Some(value)) => Some(value),
-                (Value(what), None) => Some(args.next().ok_or_else(|| format!("--{name} needs {what}"))?),
+            let Some(spec) = find_long(name) else {
+                out.push(Piece::Problem { message: format!("there is no option --{name}{}", suggest(name)), words: i..i + 1 });
+                i += 1;
+                continue;
             };
-            take(&mut parsed, spec, value, &mut args)?;
+            let value = match (spec.takes, attached) {
+                (Nothing, Some(_)) => Err(format!("--{name} takes no value")),
+                (Nothing, None) => Ok(None),
+                (Optional(_), value) => Ok(value),
+                (Value(_), Some(value)) => Ok(Some(value)),
+                (Value(what), None) => next(&mut i).map(Some).ok_or_else(|| format!("--{name} needs {what}")),
+            };
+            out.push(option(spec, value, first, &mut i, &next));
+            i += 1;
             continue;
         }
         // grep's -NUM is --context NUM.
         let short = &arg[1..];
         // -0 alone is ripgrep's --null, which outranks grep's context of 0.
         if short != "0" && short.bytes().all(|b| b.is_ascii_digit()) {
-            parsed.given.push(Given { long: "context", value: Some(short.to_owned()) });
+            let spec = find_long("context").expect("in the table");
+            out.push(Piece::Option { spec, value: Some(short.to_owned()), words: i..i + 1 });
+            i += 1;
             continue;
         }
         let mut chars = short.char_indices();
+        let mut failed = false;
         while let Some((at, c)) = chars.next() {
-            let spec = find_short(c).ok_or_else(|| format!("there is no option -{c}"))?;
+            let Some(spec) = find_short(c) else {
+                out.push(Piece::Problem { message: format!("there is no option -{c}"), words: first..first + 1 });
+                break;
+            };
             match spec.takes {
-                Nothing | Optional(_) => take(&mut parsed, spec, None, &mut args)?,
+                Nothing | Optional(_) => {
+                    let piece = option(spec, Ok(None), first, &mut i, &next);
+                    failed |= matches!(piece, Piece::Problem { .. });
+                    out.push(piece);
+                }
                 Value(what) => {
                     let rest = &short[at + c.len_utf8()..];
-                    let value = if rest.is_empty() { args.next().ok_or_else(|| format!("-{c} needs {what}"))? } else { rest.to_owned() };
-                    take(&mut parsed, spec, Some(value), &mut args)?;
+                    let value = if rest.is_empty() { next(&mut i).ok_or_else(|| format!("-{c} needs {what}")) } else { Ok(rest.to_owned()) };
+                    out.push(option(spec, value.map(Some), first, &mut i, &next));
                     break;
                 }
             }
+            if failed {
+                break;
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
+/// One option read from the words from `first` to `i`. `--near` and its
+/// directions take a pattern and a number of lines, as two words.
+fn option(spec: &'static Spec, value: Result<Option<String>, String>, first: usize, i: &mut usize, next: &impl Fn(&mut usize) -> Option<String>) -> Piece {
+    let value = match (spec.long, value) {
+        (_, Err(message)) => return Piece::Problem { message, words: first..*i + 1 },
+        ("near" | "near-before" | "near-after", Ok(value)) => {
+            let pattern = value.expect("takes a value");
+            match next(i) {
+                Some(lines) => Some(format!("{lines}\n{pattern}")),
+                None => return Piece::Problem { message: format!("--{} needs a pattern and a number of lines", spec.long), words: first..*i + 1 },
+            }
+        }
+        (_, Ok(value)) => value,
+    };
+    // A long option, or a value taken from the next word, ends with the word `i` points at.
+    let end = if matches!(spec.takes, Nothing | Optional(_)) && first == *i { first + 1 } else { *i + 1 };
+    Piece::Option { spec, value, words: first..end }
+}
+
+/// Reads `args` (without the program and command names) against the table.
+pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Parsed, String> {
+    let args: Vec<String> = args.into_iter().collect();
+    let mut parsed = Parsed::default();
+    for piece in pieces(&args) {
+        match piece {
+            Piece::Option { spec, value, .. } => parsed.given.push(Given { long: spec.long, value }),
+            Piece::Word { index } => parsed.words.push(args[index].clone()),
+            Piece::Separator { .. } => {}
+            Piece::Problem { message, .. } => return Err(message),
         }
     }
     Ok(parsed)
-}
-
-/// Records one option. `--near` and its directions take a pattern and a number of lines, as two words.
-fn take(parsed: &mut Parsed, spec: &'static Spec, value: Option<String>, args: &mut impl Iterator<Item = String>) -> Result<(), String> {
-    let value = match spec.long {
-        "near" | "near-before" | "near-after" => {
-            let pattern = value.expect("takes a value");
-            let lines = args.next().ok_or_else(|| format!("--{} needs a pattern and a number of lines", spec.long))?;
-            Some(format!("{lines}\n{pattern}"))
-        }
-        _ => value,
-    };
-    parsed.given.push(Given { long: spec.long, value });
-    Ok(())
 }
 
 /// Reads the configuration file named by `LW_CONFIG_PATH`: one argument per

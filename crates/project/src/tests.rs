@@ -3,6 +3,10 @@ use std::fs;
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
 
+fn words(list: &[&str]) -> Vec<String> {
+    list.iter().map(|w| (*w).to_owned()).collect()
+}
+
 #[test]
 fn previews_capture_groups_selectively_and_preserves_buffers_and_encoding() {
     let dir = tempfile::tempdir().unwrap();
@@ -23,10 +27,7 @@ fn previews_capture_groups_selectively_and_preserves_buffers_and_encoding() {
     )
     .unwrap();
     fs::write(&c, "red3\n").unwrap();
-    let mut q = SearchRequest::new(dir.path().into(), r"red(\d)".into());
-    q.regex = true;
-    q.match_case = true;
-    q.include = "*.txt".into();
+    let mut q = SearchRequest::new(dir.path().into(), words(&["-s", "-g", "*.txt", r"red(\d)"]));
     q.replacement = Some("blue$1".into());
     let stream = OpenStream {
         path: a.clone(),
@@ -48,7 +49,8 @@ fn previews_capture_groups_selectively_and_preserves_buffers_and_encoding() {
         .map(|(i, _)| i)
         .collect::<Vec<_>>();
     fs::write(&c, "red3 changed\n").unwrap();
-    let done = r.apply_selected(&indices, &[a.clone()]);
+    let changes = dir.path().join("changes");
+    let done = r.apply_selected(&indices, &[a.clone()], Some(&changes));
     assert_eq!(done.applied, 1, "{:?}", done.errors);
     assert_eq!(done.errors.len(), 1);
     assert_eq!(fs::read_to_string(&a).unwrap(), "old on disk\n");
@@ -63,11 +65,18 @@ fn previews_capture_groups_selectively_and_preserves_buffers_and_encoding() {
         .map(|p| u16::from_le_bytes([p[0], p[1]]))
         .collect();
     assert_eq!(String::from_utf16(&u).unwrap(), "😀 blue1\r\nred2\rblue");
+    // The saved file is in a change record, which undo reads to put it back, as lw undo would.
+    let undone = change::undo(&changes, done.change.as_deref(), &|_| false).unwrap();
+    assert_eq!(undone.restored.len(), 1, "{:?}", undone.refused);
+    let raw = fs::read(dir.path().join("b.txt")).unwrap();
+    let u: Vec<_> = raw[2..].chunks_exact(2).map(|p| u16::from_le_bytes([p[0], p[1]])).collect();
+    assert_eq!(String::from_utf16(&u).unwrap(), "😀 red1\r\nred2\rblue");
+    assert!(change::undo(&changes, done.change.as_deref(), &|_| false).is_err(), "undone twice");
 }
 
 #[test]
 fn open_tabs_with_matching_names_retain_distinct_buffer_identity() {
-    let mut q = SearchRequest::new("folder-that-does-not-exist".into(), "name".into());
+    let mut q = SearchRequest::new("folder-that-does-not-exist".into(), words(&["name"]));
     q.buffers_only = true;
     q.replacement = Some("renamed".into());
     let tabs = [41, 82].map(|id| OpenStream {
@@ -81,7 +90,7 @@ fn open_tabs_with_matching_names_retain_distinct_buffer_identity() {
         r.hits.iter().map(|h| h.buffer_id).collect::<Vec<_>>(),
         [Some(41), Some(82)]
     );
-    let pending = r.apply_selected(&[1], &[]);
+    let pending = r.apply_selected(&[1], &[], None);
     assert_eq!(pending.open.len(), 1);
     assert_eq!(pending.open[0].buffer_id, Some(82));
     assert!(pending.open[0].validate("name", 4));
@@ -93,9 +102,7 @@ fn filters_and_positions_across_crlf_and_empty_lines() {
     fs::create_dir(dir.path().join("lib")).unwrap();
     fs::write(dir.path().join("lib/a.rs"), "α\r\nβ match\rnext match\n").unwrap();
     fs::write(dir.path().join("lib/test.rs"), "match").unwrap();
-    let mut q = SearchRequest::new(dir.path().into(), "MATCH".into());
-    q.include = "*.rs".into();
-    q.exclude = "test.rs".into();
+    let q = SearchRequest::new(dir.path().into(), words(&["-i", "-g", "*.rs", "-g", "!test.rs", "MATCH"]));
     let r = search(&q, &AtomicBool::new(false)).unwrap();
     assert_eq!(
         r.hits
@@ -235,6 +242,20 @@ fn windows_path_identity_and_component_boundaries() {
 }
 
 #[test]
+fn a_line_longer_than_a_read_block_is_read_whole() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut text = "a".repeat(3 << 20);
+    text.push_str(" needle\nnext needle\n");
+    fs::write(dir.path().join("long.txt"), &text).unwrap();
+    let q = SearchRequest::new(dir.path().into(), words(&["needle"]));
+    let r = search(&q, &AtomicBool::new(false)).unwrap();
+    assert_eq!(r.hits.iter().map(|h| h.line).collect::<Vec<_>>(), [1, 2]);
+    // The long line is shown as the part around its match.
+    let first = &r.groups[0].lines[0];
+    assert!(first.text.len() <= 1000 && first.omitted.0 > 0, "{} {:?}", first.text.len(), first.omitted);
+}
+
+#[test]
 fn workspace_search_retries_late_1252_and_edits_bomless_utf16_without_duplicate_hits() {
     let dir = tempfile::tempdir().unwrap();
     let legacy = dir.path().join("legacy.txt");
@@ -249,14 +270,20 @@ fn workspace_search_retries_late_1252_and_edits_bomless_utf16_without_duplicate_
             .collect::<Vec<_>>()
     };
     fs::write(&utf, wide("wide match\r\n")).unwrap();
-    let mut q = SearchRequest::new(dir.path().into(), "match".into());
+    let mut q = SearchRequest::new(dir.path().into(), words(&["match"]));
     q.replacement = Some("done".into());
     let r = search(&q, &AtomicBool::new(false)).unwrap();
     assert!(r.errors.is_empty(), "{:?}", r.errors);
     assert_eq!(r.hits.len(), 3);
-    let done = r.apply_selected(&[0, 1, 2], &[]);
+    let changes = dir.path().join("changes");
+    let done = r.apply_selected(&[0, 1, 2], &[], Some(&changes));
     assert!(done.errors.is_empty(), "{:?}", done.errors);
-    assert_eq!(fs::read(utf).unwrap(), wide("wide done\r\n"));
-    let out = fs::read(legacy).unwrap();
+    assert_eq!(fs::read(&utf).unwrap(), wide("wide done\r\n"));
+    let out = fs::read(&legacy).unwrap();
     assert!(out.starts_with(b"done\n") && out.ends_with(b"caf\xe9 done\n"));
+    // Undo puts back both, each in its own encoding.
+    let undone = change::undo(&changes, None, &|_| false).unwrap();
+    assert_eq!(undone.restored.len(), 2, "{:?}", undone.refused);
+    assert_eq!(fs::read(&utf).unwrap(), wide("wide match\r\n"));
+    assert_eq!(fs::read(&legacy).unwrap(), bytes);
 }

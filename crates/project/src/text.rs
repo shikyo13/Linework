@@ -2,7 +2,6 @@ use encoding_rs::{CoderResult, Decoder, UTF_16BE, UTF_16LE, WINDOWS_1252};
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Encoding {
@@ -10,32 +9,6 @@ pub(crate) enum Encoding {
     Utf16Le,
     Utf16Be,
     Windows1252,
-}
-
-impl Encoding {
-    pub fn bytes(self, s: &str) -> u64 {
-        match self {
-            Self::Utf8 => s.len() as u64,
-            Self::Utf16Le | Self::Utf16Be => 2 * s.encode_utf16().count() as u64,
-            Self::Windows1252 => s.chars().count() as u64,
-        }
-    }
-
-    pub fn encode(self, text: &str) -> Result<Vec<u8>, String> {
-        match self {
-            Self::Utf8 => Ok(text.as_bytes().to_vec()),
-            Self::Utf16Le => Ok(text.encode_utf16().flat_map(|u| u.to_le_bytes()).collect()),
-            Self::Utf16Be => Ok(text.encode_utf16().flat_map(|u| u.to_be_bytes()).collect()),
-            Self::Windows1252 => {
-                let (bytes, _, bad) = WINDOWS_1252.encode(text);
-                if bad {
-                    Err("Replacement contains characters outside Windows-1252".into())
-                } else {
-                    Ok(bytes.into_owned())
-                }
-            }
-        }
-    }
 }
 
 /// Supply a bounded UTF-8 reader while retaining the on-disk coordinate system.
@@ -131,65 +104,6 @@ impl<R: BufRead> Read for Transcode<R> {
                     "decoder output buffer is too short",
                 ));
             }
-        }
-    }
-}
-
-pub(crate) fn lines(
-    mut reader: impl BufRead,
-    cancel: &AtomicBool,
-    mut visit: impl FnMut(&str, usize) -> Result<bool, String>,
-) -> Result<(), String> {
-    const MAX_LINE: usize = 8 * 1024 * 1024;
-    let mut held = Vec::with_capacity(256);
-    loop {
-        if cancel.load(Ordering::Relaxed) {
-            return Ok(());
-        }
-        let block = reader.fill_buf().map_err(|e| e.to_string())?;
-        if block.is_empty() {
-            let text = std::str::from_utf8(&held).map_err(|_| "invalid UTF-8 text")?;
-            visit(text, 0)?;
-            return Ok(());
-        }
-        let end = memchr::memchr2(b'\n', b'\r', block).unwrap_or(block.len());
-        if held.len() + end > MAX_LINE {
-            return Err("workspace scan stopped at a line longer than 8 MiB; use file search for this document".into());
-        }
-        let terminator = block.get(end).copied();
-        // LF and most CRLF records fit one buffer. Match directly in that buffer.
-        if held.is_empty() && matches!(terminator, Some(b'\n')) {
-            let text = std::str::from_utf8(&block[..end]).map_err(|_| "invalid UTF-8 text")?;
-            if !visit(text, 1)? {
-                return Ok(());
-            }
-            reader.consume(end + 1);
-            continue;
-        }
-        if held.is_empty() && terminator == Some(b'\r') && end + 1 < block.len() {
-            let eol = 1 + (block[end + 1] == b'\n') as usize;
-            let text = std::str::from_utf8(&block[..end]).map_err(|_| "invalid UTF-8 text")?;
-            if !visit(text, eol)? {
-                return Ok(());
-            }
-            reader.consume(end + eol);
-            continue;
-        }
-        held.extend_from_slice(&block[..end]);
-        reader.consume(end + usize::from(terminator.is_some()));
-        if let Some(term) = terminator {
-            let mut eol = 1;
-            if term == b'\r'
-                && reader.fill_buf().map_err(|e| e.to_string())?.first() == Some(&b'\n')
-            {
-                reader.consume(1);
-                eol = 2;
-            }
-            let text = std::str::from_utf8(&held).map_err(|_| "invalid UTF-8 text")?;
-            if !visit(text, eol)? {
-                return Ok(());
-            }
-            held.clear();
         }
     }
 }

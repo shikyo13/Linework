@@ -164,6 +164,12 @@ impl Record {
         }
         self.file.sync_data()
     }
+    /// Keeps one file's edits, as `keep` does, for a file changed outside a `Planned`.
+    pub fn keep_file(&mut self, path: &Path, length: u64, edits: &[Edit]) -> io::Result<()> {
+        let edits: Vec<Value> = edits.iter().map(|e| json!([e.at, hex(&e.new), hex(&e.old)])).collect();
+        self.line(&json!({"file": path, "length": length, "edits": edits}))?;
+        self.file.sync_data()
+    }
     /// Notes that a kept file was saved. Undo checks a file's text before it
     /// reverts it, so this note may be lost in a crash without harm.
     pub fn saved(&mut self, path: &Path) -> io::Result<()> {
@@ -305,4 +311,50 @@ pub fn revert(path: &Path, length: u64, edits: &[Edit]) -> io::Result<()> {
     let back: Vec<(u64, u64, Vec<u8>)> = edits.iter().map(|e| (e.at, e.new.len() as u64, e.old.clone())).collect();
     doc.replace_many(&back)?;
     doc.save(path)
+}
+
+/// What undoing a change did.
+pub struct Undone {
+    pub id: String,
+    /// The files put back as they were.
+    pub restored: Vec<PathBuf>,
+    /// The files left as they are, and why.
+    pub refused: Vec<(PathBuf, String)>,
+}
+
+/// Undoes the change `id`, or the last one not undone, from the records in
+/// `folder`. Each file is checked before it is touched and left alone when it
+/// no longer holds what the change wrote, or when `keep` says to leave it (a
+/// file open with unsaved edits). The change is marked undone when no file was
+/// left. lw undo and the editor both undo with this.
+pub fn undo(folder: &Path, id: Option<&str>, keep: &(dyn Fn(&Path) -> bool + Sync)) -> Result<Undone, String> {
+    let records = records(folder).map_err(|e| e.to_string())?;
+    let chosen = match id {
+        Some(id) => records.iter().find(|r| r.id == id).ok_or(format!("no change {id}; lw undo --list shows them"))?,
+        None => records.iter().rev().find(|r| !r.undone && !r.files.is_empty()).ok_or("no change to undo")?,
+    };
+    if chosen.undone {
+        return Err(format!("change {} was already undone", chosen.id));
+    }
+    let files: Vec<&Changed> = chosen.files.iter().rev().collect();
+    let results = each(&files, |file| {
+        if keep(&file.path) {
+            return Err(io::Error::other("it is open with unsaved changes"));
+        }
+        revert(&file.path, file.length, &file.edits)
+    });
+    let mut done = Undone { id: chosen.id.clone(), restored: Vec::new(), refused: Vec::new() };
+    for (file, result) in files.iter().zip(results) {
+        match result {
+            Ok(()) => done.restored.push(file.path.clone()),
+            // A save that was never marked done: the file holds the change only
+            // if the save got through; otherwise there is nothing to undo.
+            Err(_) if !file.saved => {}
+            Err(e) => done.refused.push((file.path.clone(), e.to_string())),
+        }
+    }
+    if done.refused.is_empty() {
+        mark_undone(folder, &chosen.id).map_err(|e| e.to_string())?;
+    }
+    Ok(done)
 }

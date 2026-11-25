@@ -46,8 +46,85 @@ pub struct Frame {
     pub can_preview: bool,
     pub document_preview: bool,
     pub report: String,
+    /// The sidebar's search view shows the search panel.
+    pub search_panel: bool,
+    pub panel: PanelState,
+    /// The last folder search's totals, and the lw command that finds the same lines.
+    pub summary: String,
+}
+
+/// The search panel's switches, as drawn.
+#[derive(Default, Clone, PartialEq)]
+pub struct PanelState {
+    pub case_: bool,
+    pub whole: bool,
+    pub regex: bool,
+    pub scope: bool,
+    pub hidden: bool,
+    pub ignored: bool,
+    /// The files, conditions and context fields are shown.
+    pub more: bool,
+    pub context: u32,
+    pub near_lines: u32,
+}
+
+/// A line of folder search results, drawn in the sidebar list.
+#[derive(Clone)]
+pub enum Rich {
+    /// A file's heading: its name, its folder, and how many matches it has.
+    File { name: String, folder: String, count: usize },
+    /// The definitions the following lines are in, outermost first.
+    Scope(String),
+    /// A line: its number, its text, its matches as byte ranges, whether it
+    /// is context, the replacements of its matches when previewing, and
+    /// whether its replacements are checked.
+    Line { number: u64, text: String, ranges: Vec<(usize, usize)>, context: bool, replaced: Option<Vec<String>>, checked: Option<bool> },
+    /// Between lines that are not next to each other.
+    Break,
+    Note(String),
+}
+
+/// The search panel's layout in the sidebar, from the top. The fields are
+/// child windows placed at these heights; the switches are drawn between them.
+pub const PANEL_TOP: i32 = HEAD + 50;
+pub const FIELD_H: i32 = 30;
+const PANEL_STEP: i32 = 36;
+/// The width of the labels before the panel's More fields.
+pub const PANEL_LABEL: i32 = 46;
+/// The narrowest sidebar the panel is laid out for.
+pub const PANEL_WIDTH: i32 = 320;
+/// The top of field `i`: 0 find, 1 replace, then with More open 2 files, 3
+/// skip, 4 types, 5 near, 6 also has, 7 lacks.
+pub fn panel_field_y(i: usize) -> i32 {
+    match i {
+        0 => PANEL_TOP,
+        1 => PANEL_TOP + PANEL_STEP,
+        n => PANEL_TOP + 2 * PANEL_STEP + 34 + (n as i32 - 2) * PANEL_STEP,
+    }
+}
+/// The row of switches under the find and replace fields.
+fn panel_switches_y() -> i32 {
+    PANEL_TOP + 2 * PANEL_STEP
+}
+/// The row of context, hidden and ignored switches at the end of More.
+fn panel_extra_y() -> i32 {
+    panel_field_y(8)
+}
+/// Where the panel ends and its summary line starts.
+pub fn panel_bottom(more: bool) -> i32 {
+    if more {
+        panel_extra_y() + 34
+    } else {
+        panel_switches_y() + 34
+    }
+}
+/// How tall the find bar is: its row, and the replace row.
+pub fn findbar_height(replace: bool) -> i32 {
+    40 + if replace { 36 } else { 0 }
 }
 thread_local! {
+    /// The rows of the folder search results, drawn in place of the list's plain text.
+    pub static RICH: RefCell<Vec<Rich>> = const { RefCell::new(Vec::new()) };
     pub static FRAME:RefCell<Frame>=RefCell::new(Frame::default());
     pub static HITS:RefCell<Vec<(RECT,Hit)>>=const {RefCell::new(Vec::new())};
     static HOT:RefCell<Option<Hit>>=const {RefCell::new(None)};
@@ -59,8 +136,10 @@ pub const RAIL: i32 = 48;
 pub const ROW: i32 = 29;
 pub fn tab_reserve(preview: bool) -> i32 { if preview { 183 } else { 99 } }
 const OPEN_Y: i32 = HEAD + 78;
-pub fn list_y(side: u8, folder: bool, tabs: usize, caption: bool) -> i32 {
-    if side == 0 && folder {
+pub fn list_y(side: u8, folder: bool, tabs: usize, caption: bool, panel: Option<bool>) -> i32 {
+    if let (2, Some(more)) = (side, panel) {
+        panel_bottom(more) + 30
+    } else if side == 0 && folder {
         OPEN_Y + ROW * tabs.min(4).max(1) as i32 + 50
     } else if side == 0 || caption {
         OPEN_Y
@@ -252,7 +331,7 @@ impl Shell<'_> {
             HEAD + 4,
             avail - 32,
             42,
-            ["Explorer", "Symbols", "Search results"]
+            ["Explorer", "Symbols", "Search"]
                 .get(f.side as usize)
                 .unwrap_or(&"Explorer"),
             p.text,
@@ -336,6 +415,8 @@ impl Shell<'_> {
             if !folder {
                 self.button(x, band + 41, 115, 30, "Open folder…", "folder", false);
             }
+        } else if f.side == 2 && f.search_panel {
+            self.panel(x, avail);
         } else if !f.report.is_empty() {
             s.small(x, HEAD + 48, avail, 27, &f.report, p.dim);
         }
@@ -352,6 +433,45 @@ impl Shell<'_> {
                 true,
             );
         }
+    }
+    /// The search panel's switches around its fields, and its summary line.
+    fn panel(&self, x: i32, avail: i32) {
+        let (s, p, f) = (self.s, self.p, self.f);
+        let ps = &f.panel;
+        self.button(x + avail - 70, panel_field_y(1) + 1, 70, FIELD_H - 2, "Preview", "p:preview", f.preview);
+        let y = panel_switches_y();
+        for (i, (name, id, on)) in [("Aa", "p:case", ps.case_), ("W", "p:word", ps.whole), (".*", "p:regex", ps.regex), ("", "p:scope", ps.scope)]
+            .into_iter()
+            .enumerate()
+        {
+            self.button(x + i as i32 * 34, y, 30, 28, name, id, on);
+        }
+        // The definitions switch, drawn with the outline's symbol.
+        s.glyph(x + 3 * 34, y, 30, 28, 0xE943, if ps.scope { p.accent } else { p.text }, 12);
+        self.button(x + avail - 64, y, 64, 28, if ps.more { "Less" } else { "More" }, "p:more", ps.more);
+        if ps.more {
+            for (i, label) in ["Files", "Skip", "Types", "Near", "Also", "Lacks"].into_iter().enumerate() {
+                s.text(x, panel_field_y(i + 2), PANEL_LABEL - 4, FIELD_H, label, p.dim, 12, 500, 0);
+            }
+            self.stepper(x + avail - 70, panel_field_y(5) + 1, ps.near_lines, "p:near-", "p:near+");
+            let ey = panel_extra_y();
+            s.text(x, ey, 54, 28, "Context", p.dim, 12, 500, 0);
+            self.stepper(x + 52, ey, ps.context, "p:ctx-", "p:ctx+");
+            self.button(x + 128, ey, 54, 28, "Hidden", "p:hidden", ps.hidden);
+            self.button(x + 186, ey, 59, 28, "Ignored", "p:ignored", ps.ignored);
+        }
+        let sy = panel_bottom(ps.more);
+        s.fill(x - 2, sy - 4, avail + 4, 1, p.line);
+        s.small(x, sy, avail - 30, 26, &f.summary, p.dim);
+        if !f.summary.is_empty() {
+            self.icon(x + avail - 26, sy, 26, 26, 0xE8C8, cmd("p:copy"), false, 12);
+        }
+    }
+    /// A number with a button on each side to lower and raise it.
+    fn stepper(&self, x: i32, y: i32, value: u32, lower: &str, raise: &str) {
+        self.button(x, y, 22, 28, "−", lower, false);
+        self.s.text(x + 22, y, 26, 28, &value.to_string(), self.p.text, 13, 600, DT_CENTER);
+        self.button(x + 48, y, 22, 28, "+", raise, false);
     }
     fn tabs(&self, side: i32) {
         let (s, p, f, w) = (self.s, self.p, self.f, self.w);
@@ -449,9 +569,10 @@ impl Shell<'_> {
     fn search(&self, side: i32) {
         let (s, p, f, w) = (self.s, self.p, self.f, self.w);
         let y = HEAD + TABS;
-        let row = if f.replace { 76 } else { 40 };
+        let row = findbar_height(f.replace);
         s.fill(side, y, w - side, row, p.panel);
         s.fill(side, y + row - 1, w - side, 1, p.line);
+        let ry = y + 42;
         let bx = w - 327;
         for (i, (name, id, on)) in [
             ("Aa", "case", f.case_),
@@ -486,10 +607,10 @@ impl Shell<'_> {
             );
         }
         if f.replace {
-            self.button(bx, y + 42, 101, 27, "Replace next", "replaceone", false);
+            self.button(bx, ry, 101, 27, "Replace next", "replaceone", false);
             self.button(
                 bx + 107,
-                y + 42,
+                ry,
                 134,
                 27,
                 if f.search_folder {
@@ -510,11 +631,7 @@ impl Shell<'_> {
         let x = side + (avail - width) / 2;
         let y = HEAD
             + TABS
-            + (if f.find {
-                if f.replace { 76 } else { 40 }
-            } else {
-                0
-            })
+            + (if f.find { findbar_height(f.replace) } else { 0 })
             + ((self.h - 400) / 6).clamp(25, 57);
         s.logo(x, y + 7, 52);
         s.text(
@@ -736,7 +853,117 @@ pub fn draw_list(h: H, d: &DRAWITEMSTRUCT, chooser: bool) {
         }
         return;
     }
-    FRAME.with_borrow(|f| sidebar_row(&s, f, &txt, d.itemID as usize, selected, [x,y,w,ht]));
+    FRAME.with_borrow(|f| {
+        let drawn = f.side == 2
+            && RICH.with_borrow(|rows| rows.get(d.itemID as usize).map(|row| rich_row(&s, f, row, selected, [x, y, w, ht])).is_some());
+        if !drawn {
+            sidebar_row(&s, f, &txt, d.itemID as usize, selected, [x, y, w, ht]);
+        }
+    });
+}
+
+/// The largest character boundary of `text` at or before `at`.
+fn boundary(text: &str, mut at: usize) -> usize {
+    at = at.min(text.len());
+    while !text.is_char_boundary(at) {
+        at -= 1;
+    }
+    at
+}
+
+/// A row of folder search results.
+fn rich_row(s: &Surface, f: &Frame, row: &Rich, selected: bool, bounds: [i32; 4]) {
+    let [x, y, w, ht] = bounds;
+    let p = colors(f.light);
+    if selected {
+        s.round(x + 1, y + 1, w - 2, ht - 2, 5, p.raised, None);
+    }
+    match row {
+        Rich::File { name, folder, count } => {
+            let (g, col) = file_icon(name, f.light);
+            s.glyph(x + 3, y, 23, ht, g, col, 13);
+            let count = count.to_string();
+            let count_w = s.measure(&count, 11, 600, true) + 8;
+            let name_w = s.measure(name, 13, 600, false).min(w - 31 - count_w - 10);
+            s.text(x + 31, y, name_w + 2, ht, name, p.text, 13, 600, 0);
+            s.text(x + 39 + name_w, y, w - 47 - name_w - count_w, ht, folder, p.dim, 11, 400, 0);
+            s.draw_text(x + w - count_w - 4, y, count_w, ht, &count, p.dim, 11, 600, true, DT_RIGHT);
+        }
+        Rich::Scope(chain) => {
+            s.glyph(x + 10, y, 18, ht, 0xE943, p.accent, 10);
+            s.text(x + 30, y, w - 34, ht, chain, p.dim, 11, 500, 0);
+        }
+        Rich::Line { number, text, ranges, context, replaced, checked } => {
+            let gutter = 44;
+            s.draw_text(x + 2, y, gutter - 10, ht, &number.to_string(), p.dim, 11, 400, true, DT_RIGHT);
+            let mut tx = x + gutter;
+            if let Some(on) = checked {
+                s.text(tx, y, 18, ht, if *on { "☑" } else { "☐" }, if *on { p.accent } else { p.dim }, 13, 400, 0);
+                tx += 20;
+            }
+            let limit = x + w - 4;
+            // Tabs and stray carriage returns show as spaces: one byte each, so the match ranges still hold.
+            let text: String = text.chars().map(|c| if c == '\t' || c == '\r' { ' ' } else { c }).collect();
+            let indent = text.len() - text.trim_start().len();
+            let first = ranges.first().map_or(indent, |r| r.0.max(indent));
+            // Keep the first match in view: a long start is cut, with a mark that it was.
+            let mut from = indent;
+            if s.measure(&text[indent..first], 12, 400, true) > (limit - tx) * 2 / 5 {
+                from = boundary(&text, first.saturating_sub(12));
+                let mark = s.measure("…", 12, 400, true);
+                s.draw_text(tx, y, mark + 2, ht, "…", p.dim, 12, 400, true, 0);
+                tx += mark;
+            }
+            let plain_ink = if *context { p.dim } else { p.text };
+            // Draws one piece; false once the row is full.
+            // Draws one piece: plain, marked as a match, or struck out as replaced. False once the row is full.
+            let piece = |tx: &mut i32, part: &str, ink: u32, weight: i32, marked: bool, struck: bool| -> bool {
+                if part.is_empty() {
+                    return true;
+                }
+                let part_w = s.measure(part, 12, weight, true);
+                let room = limit - *tx;
+                if room <= 8 {
+                    return false;
+                }
+                if marked {
+                    s.round(*tx - 1, y + 5, part_w.min(room) + 2, ht - 10, 3, p.active, None);
+                }
+                s.draw_text(*tx, y, part_w.min(room) + 1, ht, part, ink, 12, weight, true, 0);
+                if struck {
+                    s.fill(*tx, y + ht / 2, part_w.min(room), 1, ink);
+                }
+                *tx += part_w + if struck { 3 } else { 0 };
+                part_w <= room
+            };
+            let mut at = from;
+            for (n, &(start, end)) in ranges.iter().enumerate() {
+                let (start, end) = (boundary(&text, start.max(from)), boundary(&text, end.max(from)));
+                if start < at {
+                    continue;
+                }
+                if !piece(&mut tx, &text[at..start], plain_ink, 400, false, false) {
+                    return;
+                }
+                match replaced.as_ref().and_then(|r| r.get(n)) {
+                    Some(new) => {
+                        if !piece(&mut tx, &text[start..end], p.dim, 400, false, true) || !piece(&mut tx, new, p.accent, 600, true, false) {
+                            return;
+                        }
+                    }
+                    None => {
+                        if !piece(&mut tx, &text[start..end], p.accent, 600, true, false) {
+                            return;
+                        }
+                    }
+                }
+                at = end;
+            }
+            piece(&mut tx, &text[at..], plain_ink, 400, false, false);
+        }
+        Rich::Break => s.text(x, y, w, ht, "⋯", p.dim, 13, 400, DT_CENTER),
+        Rich::Note(note) => s.text(x + 8, y, w - 12, ht, note, p.dim, 12, 400, 0),
+    }
 }
 fn sidebar_row(s: &Surface, f: &Frame, txt: &str, index: usize, selected: bool, bounds: [i32;4]) {
         let [x,y,w,ht] = bounds;

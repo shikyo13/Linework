@@ -10,13 +10,13 @@
 //! preprocessor output always stream.
 use crate::{
     printer::{FileOut, Look},
-    settings::{Binary, Folders, Mode, Near, Settings, SortBy},
+    settings::{Binary, Folders, Mode, Settings, SortBy},
 };
 use linework_search::{
     input,
     matcher::{self, Query},
-    pick::Pick,
-    searcher::{self, Searcher},
+    plan::{NearLines, Plan},
+    searcher,
     sweep::{self, FileRead, Order, Outcome},
     walk,
 };
@@ -68,14 +68,10 @@ struct Totals {
 /// What one search run needs, shared by every file.
 struct Run<'a> {
     s: &'a Settings,
-    query: Query,
+    /// The patterns, file choice, conditions and line selection, as the editor has them too.
+    plan: Plan,
     look: Look,
-    pick: Option<Pick>,
     input: input::Config,
-    and: Vec<Query>,
-    not: Vec<Query>,
-    near: Vec<(Query, u64, Near)>,
-    config: searcher::Config,
     /// Stop everything at the first match (-q).
     stop_all: AtomicBool,
 }
@@ -143,19 +139,7 @@ pub fn run(s: &Settings, out: &mut dyn Write) -> Result<i32, String> {
         writeln!(out, "{}", matcher::pcre2_version()).map_err(|e| e.to_string())?;
         return Ok(0);
     }
-    let mut words = s.words.clone();
-    let mut patterns = s.patterns.clone();
-    if !s.explicit_patterns && !s.list_files {
-        if words.is_empty() {
-            return Err("lw needs a pattern to search for; lw help find shows how".into());
-        }
-        let first = words.remove(0);
-        if s.matcher.multiline {
-            patterns.push(first);
-        } else {
-            patterns.extend(first.split('\n').map(|l| l.strip_suffix('\r').unwrap_or(l).to_owned()));
-        }
-    }
+    let (patterns, mut words) = s.patterns_and_paths()?;
     // With no path: standard input when something is piped or redirected, else this folder.
     let implicit = words.is_empty();
     if implicit {
@@ -164,34 +148,12 @@ pub fn run(s: &Settings, out: &mut dyn Write) -> Result<i32, String> {
     let any_folder = words.iter().any(|w| w != "-" && Path::new(w).is_dir());
     let paths_shown = words.len() > 1 || any_folder;
     let console = io::stdout().is_terminal_console();
-    let mut spec = s.matcher.clone();
-    spec.patterns = patterns;
-    let query = Query::build(&spec).map_err(|e| format!("regex parse error: {e}"))?;
+    let plan = Plan::new(s, patterns)?;
     let look = Look::new(s, paths_shown, console)?;
-    let pick = Pick::new(&s.choices, &s.types, s.glob_fold)?;
     if let Some(pre) = &s.pre {
         input::find_program(pre)?;
     }
-    let other = |p: &String| {
-        let mut one = s.matcher.clone();
-        one.patterns = vec![p.clone()];
-        one.syntax = matcher::Syntax::Auto;
-        Query::build(&one).map_err(|e| format!("regex parse error in {p:?}: {e}"))
-    };
-    let and = s.and.iter().map(other).collect::<Result<Vec<_>, _>>()?;
-    let not = s.not.iter().map(other).collect::<Result<Vec<_>, _>>()?;
-    let near = s.near.iter().map(|(p, n, side)| Ok((other(p)?, *n, *side))).collect::<Result<Vec<_>, String>>()?;
-    let (before, after) = s.context_lines();
-    let config = searcher::Config {
-        invert: s.invert,
-        before,
-        after,
-        passthru: s.passthru,
-        max_count: s.max_count,
-        stop_on_nonmatch: s.stop_on_nonmatch,
-        numbered: true,
-    };
-    let run = Run { s, query, look, pick, input: s.input()?, and, not, near, config, stop_all: AtomicBool::new(false) };
+    let run = Run { s, plan, look, input: s.input()?, stop_all: AtomicBool::new(false) };
     let mut output = Output {
         out,
         budget: crate::report::Budget::new(s.budget),
@@ -351,7 +313,7 @@ impl Run<'_> {
             };
             return self.stream_source(word, absolute, source, detect, output, totals);
         }
-        if span || (size > WHOLE && !self.query.multiline() && !self.s.scope) {
+        if span || (size > WHOLE && !self.plan.query.multiline() && !self.s.scope) {
             if self.engine_can(span) {
                 return self.engine(word, absolute, output, totals);
             }
@@ -374,7 +336,7 @@ impl Run<'_> {
             }
         };
         let text = input::decode_bytes(&bytes, self.input.encoding);
-        let mut file = FileOut::new(&self.look, &self.query, word, absolute, Some(size));
+        let mut file = FileOut::new(&self.look, &self.plan.query, word, absolute, Some(size));
         let outcome = self.search_bytes(&mut file, &text, true, detect, word);
         self.add(totals, &outcome, text.len() as u64);
         output.file(&self.look, &file.out)
@@ -385,10 +347,10 @@ impl Run<'_> {
     fn engine_can(&self, span: bool) -> bool {
         let s = self.s;
         let (before, after) = s.context_lines();
-        let plain_or_pattern = self.query.plain_text().is_some() || self.query.final_pattern().is_some();
+        let plain_or_pattern = self.plan.query.plain_text().is_some() || self.plan.query.final_pattern().is_some();
         plain_or_pattern
-            && !self.query.is_pcre()
-            && !self.query.multiline()
+            && !self.plan.query.is_pcre()
+            && !self.plan.query.multiline()
             && !s.invert
             && before == 0
             && after == 0
@@ -440,17 +402,15 @@ impl Run<'_> {
         } else {
             (0..doc.len(), 0)
         };
-        let mut file = FileOut::new(&self.look, &self.query, word, absolute.clone(), Some(doc.len()));
+        let mut file = FileOut::new(&self.look, &self.plan.query, word, absolute.clone(), Some(doc.len()));
         // --and and --not look at the whole file first.
         // The engine takes a plain string with its case choice, or the final pattern, whose options are written into it.
         let options = |insensitive: bool, regex: bool| SearchOptions { case_sensitive: !insensitive, regex, whole_word: false, backwards: false, wrap: false };
         let engine_form = |q: &Query| -> (String, SearchOptions) {
-            match q.plain_text() {
-                Some((text, insensitive)) => (text.to_owned(), options(insensitive, false)),
-                None => (q.final_pattern().unwrap_or_default().to_owned(), options(false, true)),
-            }
+            let (text, regex, case_sensitive) = q.engine_form().unwrap_or_default();
+            (text, options(!case_sensitive, regex))
         };
-        for (q, wanted) in self.and.iter().map(|q| (q, true)).chain(self.not.iter().map(|q| (q, false))) {
+        for (q, wanted) in self.plan.and.iter().map(|q| (q, true)).chain(self.plan.not.iter().map(|q| (q, false))) {
             let (text, opts) = engine_form(q);
             if doc.find(&text, 0, opts)?.is_some() != wanted {
                 totals.files_searched += 1;
@@ -459,8 +419,8 @@ impl Run<'_> {
             }
         }
         // --near: the line numbers of each nearby pattern's matches, over the whole file.
-        let mut near_lines: Vec<(Vec<u64>, u64, Near)> = Vec::new();
-        for (q, reach, side) in &self.near {
+        let mut near_lines = Vec::new();
+        for (q, reach, side) in &self.plan.near {
             let (text, opts) = engine_form(q);
             let mut numbers = Vec::new();
             doc.find_lines(&text, opts, 1, LineEnds::LineFeed, &cancel, &mut |line| {
@@ -469,7 +429,8 @@ impl Run<'_> {
             })?;
             near_lines.push((numbers, *reach, *side));
         }
-        let (text, opts) = engine_form(&self.query);
+        let near_lines = NearLines::new(near_lines);
+        let (text, opts) = engine_form(&self.plan.query);
         let detect = self.detect(false);
         let head = doc.read(0, (HEAD as u64).min(doc.len()) as usize)?;
         if detect == Detect::Convert && memchr::memchr(0, &head).is_some() {
@@ -483,7 +444,7 @@ impl Run<'_> {
         let length = doc.len();
         doc.find_lines_in(&text, opts, scope.0.clone(), scope.1, widest, LineEnds::LineFeed, &cancel, &mut |found| {
             let number = found.line + 1;
-            if !near_lines.iter().all(|(numbers, reach, side)| close(numbers, number, *reach, *side)) {
+            if !near_lines.keeps(number) {
                 return Ok(false);
             }
             // Named files are checked as ripgrep checks memory-mapped ones: each line about to be printed.
@@ -547,30 +508,11 @@ impl Run<'_> {
         let errors = Mutex::new(Vec::<String>::new());
         let report = |path: &str, why: &str| crate::note(format!("lw: DEBUG: skipping {prefix}{path}: {why}"));
         let failure = |path: &str, why: &str| errors.lock().unwrap_or_else(|e| e.into_inner()).push(format!("{prefix}{path}: {why}"));
-        let mut options = walk::Options {
-            hidden: s.hidden,
-            ignore: s.ignore,
-            ignore_dot: s.ignore_dot,
-            ignore_vcs: s.ignore_vcs,
-            ignore_exclude: s.ignore_exclude,
-            ignore_global: s.ignore_global,
-            ignore_parent: s.ignore_parent,
-            extra: &s.ignore_files,
-            ignore_fold: s.ignore_fold,
-            batch: 8,
-            gitignore_anywhere: !s.require_git,
-            pick: self.pick.as_ref(),
-            max_depth: s.max_depth,
-            max_filesize: s.max_filesize,
-            follow: s.follow,
-            one_file_system: s.one_file_system,
+        let options = walk::Options {
             report: s.debug.then_some(&report as walk::Report),
             failure: Some(&failure),
-            ..walk::Options::default()
+            ..self.plan.walk_options(s)
         };
-        if let Some(threads) = s.threads {
-            options.threads = threads;
-        }
         let root = Path::new(word);
         let order = match s.sort {
             SortBy::Default => Order::Path,
@@ -590,7 +532,7 @@ impl Run<'_> {
             }
             let shown = format!("{prefix}{}", read.found.path);
             let absolute = absolute_root.as_ref().map(|r| r.join(read.found.path).to_string_lossy().into_owned());
-            let mut file = FileOut::new(&self.look, &self.query, &shown, absolute, Some(read.found.size));
+            let mut file = FileOut::new(&self.look, &self.plan.query, &shown, absolute, Some(read.found.size));
             // With -z, a file whose name does not say it is compressed may still say so in its first bytes.
             let packed = if self.input.plain_for(read.found.path) { self.input.packed_bytes(read.bytes) } else { None };
             let streamed = |source: io::Result<input::Source<'_>>, file: &mut FileOut, out: &mut Vec<u8>| match source {
@@ -689,31 +631,16 @@ impl Run<'_> {
         Ok(())
     }
 
-    /// The --near test for one file's text: each pattern's matching line numbers.
-    fn near_lines(&self, text: &[u8]) -> Vec<(Vec<u64>, u64, Near)> {
-        self.near
-            .iter()
-            .map(|(q, reach, side)| {
-                let mut numbers = Vec::new();
-                sweep::matching_lines(q, text, true, |hit| numbers.push(hit.number));
-                (numbers, *reach, *side)
-            })
-            .collect()
-    }
-
     /// Searches a file's whole text, with the binary handling of `detect`.
     fn search_bytes(&self, file: &mut FileOut, text: &[u8], complete: bool, detect: Detect, source_path: &str) -> FileOutcome {
         // --and and --not decide over the whole file.
-        if !self.and.iter().all(|q| q.within(text)) || self.not.iter().any(|q| q.within(text)) {
+        if !self.plan.file_passes(text) {
             return self.finish(file, None, source_path);
         }
-        let near = self.near_lines(text);
-        let keep = |number: u64| near.iter().all(|(numbers, reach, side)| close(numbers, number, *reach, *side));
+        let near = self.plan.near_lines(text);
+        let keep = |number: u64| near.keeps(number);
         let nul = if detect == Detect::None { None } else { memchr::memchr(0, text) };
-        let searcher = || {
-            let s = Searcher::new(&self.query, self.config);
-            if near.is_empty() { s } else { s.keeping(&keep) }
-        };
+        let searcher = || self.plan.searcher((!near.is_empty()).then_some(&keep as searcher::Keep));
         match (nul, detect) {
             (None, _) | (_, Detect::None) => {
                 searcher().search(text, file);
@@ -726,7 +653,7 @@ impl Run<'_> {
                     }
                     return FileOutcome::default();
                 }
-                let cut = memchr::memrchr(self.query.line_end(), &text[..at]).map_or(0, |e| e + 1);
+                let cut = memchr::memrchr(self.plan.query.line_end(), &text[..at]).map_or(0, |e| e + 1);
                 searcher().piece(text, 0, 0, cut, true, file);
                 // Counts of a binary file are dropped, and a file without a match is not listed, as in ripgrep.
                 if matches!(self.s.mode, Mode::Count | Mode::CountMatches | Mode::WithoutMatch) {
@@ -745,7 +672,7 @@ impl Run<'_> {
                         file.binary_matches(at as u64);
                     }
                 } else {
-                    let cut = memchr::memrchr(self.query.line_end(), &text[..at]).map_or(0, |e| e + 1);
+                    let cut = memchr::memrchr(self.plan.query.line_end(), &text[..at]).map_or(0, |e| e + 1);
                     s.piece(text, 0, 0, cut, false, file);
                     let before = file.found.lines;
                     file.silenced = true;
@@ -756,7 +683,7 @@ impl Run<'_> {
                 }
             }
         }
-        if let Some(failure) = self.query.failure() {
+        if let Some(failure) = self.plan.query.failure() {
             crate::note(format!("lw: {}: PCRE2: {failure}", String::from_utf8_lossy(file.path())));
         }
         self.finish(file, Some(text), source_path)
@@ -778,7 +705,7 @@ impl Run<'_> {
         &self, name: &str, absolute: Option<String>, reader: &mut dyn Read, start: u64, lines: u64, detect: Detect, output: &mut Output,
         totals: &mut Totals,
     ) -> io::Result<()> {
-        let mut file = FileOut::new(&self.look, &self.query, name, absolute, None);
+        let mut file = FileOut::new(&self.look, &self.plan.query, name, absolute, None);
         let mut failed = None;
         let mut live = Live { output, started: false };
         let outcome = self.stream_pieces(&mut file, reader, start, lines, detect, &mut live, &mut failed)?;
@@ -791,7 +718,7 @@ impl Run<'_> {
 
     /// A compressed or preprocessed named file, printing as it goes; a preprocessor that fails is an error.
     fn stream_source(&self, name: &str, absolute: Option<String>, source: input::Source<'_>, detect: Detect, output: &mut Output, totals: &mut Totals) -> io::Result<()> {
-        let mut file = FileOut::new(&self.look, &self.query, name, absolute, None);
+        let mut file = FileOut::new(&self.look, &self.plan.query, name, absolute, None);
         let mut failed = None;
         let mut live = Live { output, started: false };
         let outcome = self.stream_source_into(&mut file, source, detect, &mut live, &mut failed)?;
@@ -820,8 +747,8 @@ impl Run<'_> {
     fn stream_pieces(
         &self, file: &mut FileOut, reader: &mut dyn Read, start: u64, lines: u64, detect: Detect, emit: &mut dyn Emit, failed: &mut Option<String>,
     ) -> io::Result<FileOutcome> {
-        // -U, --scope and --near need the whole text at once.
-        if self.query.multiline() || self.s.scope || !self.near.is_empty() {
+        // -U, --scope, --near, --and and --not need the whole text at once.
+        if self.plan.needs_whole_text() || self.s.scope {
             let mut text = Vec::new();
             if let Err(e) = reader.read_to_end(&mut text) {
                 *failed = Some(e.to_string());
@@ -831,17 +758,19 @@ impl Run<'_> {
             emit.emit(&self.look, &file.out)?;
             return Ok(FileOutcome { bytes: text.len() as u64, ..outcome });
         }
-        let mut searcher = Searcher::new(&self.query, self.config).starting_at(start, lines);
+        let mut searcher = self.plan.searcher(None).starting_at(start, lines);
         let mut buf: Vec<u8> = Vec::with_capacity(BLOCK * 2);
         let mut base = start;
         let mut searched = 0usize;
         let mut ended = false;
         let mut binary_at: Option<u64> = None;
         let mut selected_at_nul = 0u64;
-        let line_end = self.query.line_end();
+        let line_end = self.plan.query.line_end();
+        // Set when the text read so far holds no line end past what was searched: read on, past a block.
+        let mut grow = false;
         while !ended && !searcher.done() && !file.satisfied() {
-            // Read until a block of new text is in, or the stream ends.
-            let target = searched + BLOCK;
+            // Read until a block of new text is in, or the stream ends; a line longer than that is read whole.
+            let target = if grow { buf.len() + BLOCK } else { searched + BLOCK };
             while buf.len() < target {
                 let have = buf.len();
                 buf.resize(target, 0);
@@ -888,6 +817,7 @@ impl Run<'_> {
                 }
             }
             let end = if ended { buf.len() } else { memchr::memrchr(line_end, &buf[searched..]).map_or(searched, |e| searched + e + 1) };
+            grow = !ended && end == searched;
             if end > searched || ended {
                 searcher.piece(&buf, base, searched, end, ended, file);
             }
@@ -904,7 +834,7 @@ impl Run<'_> {
                 file.binary_matches(at);
             }
         }
-        if let Some(failure) = self.query.failure() {
+        if let Some(failure) = self.plan.query.failure() {
             *failed = Some(format!("PCRE2: {failure}"));
         }
         let path = String::from_utf8_lossy(file.path()).into_owned();
@@ -952,15 +882,4 @@ struct FileOutcome {
     matches: u64,
     listed: bool,
     bytes: u64,
-}
-
-/// Whether any of the ascending `numbers` lies within `reach` lines of `line`, on the side asked.
-fn close(numbers: &[u64], line: u64, reach: u64, side: Near) -> bool {
-    let (low, high) = match side {
-        Near::Either => (line.saturating_sub(reach), line + reach),
-        Near::Before => (line.saturating_sub(reach), line),
-        Near::After => (line, line + reach),
-    };
-    let from = numbers.partition_point(|&n| n < low);
-    numbers.get(from).is_some_and(|&n| n <= high)
 }

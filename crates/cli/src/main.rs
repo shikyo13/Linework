@@ -2,6 +2,8 @@
 //! AI agents. The commands and their help are in `help.rs`; `lw help` shows them.
 //! `lw PATTERN [PATH...]` is `lw find`, with ripgrep's and grep's options.
 use linework_storage::{Document, SearchOptions};
+use linework_project::change;
+use linework_search::{options, settings};
 use settings::{Mode, Settings};
 use std::{
     env,
@@ -107,7 +109,7 @@ fn execute(argv: Vec<String>, mut out: &mut dyn Write) -> Result<i32, String> {
         return Ok(0);
     }
     let (command, rest): (&str, Vec<String>) = if COMMANDS.contains(&first) { (first, argv[1..].to_vec()) } else { ("find", argv.clone()) };
-    let mut s = Settings::read(rest)?;
+    let mut s = Settings::read(rest, |e| note!("lw: {e}"))?;
     if s.version {
         writeln!(out, "lw {}", env!("CARGO_PKG_VERSION")).map_err(io)?;
         return Ok(0);
@@ -235,38 +237,18 @@ fn execute(argv: Vec<String>, mut out: &mut dyn Write) -> Result<i32, String> {
                 }
                 return Ok(0);
             }
-            let chosen = match rest.first() {
-                Some(id) => records.iter().find(|r| &r.id == id).ok_or(format!("no change {id}; lw undo --list shows them"))?,
-                None => records.iter().rev().find(|r| !r.undone && !r.files.is_empty()).ok_or("no change to undo")?,
-            };
-            if chosen.undone {
-                return Err(format!("change {} was already undone", chosen.id));
-            }
+            drop(records);
             linework_storage::set_save_journal(Some(&profile.join("save-records")));
-            let (mut restored, mut refused) = (0usize, 0usize);
             // The files are restored on several threads; each is checked before it is touched.
-            let files: Vec<&change::Changed> = chosen.files.iter().rev().collect();
-            let results = change::each(&files, |file| change::revert(&file.path, file.length, &file.edits));
-            for (file, result) in files.iter().zip(results) {
-                match result {
-                    Ok(()) => {
-                        restored += 1;
-                        writeln!(out, "{}: restored", file.path.display()).map_err(io)?;
-                    }
-                    // A save that was never marked done: the file holds the
-                    // change only if the save got through; otherwise there is nothing to undo.
-                    Err(_) if !file.saved => {}
-                    Err(e) => {
-                        refused += 1;
-                        note!("lw: {}: not restored: {e}", file.path.display());
-                    }
-                }
+            let undone = change::undo(&changes, rest.first().map(String::as_str), &|_| false)?;
+            for path in &undone.restored {
+                writeln!(out, "{}: restored", path.display()).map_err(io)?;
             }
-            if refused == 0 {
-                change::mark_undone(&changes, &chosen.id).map_err(io)?;
+            for (path, why) in &undone.refused {
+                note!("lw: {}: not restored: {why}", path.display());
             }
-            writeln!(out, "{restored} files restored, {refused} left as they are").map_err(io)?;
-            i32::from(refused != 0) * 2
+            writeln!(out, "{} files restored, {} left as they are", undone.restored.len(), undone.refused.len()).map_err(io)?;
+            i32::from(!undone.refused.is_empty()) * 2
         }
         ("defs" | "uses", [name, target]) => code_places(&s, command == "defs", name, target, began, out)?,
         // The files added, changed or removed in a folder since the last look, then a new snapshot.
@@ -611,17 +593,14 @@ fn code_places(s: &Settings, definitions: bool, name: &str, target: &str, began:
 }
 
 mod account;
-mod change;
 mod generate;
 mod help;
 mod marks;
-mod options;
 mod printer;
 mod report;
 mod sampler;
 mod search;
 mod serve;
-mod settings;
 mod time;
 
 fn main() {

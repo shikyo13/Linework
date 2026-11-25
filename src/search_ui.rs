@@ -39,17 +39,18 @@ impl Request {
         cancel: &AtomicBool,
     ) -> Result<(Option<Range<u64>>, Option<String>), String> {
         let bounds = self.bounds.clone().unwrap_or(0..doc.len());
+        let engine = self.engine()?;
         let found = doc
-            .find_in(&self.query, start, self.options, bounds.clone(), cancel)
+            .find_in(&engine.text, start, engine.options, bounds.clone(), cancel)
             .map_err(|e| e.to_string())?;
         let mut expanded = None;
         if let (Some(hit), Some(replacement)) = (&found, &self.replacement) {
             let bytes = doc
                 .replacement_in(
-                    &self.query,
+                    &engine.text,
                     hit.clone(),
-                    self.options,
-                    replacement,
+                    engine.options,
+                    &engine.replacement(replacement),
                     bounds,
                     cancel,
                 )
@@ -59,6 +60,45 @@ impl Request {
             );
         }
         Ok((found, expanded))
+    }
+}
+/// A find bar search as the file engine takes it, compiled by lw's pattern
+/// code: the same text, case and whole-word choices find the same matches in
+/// the find bar, the search panel and lw. Patterns may span lines here, since
+/// a document is searched as one text.
+pub(crate) struct EngineQuery {
+    text: String,
+    options: SearchOptions,
+    /// The replacement is taken as written, although the engine gets a pattern
+    /// (whole words without regular expressions): `$` in it stays a dollar sign.
+    literal: bool,
+}
+impl EngineQuery {
+    fn replacement(&self, written: &str) -> String {
+        if self.literal && self.options.regex {
+            written.replace('$', "$$")
+        } else {
+            written.to_owned()
+        }
+    }
+}
+impl Request {
+    fn engine(&self) -> Result<EngineQuery, String> {
+        use linework_search::matcher::{Case, Query, Spec, Syntax};
+        let query = Query::build(&Spec {
+            patterns: vec![self.query.clone()],
+            syntax: if self.options.regex { Syntax::Regex } else { Syntax::Fixed },
+            case: if self.options.case_sensitive { Case::Sensitive } else { Case::Insensitive },
+            word: self.options.whole_word,
+            multiline: true,
+            ..Spec::default()
+        })?;
+        let (text, regex, case_sensitive) = query.engine_form().ok_or("This pattern needs PCRE2, which the find bar does not use")?;
+        Ok(EngineQuery {
+            text,
+            options: SearchOptions { regex, case_sensitive, whole_word: false, ..self.options },
+            literal: !self.options.regex,
+        })
     }
 }
 struct Pending {
@@ -263,7 +303,7 @@ impl App {
     }
     pub(super) fn find(&mut self, backwards: bool, replace: bool) {
         if self.folder_scope {
-            self.project_search(replace);
+            self.run_folder_search(replace);
             return;
         }
         let req = self.request(backwards, replace);
@@ -487,13 +527,14 @@ impl App {
         } else {
             self.sync_buffer(i)?;
             let request = self.request(false, true);
+            let engine = request.engine()?;
             let bytes = self.buffers[i]
                 .doc
                 .replacement_for(
-                    &request.query,
+                    &engine.text,
                     hit.clone(),
-                    request.options,
-                    request.replacement.as_deref().unwrap_or(""),
+                    engine.options,
+                    &engine.replacement(request.replacement.as_deref().unwrap_or("")),
                     &AtomicBool::new(false),
                 )
                 .map_err(|e| e.to_string())?;
@@ -564,7 +605,7 @@ impl App {
     }
     pub(super) fn replace_all(&mut self) {
         if self.folder_scope {
-            self.project_search(true);
+            self.run_folder_search(true);
             return;
         }
         let mut req = self.request(false, true);
@@ -589,6 +630,13 @@ impl App {
                 return;
             }
         };
+        let engine = match req.engine() {
+            Ok(engine) => engine,
+            Err(e) => {
+                self.notice(e);
+                return;
+            }
+        };
         let (id, rev, mut doc) = {
             let b = &self.buffers[i];
             (b.id, b.rev, b.doc.clone())
@@ -602,9 +650,9 @@ impl App {
         std::thread::spawn(move || {
             let r = doc
                 .replace_observed(
-                    &req.query,
-                    req.replacement.as_deref().unwrap_or(""),
-                    req.options,
+                    &engine.text,
+                    &engine.replacement(req.replacement.as_deref().unwrap_or("")),
+                    engine.options,
                     req.bounds.unwrap_or(0..doc.len()),
                     &cancel,
                     |r, add| layout.edit(r, add),
@@ -689,5 +737,45 @@ impl App {
             )),
             Err(e) => self.notice(e),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn found(text: &str, query: &str, case: bool, regex: bool, whole: bool, replacement: Option<&str>) -> (Vec<String>, Option<String>) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.txt");
+        fs::write(&path, text).unwrap();
+        let doc = Document::open(&path).unwrap();
+        let req = Request {
+            query: query.into(),
+            replacement: replacement.map(str::to_owned),
+            selected: false,
+            bounds: None,
+            options: SearchOptions { case_sensitive: case, regex, whole_word: whole, backwards: false, wrap: false },
+        };
+        let cancel = AtomicBool::new(false);
+        let (mut at, mut all, mut expanded) = (0, Vec::new(), None);
+        while let (Some(hit), e) = req.run(&doc, at, &cancel).unwrap() {
+            all.push(text[hit.start as usize..hit.end as usize].to_owned());
+            expanded = expanded.or(e);
+            at = hit.end.max(hit.start + 1);
+        }
+        (all, expanded)
+    }
+
+    #[test]
+    fn the_find_bar_matches_as_lw_does() {
+        // Whole words as lw and ripgrep take them: no word character just before or after the match.
+        assert_eq!(found("a -x b-x -xy", "-x", true, false, true, None).0, ["-x"]);
+        assert_eq!(found("Cat cat CAT", "cat", false, false, false, None).0, ["Cat", "cat", "CAT"]);
+        assert_eq!(found("Cat cat", "cat", true, false, false, None).0, ["cat"]);
+        // A pattern may span lines in a document.
+        assert_eq!(found("one\ntwo\n", "e\nt", true, true, false, None).0, ["e\nt"]);
+        // Groups in a replacement with regular expressions; a dollar sign kept as written without them.
+        assert_eq!(found("red1", r"red(\d)", true, true, false, Some("blue$1")).1.as_deref(), Some("blue1"));
+        assert_eq!(found("price", "price", true, false, true, Some("$5")).1.as_deref(), Some("$5"));
     }
 }

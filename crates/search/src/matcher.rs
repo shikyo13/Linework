@@ -207,6 +207,17 @@ impl Query {
         self.final_pattern.as_deref()
     }
 
+    /// How the editor's file engine is given this query: the text, whether it is a
+    /// regular expression, and whether case matters. A plain string goes as it
+    /// is, with its case choice; anything else as the final pattern, which holds
+    /// its case and options. None when only PCRE2 can run it.
+    pub fn engine_form(&self) -> Option<(String, bool, bool)> {
+        match self.plain_text() {
+            Some((text, insensitive)) => Some((text.to_owned(), false, !insensitive)),
+            None => self.final_pattern().map(|p| (p.to_owned(), true, true)),
+        }
+    }
+
     /// The text and whether case is ignored, when the patterns are one plain string.
     pub fn plain_text(&self) -> Option<(&str, bool)> {
         self.plain.as_ref().map(|(t, i)| (t.as_str(), *i))

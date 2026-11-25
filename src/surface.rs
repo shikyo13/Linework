@@ -107,6 +107,10 @@ impl Surface {
         }
         label(self.dc, self.r(x, y, w, h), t, color, self.px(fs), wt, mono, flags);
     }
+    /// The width of `t` in the scale's units, as `draw_text` would draw it.
+    pub fn measure(&self, t: &str, fs: i32, wt: i32, mono: bool) -> i32 {
+        (measure(self.dc, t, self.px(fs), wt, mono) * 96 + self.scale - 1) / self.scale
+    }
     pub fn small(&self, x: i32, y: i32, w: i32, h: i32, s: &str, c: u32) {
         self.draw_text(x, y, w, h, s, c, 11, 400, true, 0);
     }

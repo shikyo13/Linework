@@ -395,6 +395,20 @@ pub fn label(
         SelectObject(dc, old);
     }
 }
+/// The width in pixels of `s` in the font `label` would use.
+pub fn measure(dc: HDC, s: &str, size: i32, weight: i32, mono: bool) -> i32 {
+    if s.is_empty() {
+        return 0;
+    }
+    unsafe {
+        let old = SelectObject(dc, font(size, weight, mono) as _);
+        let text = wide(s);
+        let mut extent: SIZE = std::mem::zeroed();
+        GetTextExtentPoint32W(dc, text.as_ptr(), (text.len() - 1) as i32, &mut extent);
+        SelectObject(dc, old);
+        extent.cx
+    }
+}
 #[path = "popup_menu.rs"]
 pub(crate) mod popup;
 pub(crate) use popup::{PopupItem, menu_at};

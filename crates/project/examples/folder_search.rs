@@ -1,16 +1,14 @@
 //! Runs the editor's folder search once and prints every result, sorted, with
 //! the totals and the time taken, so two builds can be compared exactly.
 //!
-//! Usage: folder_search <folder> <text> [case|nocase] [regex|plain]
+//! Usage: folder_search <folder> <lw words...>   (for example: -i -t rust unwrap)
 use linework_project::{search, SearchRequest};
 use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let mut request = SearchRequest::new(args[1].clone().into(), args[2].clone());
-    request.match_case = args.get(3).is_some_and(|a| a == "case");
-    request.regex = args.get(4).is_some_and(|a| a == "regex");
+    let mut request = SearchRequest::new(args[1].clone().into(), args[2..].to_vec());
     request.max_hits = 50_000_000;
     let started = Instant::now();
     let report = search(&request, &AtomicBool::new(false)).expect("search");

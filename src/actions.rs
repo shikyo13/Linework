@@ -99,6 +99,40 @@ impl App {
             }
             return true;
         }
+        if self.panel_fields.contains(&f) {
+            match k {
+                VK_RETURN => {
+                    // Enter in the replace field previews, and opens the review; anywhere else it searches now.
+                    let preview = f == self.panel_fields[1] || self.preview_mode;
+                    self.review_next = preview;
+                    self.run_folder_search(preview);
+                    return true;
+                }
+                VK_ESCAPE => {
+                    if self.current().is_some() {
+                        focus(self.edit().hwnd());
+                    }
+                    return true;
+                }
+                VK_TAB => {
+                    if let Some(next) = self.next_panel_field(f, shift) {
+                        focus(next);
+                        msg(next, 0xb1, 0, -1);
+                    }
+                    return true;
+                }
+                VK_DOWN => {
+                    if !self.rows.is_empty() {
+                        focus(self.list);
+                        if selected(self.list).is_none() {
+                            msg(self.list, LB_SETCURSEL, 0, 0);
+                        }
+                    }
+                    return true;
+                }
+                _ => {}
+            }
+        }
         if field {
             if k == VK_ESCAPE {
                 self.hide_find();
@@ -404,7 +438,10 @@ impl App {
                         self.editors[1].hwnd(),
                         self.scroll[0],
                         self.scroll[1],
-                    ] {
+                    ]
+                    .into_iter()
+                    .chain(self.panel_fields)
+                    {
                         crate::chrome::theme_child(h, self.prefs.light);
                     }
                     for p in 0..2 {
@@ -427,19 +464,22 @@ impl App {
             "comparesaved" | "comparefile" => self.compare_current(id == "comparesaved"),
             "findproject" | "replaceproject" => self.project_search(id == "replaceproject"),
             "applypreview" => self.project_apply(),
+            "undofolder" => self.project_undo(),
             "toggleall" => self.project_toggle_all(),
-            "togglehit" | "previewhit" => {
+            "togglehit" => {
+                if let Some(row) = selected(self.list) {
+                    self.project_toggle_row(row)
+                }
+            }
+            "previewhit" => {
                 if let Some(Target::Hit(j)) = selected(self.list)
                     .and_then(|i| self.rows.get(i))
                     .map(|r| r.target.clone())
                 {
-                    if id == "previewhit" {
-                        self.project_preview_hit(j)
-                    } else {
-                        self.project_toggle_hit(j)
-                    }
+                    self.project_preview_hit(j)
                 }
             }
+            other if self.search_command(other) => {}
             "build" | "buildconfig" => self.project_build(id == "buildconfig"),
             "tools" | "toolconfig" => self.project_tool(id == "toolconfig"),
             "cancel" => {
@@ -531,14 +571,14 @@ impl App {
                     }
                     "findnext" | "findprev" | "replaceone" => {
                         if self.folder_scope && self.findbar {
-                            self.project_search(id == "replaceone")
+                            self.run_folder_search(id == "replaceone")
                         } else {
                             self.find(id == "findprev", id == "replaceone")
                         }
                     }
                     "replaceall" => {
                         if self.folder_scope {
-                            self.project_search(true)
+                            self.run_folder_search(true)
                         } else {
                             self.replace_all()
                         }

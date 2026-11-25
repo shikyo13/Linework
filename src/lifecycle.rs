@@ -580,7 +580,7 @@ impl App {
         let area = y
             + scale(8)
             + if find {
-                scale(if self.repbar { 76 } else { 40 })
+                scale(frame::findbar_height(self.repbar) - 4)
             } else {
                 0
             };
@@ -594,12 +594,29 @@ impl App {
             Some(rect(w / 2, bottom, w / 2 - scale(12), ht - bottom)),
         );
         let has_folder = self.prefs.root.is_some();
+        let panel = self.search_panel_shown();
         let list_y = scale(frame::list_y(
             self.side,
             has_folder,
             self.buffers.len(),
             !self.report_label.is_empty(),
+            panel.then_some(self.panel_more),
         ));
+        // The search panel's fields: find and replace always, the rest while More is open.
+        let field_x = scale(frame::RAIL + 15);
+        let field_w = sx - scale(frame::RAIL + 27);
+        for (i, field) in self.panel_fields.into_iter().enumerate() {
+            let shown = panel && (i < 2 || self.panel_more);
+            // Room for the Preview button beside replace, and for the line count beside near.
+            let narrower = match i {
+                1 => scale(76),
+                5 => scale(76),
+                _ => 0,
+            };
+            // The More fields sit after their labels.
+            let label = if i >= 2 { scale(frame::PANEL_LABEL) } else { 0 };
+            layout.set(field, shown.then(|| rect(field_x + label, scale(frame::panel_field_y(i)), field_w - narrower - label, scale(frame::FIELD_H))));
+        }
         let room = bottom
             - list_y
             - scale(if self.side == 2 && self.preview_mode {
@@ -620,7 +637,8 @@ impl App {
         }
         let bw = (w - sx - scale(345)).max(scale(65));
         layout.set(self.searchbox, find.then(|| rect(sx + scale(8), y + scale(5), bw, scale(29))));
-        layout.set(self.replacebox, (find && self.repbar).then(|| rect(sx + scale(8), y + scale(42), bw, scale(29))));
+        let replace_y = y + scale(42);
+        layout.set(self.replacebox, (find && self.repbar).then(|| rect(sx + scale(8), replace_y, bw, scale(29))));
         let count = if self.split { 2 } else { 1 };
         let format = self.preview_kind();
         let preview_width = self.document_preview.layout(self.h, &mut layout, w, sx, area, bottom,
@@ -840,6 +858,19 @@ impl App {
             can_preview: self.preview_kind().is_some(),
             document_preview: self.prefs.document_preview && self.preview_kind().is_some(),
             report: self.report_label.clone(),
+            search_panel: self.search_view,
+            panel: frame::PanelState {
+                case_: self.panel.match_case,
+                whole: self.panel.whole_word,
+                regex: self.panel.regex,
+                scope: self.panel.scope,
+                hidden: self.panel.hidden,
+                ignored: self.panel.ignored,
+                more: self.panel_more,
+                context: self.panel.context,
+                near_lines: self.panel.near_lines,
+            },
+            summary: self.search_summary.clone(),
         };
         let (tab_state_changed, frame_changed, preview_changed) = frame::FRAME.with_borrow(|old|
             (old.tabs != f.tabs || old.active != f.active, old != &f, old.document_preview != f.document_preview));
@@ -863,18 +894,40 @@ impl App {
         }
     }
     pub fn show_rows(&mut self, side: u8, caption: String, rows: Vec<Row>) {
+        frame::RICH.with_borrow_mut(Vec::clear);
+        self.row_hits.clear();
+        // Other results in the search view (definitions, uses, build output) take the panel's place.
+        if side == 2 {
+            self.search_view = false;
+        }
+        self.show_list(side, caption, rows);
+    }
+    /// Folder search results: rows drawn as `rich` describes them, each with the matches it holds.
+    pub fn show_rich_rows(&mut self, caption: String, rows: Vec<Row>, rich: Vec<frame::Rich>, hits: Vec<Range<usize>>) {
+        frame::RICH.replace(rich);
+        self.row_hits = hits;
+        self.search_view = true;
+        self.show_list(2, caption, rows);
+    }
+    fn show_list(&mut self, side: u8, caption: String, rows: Vec<Row>) {
         let idx = selected(self.list);
         self.side = side;
         self.report_label = caption;
         self.rows = rows;
+        // Drawn rows are cut to the list's width; plain ones scroll sideways.
+        let rich = frame::RICH.with_borrow(|r| !r.is_empty());
         msg(
             self.list,
             LB_SETHORIZONTALEXTENT,
-            self.rows
-                .iter()
-                .map(|r| size(self.h, (r.label.chars().count().min(2500) * 8 + 12) as i32) as usize)
-                .max()
-                .unwrap_or(0),
+            if rich {
+                0
+            } else {
+                self.rows
+                    .iter()
+                    .map(|r| size(self.h, (r.label.chars().count().min(2500) * 8 + 12) as i32) as usize)
+                    .max()
+                    .unwrap_or(0)
+            },
             0,
         );
         list_set(self.list, self.rows.iter().map(|r| r.label.as_str()),
@@ -1262,6 +1315,7 @@ impl App {
                 }
             }
             Event::Preview(signal) => self.preview_signal(signal),
+            Event::SearchInput(id) => self.search_input(id),
             Event::Notify(p, id, mut n, txt) => {
                 if self.assigned[p] != Some(id) {
                     return;
@@ -1423,6 +1477,7 @@ impl App {
         }
         self.sublime_tick();
         self.tick_history_flash();
+        self.search_tick();
         self.heat_tick();
         crate::glide::watchdog();
         if !self.playing && !self.recording {
@@ -1893,6 +1948,7 @@ impl App {
                 Err(e) => self.notice(e),
             },
             Worker::Applied(r) => self.project_applied(r),
+            Worker::Undone(r) => self.project_undone(r),
             Worker::Tool(j, id, rev, a, b, filter, r) if self.current_job("tool", j) => {
                 self.project_tool_result(id, rev, a, b, filter, r)
             }

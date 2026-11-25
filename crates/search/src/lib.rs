@@ -4,8 +4,11 @@ pub mod account;
 pub mod ignore;
 pub mod input;
 pub mod matcher;
+pub mod options;
 pub mod pick;
+pub mod plan;
 pub mod searcher;
+pub mod settings;
 #[cfg(windows)]
 pub mod walk;
 #[cfg(windows)]

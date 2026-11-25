@@ -1,9 +1,10 @@
 use crate::app::{App, Row, Target, Worker};
 use crate::win::{alert, set_text, text};
 use crate::{forms, sci, state};
+use crate::frame::Rich;
 use linework_project::{
-    self as project, ApplyReport, BuildReport, Index, OpenBuffer, OpenStream, SearchReport,
-    SearchRequest, ToolConfig, ToolMode, ToolResult, UserTool,
+    self as project, ApplyReport, BuildReport, Index, LineKind, OpenBuffer, OpenStream,
+    SearchReport, SearchRequest, ToolConfig, ToolMode, ToolResult, UserTool,
 };
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -64,7 +65,7 @@ impl Read for DocumentReader {
 }
 
 impl App {
-    fn workspace_streams(&self, root: Option<&Path>) -> Vec<OpenStream<'static>> {
+    pub(crate) fn workspace_streams(&self, root: Option<&Path>) -> Vec<OpenStream<'static>> {
         self.buffers
             .iter()
             .enumerate()
@@ -158,36 +159,16 @@ impl App {
         }
     }
 
+    /// Find or preview replacements in the folder: the search panel, or the find bar taking lw's words.
     pub(super) fn project_search(&mut self, preview: bool) {
-        self.search_scope(preview, false);
+        self.open_folder_search(preview);
     }
     pub(super) fn project_search_open(&mut self, preview: bool) {
-        self.search_scope(preview, true);
-    }
-    fn search_scope(&mut self, preview: bool, tabs_only: bool) {
-        if !tabs_only && self.prefs.root.is_none() {
-            self.notice("Open a folder to search its files");
-            return;
-        }
-        if tabs_only && self.buffers.is_empty() {
+        if self.buffers.is_empty() {
             self.notice("Open a file or create a tab to search");
             return;
         }
-        let selection = if self.current().is_some() {
-            let (a, b) = self.edit().selection();
-            if a.abs_diff(b) <= 2048 {
-                self.edit().selected_text()
-            } else {
-                String::new()
-            }
-        } else {
-            String::new()
-        };
-        let query = if !selection.is_empty() && !selection.contains(['\r', '\n']) {
-            selection
-        } else {
-            text(self.searchbox)
-        };
+        let query = self.short_text_for_search();
         let mut fields = vec![forms::Field {
             label: "Find",
             value: query,
@@ -198,25 +179,9 @@ impl App {
                 value: text(self.replacebox),
             });
         }
-        if !tabs_only {
-            fields.push(forms::Field {
-                label: "Include files   ·   *.rs;*.toml   (blank for all)",
-                value: self.project_include.clone(),
-            });
-            fields.push(forms::Field {
-                label: "Exclude files   ·   tests/**;*.min.js",
-                value: self.project_exclude.clone(),
-            });
-        }
-        let title = match (tabs_only, preview) {
-            (true, true) => "Preview replacements in open tabs",
-            (true, false) => "Find in open tabs",
-            (false, true) => "Preview replacements in folder",
-            (false, false) => "Find in folder",
-        };
         let Some((values, options)) = forms::form(
             self.h,
-            title,
+            if preview { "Preview replacements in open tabs" } else { "Find in open tabs" },
             &fields,
             &[
                 ("Match case", self.case_),
@@ -227,42 +192,34 @@ impl App {
         ) else {
             return;
         };
-        let mut req = SearchRequest::new(self.root_dir(), values[0].clone());
-        req.buffers_only = tabs_only;
-        if req.query.is_empty() {
+        if values[0].is_empty() {
             self.notice("Enter text to search for");
             return;
         }
-        set_text(self.searchbox, &req.query);
-        if !tabs_only {
-            let i = 1 + usize::from(preview);
-            self.project_include = values[i].clone();
-            self.project_exclude = values[i + 1].clone();
-            req.include = self.project_include.clone();
-            req.exclude = self.project_exclude.clone();
-        }
+        set_text(self.searchbox, &values[0]);
         (self.case_, self.whole, self.regex) = (options[0], options[1], options[2]);
-        (req.match_case, req.whole_word, req.regex) = (self.case_, self.whole, self.regex);
+        let ask = linework_project::ask::Panel {
+            text: values[0].clone(),
+            match_case: self.case_,
+            whole_word: self.whole,
+            regex: self.regex,
+            ..Default::default()
+        };
+        let mut req = SearchRequest::new(self.root_dir(), ask.words());
+        req.buffers_only = true;
         if preview {
             req.replacement = Some(values[1].clone());
             set_text(self.replacebox, &values[1]);
         }
         self.drain_edits();
-        let buffers = self.workspace_streams((!tabs_only).then_some(req.root.as_path()));
+        let buffers = self.workspace_streams(None);
         self.report = None;
         self.checked.clear();
         self.preview_mode = preview;
+        self.review_next = preview;
         self.prefs.sidebar = true;
-        self.show_rows(
-            2,
-            if tabs_only {
-                "Searching open tabs…"
-            } else {
-                "Searching folder…"
-            }
-            .into(),
-            vec![],
-        );
+        self.side = 2;
+        self.show_rich_rows("Searching open tabs…".into(), vec![], vec![], vec![]);
         let (job, cancel) = self.new_job("folder search");
         let tx = self.tx.clone();
         thread::spawn(move || {
@@ -270,12 +227,30 @@ impl App {
             let _ = tx.send(Worker::Report(job, result));
         });
     }
+    /// The selection, when it is one short line, or else the find bar's text.
+    fn short_text_for_search(&self) -> String {
+        let selection = if self.current().is_some() {
+            let (a, b) = self.edit().selection();
+            if a.abs_diff(b) <= 2048 {
+                self.edit().selected_text()
+            } else {
+                String::new()
+            }
+        } else {
+            String::new()
+        };
+        if !selection.is_empty() && !selection.contains(['\r', '\n']) {
+            selection
+        } else {
+            text(self.searchbox)
+        }
+    }
 
     pub(super) fn project_report(&mut self, report: SearchReport) {
         self.checked = vec![self.preview_mode; report.hits.len()];
         self.report = Some(report);
         self.project_refresh_rows();
-        if self.preview_mode { self.review_replacements(0); }
+        if self.preview_mode && std::mem::take(&mut self.review_next) { self.review_replacements(0); }
     }
     pub(super) fn project_open_hit(&mut self, index: usize) {
         if self.preview_mode { self.review_replacements(index); return; }
@@ -302,6 +277,9 @@ impl App {
             }
         }
     }
+    /// The results as rows: a heading per file, the definitions its lines are
+    /// in when asked for, each line with its matches marked, context lines
+    /// dimmed, and breaks between lines that are not next to each other.
     pub(super) fn project_refresh_rows(&mut self) {
         let Some(report) = self.report.as_ref() else {
             return;
@@ -310,9 +288,15 @@ impl App {
         let n = report.hits.len();
         let checked = self.checked.iter().filter(|v| **v).count();
         let mut caption = if self.preview_mode {
-            format!("{checked} of {n} checked · Space toggles")
+            format!("{checked} of {n} replacements checked · Space toggles")
         } else {
-            format!("{n} matches · {} files searched", report.files_scanned)
+            format!(
+                "{n} {} in {} {} · {} searched",
+                if n == 1 { "match" } else { "matches" },
+                report.groups.len(),
+                if report.groups.len() == 1 { "file" } else { "files" },
+                report.files_scanned
+            )
         };
         if report.truncated {
             caption.push_str(" · result limit");
@@ -323,41 +307,89 @@ impl App {
         if !report.errors.is_empty() {
             caption.push_str(&format!(" · {} issues", report.errors.len()));
         }
-        let mut rows = Vec::with_capacity(n + report.errors.len());
-        for (i, h) in report.hits.iter().enumerate() {
-            let marker = if self.preview_mode {
-                if self.checked[i] { "☑  " } else { "☐  " }
-            } else {
-                ""
-            };
-            let name = h.path.file_name().unwrap_or_default().to_string_lossy();
-            let content = if let Some(after) = &h.preview_after {
-                format!("{} → {}", h.preview.trim(), after.trim())
-            } else {
-                h.preview.trim().to_owned()
+        let mut rows = Vec::with_capacity(n * 2 + report.groups.len());
+        let mut rich = Vec::with_capacity(rows.capacity());
+        let mut hits_of = Vec::with_capacity(rows.capacity());
+        let tab_name = |id: Option<u64>| id.and_then(|id| self.buffers.iter().find(|b| b.id == id)).map(|b| b.name.clone());
+        for group in &report.groups {
+            let name = tab_name(group.buffer_id)
+                .filter(|_| group.path.parent().is_none_or(|p| p.as_os_str().is_empty()))
+                .unwrap_or_else(|| group.path.file_name().unwrap_or_default().to_string_lossy().into_owned());
+            // Folders as lw writes them, with / between names.
+            let folder = group.path.parent().map(|p| short_path(&root, p).replace('\\', "/")).unwrap_or_default();
+            let all = group.lines.iter().map(|l| l.hits.clone()).filter(|r| !r.is_empty()).fold(None::<std::ops::Range<usize>>, |acc, r| {
+                Some(acc.map_or(r.clone(), |a| a.start.min(r.start)..a.end.max(r.end)))
+            });
+            let at = |offset: u64| match group.buffer_id {
+                Some(id) => Target::BufferAt(id, offset),
+                None => Target::Location(group.path.clone(), offset),
             };
             rows.push(Row {
-                label: format!(
-                    "{marker}{name}:{}  ·  {content}   {}",
-                    h.line,
-                    short_path(&root, &h.path)
-                ),
-                target: Target::Hit(i),
+                label: format!("{name}  ·  {} {}  ·  {folder}", group.matches, if group.matches == 1 { "match" } else { "matches" }),
+                target: all.as_ref().map_or(Target::None, |r| Target::Hit(r.start)),
             });
-        }
-        rows.extend(report.errors.iter().map(|e| Row {
-            label: e.clone(),
-            target: Target::None,
-        }));
-        self.show_rows(2, caption, rows);
-    }
-    pub(super) fn project_toggle_hit(&mut self, index: usize) {
-        if self.preview_mode {
-            if let Some(v) = self.checked.get_mut(index) {
-                *v = !*v;
-                self.project_refresh_rows();
+            rich.push(Rich::File { name, folder, count: group.matches });
+            hits_of.push(all.unwrap_or(0..0));
+            let mut last_scope = String::new();
+            for line in &group.lines {
+                if line.kind == LineKind::Match && !line.scope.is_empty() {
+                    let chain = line.scope.iter().map(|s| format!("{} {}", s.kind, s.name)).collect::<Vec<_>>().join("  ›  ");
+                    if chain != last_scope {
+                        let inner = line.scope.last().expect("not empty");
+                        rows.push(Row { label: chain.clone(), target: Target::Line(group.path.clone(), inner.line, 1) });
+                        rich.push(Rich::Scope(chain.clone()));
+                        hits_of.push(0..0);
+                        last_scope = chain;
+                    }
+                }
+                match line.kind {
+                    LineKind::Break => {
+                        rows.push(Row { label: "…".into(), target: Target::None });
+                        rich.push(Rich::Break);
+                        hits_of.push(0..0);
+                    }
+                    kind => {
+                        let has_hits = !line.hits.is_empty();
+                        let previewing = self.preview_mode && has_hits;
+                        let replaced = (previewing && line.ranges.len() == line.hits.len()).then(|| {
+                            line.hits.clone().map(|h| report.hits[h].replacement.clone().unwrap_or_default()).collect()
+                        });
+                        let checked = previewing.then(|| line.hits.clone().all(|h| self.checked.get(h).copied().unwrap_or(false)));
+                        rows.push(Row {
+                            label: format!("{}{}: {}", if kind == LineKind::Context { "  " } else { "" }, line.line, line.text.trim()),
+                            target: if has_hits { Target::Hit(line.hits.start) } else { at(line.offset) },
+                        });
+                        rich.push(Rich::Line {
+                            number: line.line,
+                            text: line.text.clone(),
+                            ranges: line.ranges.clone(),
+                            context: kind == LineKind::Context,
+                            replaced,
+                            checked,
+                        });
+                        hits_of.push(line.hits.clone());
+                    }
+                }
             }
         }
+        for e in &report.errors {
+            rows.push(Row { label: e.clone(), target: Target::None });
+            rich.push(Rich::Note(e.clone()));
+            hits_of.push(0..0);
+        }
+        self.search_summary = caption.clone();
+        self.show_rich_rows(String::new(), rows, rich, hits_of);
+    }
+    /// Checks or unchecks the replacements on one row of the preview.
+    pub(super) fn project_toggle_row(&mut self, row: usize) {
+        if !self.preview_mode {
+            return;
+        }
+        let Some(range) = self.row_hits.get(row).cloned().filter(|r| !r.is_empty()) else { return };
+        let end = range.end.min(self.checked.len());
+        let on = self.checked[range.start..end].iter().any(|v| !*v);
+        self.checked[range.start..end].fill(on);
+        self.project_refresh_rows();
     }
     pub(super) fn project_toggle_all(&mut self) {
         if !self.preview_mode {
@@ -432,7 +464,7 @@ impl App {
         let tx = self.tx.clone();
         self.show_rows(2, "Applying checked replacements…".into(), vec![]);
         thread::spawn(move || {
-            let applied = report.apply_selected(&indices, &open);
+            let applied = report.apply_selected(&indices, &open, Some(&state::profile().join("changes")));
             let _ = tx.send(Worker::Applied(applied));
         });
     }
@@ -489,18 +521,25 @@ impl App {
                 Err(e) => report.errors.push(e),
             }
         }
-        let mut rows: Vec<_> = report
-            .changed_files
-            .iter()
-            .map(|p| Row {
-                label: format!("Saved  ·  {}", p.display()),
-                target: Target::File(p.clone()),
-            })
-            .collect();
-        rows.extend(report.errors.iter().map(|e| Row {
-            label: e.clone(),
-            target: Target::None,
-        }));
+        let root = self.root_dir();
+        let mut rows = Vec::new();
+        let mut rich = Vec::new();
+        for path in &report.changed_files {
+            let shown = short_path(&root, path).replace('\\', "/");
+            rows.push(Row { label: format!("Saved  {shown}"), target: Target::File(path.clone()) });
+            rich.push(Rich::Note(format!("Saved  {shown}")));
+        }
+        for e in &report.errors {
+            rows.push(Row { label: e.clone(), target: Target::None });
+            rich.push(Rich::Note(e.clone()));
+        }
+        if let Some(id) = &report.change {
+            // Two rows, so the change number is not cut off in a narrow sidebar.
+            for undo in ["Undo: Search › Undo last folder replace".to_owned(), format!("or in a terminal: lw undo {id}")] {
+                rows.push(Row { label: undo.clone(), target: Target::None });
+                rich.push(Rich::Note(undo));
+            }
+        }
         let status = format!(
             "Applied {count} replacements{}",
             if report.errors.is_empty() {
@@ -509,8 +548,54 @@ impl App {
                 format!(" · {} skipped", report.errors.len())
             }
         );
-        self.show_rows(2, status.clone(), rows);
+        self.report = None;
+        self.search_summary = status.clone();
+        let hits = vec![0..0; rows.len()];
+        self.show_rich_rows(String::new(), rows, rich, hits);
         self.notice(status);
+    }
+
+    /// Undoes the last folder replace saved to disk, from its change record, as
+    /// lw undo does. Files open with unsaved edits are left as they are.
+    pub(super) fn project_undo(&mut self) {
+        let dirty: HashSet<String> = self.buffers.iter().filter(|b| b.dirty).filter_map(|b| b.path.as_deref().map(state::key)).collect();
+        let folder = state::profile().join("changes");
+        let tx = self.tx.clone();
+        self.notice("Undoing the last folder replace…");
+        thread::spawn(move || {
+            let keep = move |path: &Path| dirty.contains(&state::key(path));
+            let _ = tx.send(Worker::Undone(project::change::undo(&folder, None, &keep)));
+        });
+    }
+    pub(super) fn project_undone(&mut self, result: Result<project::change::Undone, String>) {
+        let undone = match result {
+            Ok(undone) => undone,
+            Err(e) => {
+                self.notice(e);
+                return;
+            }
+        };
+        let root = self.root_dir();
+        let mut rows = Vec::new();
+        let mut rich = Vec::new();
+        for path in &undone.restored {
+            let shown = short_path(&root, path).replace('\\', "/");
+            rows.push(Row { label: format!("Restored  {shown}"), target: Target::File(path.clone()) });
+            rich.push(Rich::Note(format!("Restored  {shown}")));
+        }
+        for (path, why) in &undone.refused {
+            let shown = short_path(&root, path).replace('\\', "/");
+            rows.push(Row { label: format!("Left as it is  {shown}: {why}"), target: Target::File(path.clone()) });
+            rich.push(Rich::Note(format!("Left as it is  {shown}: {why}")));
+        }
+        let status = format!("Undid change {}: {} files restored, {} left as they are", undone.id, undone.restored.len(), undone.refused.len());
+        self.search_summary = status.clone();
+        let hits = vec![0..0; rows.len()];
+        self.prefs.sidebar = true;
+        self.show_rich_rows(String::new(), rows, rich, hits);
+        self.notice(status);
+        // Open tabs of restored files read the files again.
+        self.event(crate::events::Event::Activated);
     }
 
     fn active_symbol_path(&self, i: usize) -> PathBuf {

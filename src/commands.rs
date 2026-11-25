@@ -92,6 +92,7 @@ pub const COMMANDS: &[Command] = cmds![
         "Ctrl+Shift+H"
     ),
     ("applypreview", "Apply checked replacements", "Search", ""),
+    ("undofolder", "Undo last folder replace", "Search", ""),
     (
         "togglehit",
         "Include or exclude selected match",

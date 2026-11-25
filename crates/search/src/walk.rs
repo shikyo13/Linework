@@ -84,6 +84,9 @@ pub struct Options<'a> {
     pub follow: bool,
     /// Do not follow a link to another volume (`--one-file-system`).
     pub one_file_system: bool,
+    /// The folder that `-g` globs and `--ignore-file` files are matched from.
+    /// None is the current folder, as in ripgrep; the editor gives its workspace folder.
+    pub base: Option<&'a Path>,
     pub report: Option<Report<'a>>,
     pub failure: Option<Failure<'a>>,
 }
@@ -110,6 +113,7 @@ impl Default for Options<'_> {
             max_filesize: None,
             follow: false,
             one_file_system: false,
+            base: None,
             report: None,
             failure: None,
         }
@@ -326,6 +330,11 @@ pub fn walk<S: Send>(
     root: &Path, options: Options, state: impl Fn() -> S + Sync, visit: impl Fn(&mut S, &Found) + Sync,
 ) -> std::io::Result<Vec<S>> {
     let absolute = std::path::absolute(root)?;
+    // Where globs and --ignore-file files are matched from.
+    let base = match options.base {
+        Some(base) => std::path::absolute(base).ok(),
+        None => std::env::current_dir().ok(),
+    };
     let git_top = absolute.ancestors().find(|folder| folder.join(".git").exists()).map(Path::to_path_buf);
     let in_git = options.ignore && (options.gitignore_anywhere || git_top.is_some());
     // Rules for the whole walk, least binding first: the --ignore-file files,
@@ -334,8 +343,8 @@ pub fn walk<S: Send>(
     if options.ignore {
         let extra: Vec<Rules> = options.extra.iter().filter_map(|path| read_rules(path, options.ignore_fold)).collect();
         if !extra.is_empty() {
-            // Matched from the current folder, as ripgrep matches them.
-            let prepend = std::env::current_dir().ok().and_then(|cwd| below(&absolute, &cwd)).unwrap_or_default();
+            // Matched from the base folder (the current one, as in ripgrep).
+            let prepend = base.as_deref().and_then(|from| below(&absolute, from)).unwrap_or_default();
             layer = Some(Arc::new(Layer { strip: 0, prepend, files: extra, parent: None }));
         }
         if in_git && options.ignore_vcs && options.ignore_global {
@@ -368,9 +377,9 @@ pub fn walk<S: Send>(
         idle: AtomicUsize::new(0),
         open: AtomicUsize::new(1),
         volume: if options.one_file_system { root_id.map(|((volume, _), ..)| volume) } else { None },
-        glob_prefix: std::env::current_dir()
-            .ok()
-            .and_then(|cwd| below(&absolute, &cwd))
+        glob_prefix: base
+            .as_deref()
+            .and_then(|from| below(&absolute, from))
             .unwrap_or_else(|| format!("{}/", absolute.to_string_lossy().replace('\\', "/").trim_end_matches('/'))),
     };
     let (shared, state, visit) = (&shared, &state, &visit);

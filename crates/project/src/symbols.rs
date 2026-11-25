@@ -1,4 +1,4 @@
-use crate::search::{path_key, walker, OpenBuffer};
+use crate::search::{path_key, OpenBuffer};
 use crate::text::open_text;
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
@@ -114,15 +114,35 @@ pub fn index_with_buffers(root: &Path, buffers: &[OpenBuffer], cancel: &AtomicBo
         }
         index_source(&mut index, &b.path, &b.text, cancel);
     }
-    for entry in walker(root, false).flatten() {
+    // The files a folder search reads, by the same walk and rules, in path order.
+    let options = linework_search::walk::Options {
+        ignore: true,
+        gitignore_anywhere: true,
+        skip_folders: crate::search::SKIPPED_FOLDERS,
+        base: Some(root),
+        ..Default::default()
+    };
+    let listed = linework_search::walk::walk(root, options, Vec::new, |mine: &mut Vec<(String, u64)>, found| {
+        if !cancel.load(Ordering::Relaxed) {
+            mine.push((found.path.to_owned(), found.size));
+        }
+    });
+    let mut files: Vec<(String, u64)> = match listed {
+        Ok(lists) => lists.into_iter().flatten().collect(),
+        Err(e) => {
+            index.issues.push(format!("{}: {e}", root.display()));
+            Vec::new()
+        }
+    };
+    files.sort_by_cached_key(|(path, _)| path.to_uppercase());
+    let separator = std::path::MAIN_SEPARATOR_STR;
+    for (relative, size) in files {
         if cancel.load(Ordering::Relaxed) {
             index.cancelled = true;
             break;
         }
-        if !entry.file_type().is_some_and(|f| f.is_file()) {
-            continue;
-        }
-        let path = entry.path();
+        let path = root.join(relative.replace('/', separator));
+        let path = path.as_path();
         if seen.contains(&path_key(path)) {
             continue;
         }
@@ -130,10 +150,7 @@ pub fn index_with_buffers(root: &Path, buffers: &[OpenBuffer], cancel: &AtomicBo
         if index.limited || lang(path).is_none() {
             continue;
         }
-        if !entry
-            .metadata()
-            .is_ok_and(|m| m.len() <= MAX_SYMBOL_SOURCE as u64)
-        {
+        if size > MAX_SYMBOL_SOURCE as u64 {
             index.skipped += 1;
             continue;
         }
