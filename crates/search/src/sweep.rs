@@ -437,8 +437,9 @@ pub fn ordered(gathered: &[Gathered], order: Order, reverse: bool) -> Vec<(&str,
         .flat_map(|g| g.parts.iter().zip(&g.times).map(move |((path, range), times)| (path.as_str(), &g.out[range.clone()], *times)))
         .collect();
     match order {
-        Order::Path => parts.sort_unstable_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()).then_with(|| a.0.cmp(b.0))),
-        Order::Bytes => parts.sort_unstable_by(|a, b| a.0.split('/').cmp(b.0.split('/'))),
+        Order::Path => by_path(&mut parts, |part| part.0),
+        // Name by name as bytes: the same as whole paths compared with `/` below every other byte.
+        Order::Bytes => parts.sort_unstable_by(|a, b| by_names(a.0.as_bytes(), b.0.as_bytes())),
         // Ties keep path order, so the result is the same every time.
         Order::Modified => parts.sort_by(|a, b| a.2 .0.cmp(&b.2 .0).then_with(|| a.0.cmp(b.0))),
         Order::Accessed => parts.sort_by(|a, b| a.2 .1.cmp(&b.2 .1).then_with(|| a.0.cmp(b.0))),
@@ -455,13 +456,75 @@ pub fn ordered(gathered: &[Gathered], order: Order, reverse: bool) -> Vec<(&str,
 pub fn in_order(gathered: &[Gathered]) -> Vec<(&str, &[u8])> {
     let mut parts: Vec<(&str, &[u8])> =
         gathered.iter().flat_map(|g| g.parts.iter().map(move |(path, range)| (path.as_str(), &g.out[range.clone()]))).collect();
-    parts.sort_unstable_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()).then_with(|| a.0.cmp(b.0)));
+    by_path(&mut parts, |part| part.0);
     parts
+}
+
+fn slash_first(byte: u8) -> u8 {
+    if byte == b'/' {
+        0
+    } else {
+        byte
+    }
+}
+
+/// Two paths compared name by name as bytes. Paths in one tree share long
+/// beginnings, so the shared part is passed over eight bytes at a time and
+/// only the first bytes that differ are weighed, `/` below every other byte.
+fn by_names(a: &[u8], b: &[u8]) -> std::cmp::Ordering {
+    let shared = a.len().min(b.len());
+    let mut at = 0;
+    while at + 8 <= shared && a[at..at + 8] == b[at..at + 8] {
+        at += 8;
+    }
+    while at < shared && a[at] == b[at] {
+        at += 1;
+    }
+    match (a.get(at), b.get(at)) {
+        (Some(&x), Some(&y)) => slash_first(x).cmp(&slash_first(y)),
+        (None, Some(_)) => std::cmp::Ordering::Less,
+        (Some(_), None) => std::cmp::Ordering::Greater,
+        (None, None) => std::cmp::Ordering::Equal,
+    }
+}
+
+/// Sorts by path ignoring letter case, paths that differ only in case by their bytes.
+/// Each path is lower-cased once, and not at all when it is already lower-case
+/// ASCII: comparing made two lower-case copies per comparison before, which
+/// was half the time of listing 183,083 files.
+fn by_path<'a, T: Copy>(parts: &mut Vec<T>, path: impl Fn(&T) -> &'a str) {
+    use std::borrow::Cow;
+    let mut keyed: Vec<(Cow<'a, str>, &'a str, T)> = parts
+        .iter()
+        .map(|part| {
+            let path = path(part);
+            let plain = path.bytes().all(|b| b.is_ascii() && !b.is_ascii_uppercase());
+            (if plain { Cow::Borrowed(path) } else { Cow::Owned(path.to_lowercase()) }, path, *part)
+        })
+        .collect();
+    keyed.sort_unstable_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(b.1)));
+    parts.clear();
+    parts.extend(keyed.into_iter().map(|(_, _, part)| part));
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn orders_are_the_ones_defined_by_plain_comparison() {
+        let names = ["b/A.txt", "b/a.txt", "B/a.txt", "a-b/x", "a/b/x", "a/b", "a.b/x", "É/x", "é/x", "Σας", "σας", "a", "A", "Zeta", "alpha/Beta/gamma", "alpha/beta/Gamma", "ΌΣΟΣ", "ὈΔΥΣΣΕΎΣ"];
+        let mut expected = names.to_vec();
+        expected.sort_unstable_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()).then_with(|| a.cmp(b)));
+        let mut sorted = names.to_vec();
+        by_path(&mut sorted, |name| name);
+        assert_eq!(sorted, expected);
+        let mut expected = names.to_vec();
+        expected.sort_unstable_by(|a, b| a.split('/').cmp(b.split('/')));
+        let mut sorted = names.to_vec();
+        sorted.sort_unstable_by(|a, b| by_names(a.as_bytes(), b.as_bytes()));
+        assert_eq!(sorted, expected);
+    }
 
     fn found(pattern: &str, plain: bool, text: &str) -> Vec<(u64, String)> {
         let query = Query::new(pattern, plain, false, false).unwrap();
