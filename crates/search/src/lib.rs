@@ -2,6 +2,7 @@
 //! ignore rules and (next) the matching are this crate's own.
 pub mod account;
 pub mod ignore;
+pub mod pick;
 #[cfg(windows)]
 pub mod walk;
 #[cfg(windows)]

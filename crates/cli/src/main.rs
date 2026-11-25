@@ -11,8 +11,37 @@ use std::{
 
 /// Matches kept in memory for one command: 16 bytes each.
 const MOST: usize = 50_000_000;
-/// Bytes of one line printed by `find` before it is cut.
-const WIDEST: u64 = 1 << 20;
+/// Bytes of one line read from a single file before the rest is left: enough
+/// to hold the match a long line is shown around, and with --whole-lines the
+/// most a line may be.
+const WIDEST: usize = 1 << 20;
+const WIDEST_WHOLE: usize = 256 << 20;
+
+/// Messages for whoever runs lw (an output cut short, a file that could not be
+/// changed): on the error stream, or while `lw serve` runs a tool, kept to go
+/// back with the tool's result, since an agent sees nothing else.
+static NOTES: std::sync::Mutex<Option<Vec<String>>> = std::sync::Mutex::new(None);
+
+macro_rules! note {
+    ($($words:tt)*) => { crate::note(format!($($words)*)) };
+}
+
+fn note(text: String) {
+    match NOTES.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+        Some(kept) => kept.push(text),
+        None => eprintln!("{text}"),
+    }
+}
+
+/// From now on keep messages instead of printing them.
+fn keep_notes() {
+    *NOTES.lock().unwrap_or_else(|e| e.into_inner()) = Some(Vec::new());
+}
+
+/// The messages kept since `keep_notes`; printing resumes.
+fn kept_notes() -> Vec<String> {
+    NOTES.lock().unwrap_or_else(|e| e.into_inner()).take().unwrap_or_default()
+}
 
 struct Args {
     ignore_case: bool,
@@ -38,6 +67,13 @@ struct Args {
     near: Vec<(String, u64)>,
     and: Vec<String>,
     not: Vec<String>,
+    /// -g, -t and -T: which files of a folder are searched.
+    globs: Vec<String>,
+    types: Vec<String>,
+    not_types: Vec<String>,
+    /// -l: the names of the files with matching lines, not the lines.
+    names_only: bool,
+    whole_lines: bool,
     rest: Vec<String>,
 }
 
@@ -56,6 +92,9 @@ impl Args {
             not: self.not.iter().map(|p| self.query(p)).collect::<Result<_, _>>()?,
         })
     }
+    fn widest(&self) -> usize {
+        if self.whole_lines { WIDEST_WHOLE } else { WIDEST }
+    }
     /// --scope alone groups lines under their file and definition for people.
     fn style(&self) -> report::Style {
         report::Style { json: self.json, heading: self.heading || (self.scope && !self.json), scope: self.scope }
@@ -67,16 +106,16 @@ impl Args {
         }
         out.flush()?;
         if self.stats {
-            eprintln!("{}", totals.text(budget));
+            note!("{}", totals.text(budget));
         } else if budget.cut && !self.json {
-            eprintln!("lw: output cut at {} bytes (--budget)", budget.written);
+            note!("lw: output cut at {} bytes (--budget)", budget.written);
         }
         Ok(())
     }
 }
 
 fn parse(args: impl Iterator<Item = String>) -> Result<Args, String> {
-    let mut a = Args { ignore_case: false, fixed: false, word: false, dry_run: false, hidden: false, no_ignore: false, account: false, samples: None, most: usize::MAX, threads: None, json: false, heading: false, scope: false, stats: false, budget: None, list: false, since: None, until: None, changed: false, mark: None, near: Vec::new(), and: Vec::new(), not: Vec::new(), rest: Vec::new() };
+    let mut a = Args { ignore_case: false, fixed: false, word: false, dry_run: false, hidden: false, no_ignore: false, account: false, samples: None, most: usize::MAX, threads: None, json: false, heading: false, scope: false, stats: false, budget: None, list: false, since: None, until: None, changed: false, mark: None, near: Vec::new(), and: Vec::new(), not: Vec::new(), globs: Vec::new(), types: Vec::new(), not_types: Vec::new(), names_only: false, whole_lines: false, rest: Vec::new() };
     let mut args = args.peekable();
     let mut plain = false;
     while let Some(arg) = args.next() {
@@ -108,6 +147,11 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Args, String> {
                 let n = args.next().ok_or("--near needs a number of lines after its pattern")?;
                 a.near.push((pattern, n.parse().map_err(|_| format!("--near needs a number of lines, not {n}"))?));
             }
+            "-g" | "--glob" => a.globs.push(args.next().ok_or("-g needs a glob, such as *.rs or !*.min.js")?),
+            "-t" | "--type" => a.types.push(args.next().ok_or("-t needs a file type, such as rust or ts")?),
+            "-T" | "--type-not" => a.not_types.push(args.next().ok_or("-T needs a file type, such as md")?),
+            "-l" | "--files-with-matches" => a.names_only = true,
+            "--whole-lines" => a.whole_lines = true,
             "--and" => a.and.push(args.next().ok_or("--and needs a pattern")?),
             "--not" => a.not.push(args.next().ok_or("--not needs a pattern")?),
             "--samples" => a.samples = Some(args.next().ok_or("--samples needs a file to write to")?),
@@ -175,7 +219,7 @@ fn file_lines(
             return Ok(found);
         }
     }
-    doc.find_lines_in(pattern, options(a, pattern), scope.0.clone(), scope.1, WIDEST as usize, cancel, &mut |line| {
+    doc.find_lines_in(pattern, options(a, pattern), scope.0.clone(), scope.1, a.widest(), cancel, &mut |line| {
         found.push(line.clone());
         Ok(!conditions && found.len() == a.most)
     })?;
@@ -232,6 +276,9 @@ fn execute(argv: Vec<String>, mut out: &mut dyn Write) -> Result<i32, String> {
     let command = args.next().unwrap_or_default();
     let a = parse(args)?;
     let io = |e: io::Error| e.to_string();
+    let pick = linework_search::pick::Pick::new(&a.globs, &a.types, &a.not_types)?;
+    // Set for every command, since a server runs many in one process.
+    linework_search::sweep::set_clipping(!a.whole_lines);
     let profile = profile();
     linework_storage::set_index_cache(Some(&profile.join("line-index")));
     // A command that only searches turns this off for itself; a server runs
@@ -246,7 +293,7 @@ fn execute(argv: Vec<String>, mut out: &mut dyn Write) -> Result<i32, String> {
         ("count" | "find", [pattern, folder]) if Path::new(folder).is_dir() => {
             use linework_search::sweep::{self, Query, Report};
             // A few files at a time, so a large folder is shared between threads.
-            let mut options = linework_search::walk::Options { hidden: a.hidden, ignore: !a.no_ignore, batch: 8, ..Default::default() };
+            let mut options = linework_search::walk::Options { hidden: a.hidden, ignore: !a.no_ignore, pick: pick.as_ref(), batch: 8, ..Default::default() };
             if let Some(threads) = a.threads {
                 options.threads = threads;
             }
@@ -273,7 +320,7 @@ fn execute(argv: Vec<String>, mut out: &mut dyn Write) -> Result<i32, String> {
             } else {
                 None
             };
-            let gathered = if !filters.is_empty() || style.json || (command == "find" && style.heading) || only.is_some() || a.most != usize::MAX {
+            let gathered = if !filters.is_empty() || style.json || (command == "find" && style.heading) || only.is_some() || a.most != usize::MAX || a.names_only {
                 // Every file with a match passes the conditions first; then its kept lines are shown.
                 let format = |path: &str, bytes: &[u8], hits: &[sweep::LineHit], out: &mut Vec<u8>| -> u64 {
                     if !filters.file_passes(bytes) {
@@ -287,13 +334,22 @@ fn execute(argv: Vec<String>, mut out: &mut dyn Write) -> Result<i32, String> {
                     }
                     let name = format!("{shown}/{path}");
                     match (command.as_str(), style.json) {
+                        // -l: each file with matching lines, once.
+                        (_, true) if a.names_only => {
+                            serde_json::to_writer(&mut *out, &serde_json::json!({"path": name})).expect("writing to memory");
+                            out.push(b'\n');
+                        }
+                        _ if a.names_only => {
+                            out.extend_from_slice(name.as_bytes());
+                            out.push(b'\n');
+                        }
                         ("count", true) => report::json_count(out, &name, kept.len() as u64),
                         ("count", false) => out.extend_from_slice(format!("{name}:{}\n", kept.len()).as_bytes()),
                         _ if style.json || style.heading => {
                             report::folder_file(out, style, &query, shown, path, bytes, &kept);
                         }
                         _ => {
-                            report::plain(out, &name, bytes, &kept);
+                            report::plain(out, &query, &name, bytes, &kept);
                         }
                     }
                     kept.len() as u64
@@ -327,7 +383,7 @@ fn execute(argv: Vec<String>, mut out: &mut dyn Write) -> Result<i32, String> {
             let any = totals.lines != Some(0);
             if let (Some(sampler), Some(path)) = (sampler, &a.samples) {
                 let taken = sampler.finish(path).map_err(io)?;
-                eprintln!("{taken} samples written to {path}");
+                note!("{taken} samples written to {path}");
             }
             if a.account {
                 account::print(began, searched, writing.elapsed(), &gathered, options.threads);
@@ -342,16 +398,24 @@ fn execute(argv: Vec<String>, mut out: &mut dyn Write) -> Result<i32, String> {
             let sampler = a.samples.as_ref().map(|_| sampler::Sampler::start());
             // With conditions or a time span, the count is of matching lines that pass them.
             let conditions = !(a.near.is_empty() && a.and.is_empty() && a.not.is_empty() && a.since.is_none() && a.until.is_none());
+            let mut searched = doc.len();
             let (count, lines) = if conditions {
                 let scope = span(&doc, &a, &cancel)?;
+                if a.since.is_some() || a.until.is_some() {
+                    searched = scope.0.end - scope.0.start;
+                }
                 let kept = file_lines(&doc, &a, pattern, &scope, &cancel).map_err(io)?.len() as u64;
                 (kept, Some(kept))
             } else {
-                (doc.find_all_bounded(pattern, options(&a, pattern), MOST, &cancel).map_err(io)?.len() as u64, None)
+                let mut found = doc.find_all_bounded(pattern, options(&a, pattern), MOST, &cancel).map_err(io)?;
+                if found.last().is_some_and(|hit| hit.is_empty() && change::after_last_line(&doc, hit.start).unwrap_or(false)) {
+                    found.pop();
+                }
+                (found.len() as u64, None)
             };
             if let (Some(sampler), Some(path)) = (sampler, &a.samples) {
                 let taken = sampler.finish(path).map_err(io)?;
-                eprintln!("{taken} samples written to {path}");
+                note!("{taken} samples written to {path}");
             }
             let mut budget = report::Budget::new(a.budget);
             if a.style().json {
@@ -366,7 +430,7 @@ fn execute(argv: Vec<String>, mut out: &mut dyn Write) -> Result<i32, String> {
                 files_matched: u64::from(count != 0),
                 lines,
                 matches: if lines.is_none() { Some(count) } else { None },
-                bytes_searched: doc.len(),
+                bytes_searched: searched,
                 seconds: began.elapsed().as_secs_f64(),
             };
             a.finish(&mut out, &totals, &budget).map_err(io)?;
@@ -382,12 +446,23 @@ fn execute(argv: Vec<String>, mut out: &mut dyn Write) -> Result<i32, String> {
             let mut printed = 0usize;
             let conditions = !(a.near.is_empty() && a.and.is_empty() && a.not.is_empty());
             let scope = span(&doc, &a, &cancel)?;
-            if !style.json && !style.heading && !conditions {
+            if a.names_only {
+                // -l: the file's name if any line matches and passes the conditions.
+                let any = if conditions {
+                    !file_lines(&doc, &a, pattern, &scope, &cancel).map_err(io)?.is_empty()
+                } else {
+                    doc.find_lines_in(pattern, options(&a, pattern), scope.0.clone(), scope.1, 1, &cancel, &mut |_| Ok(true)).map_err(io)?
+                };
+                if any {
+                    printed = 1;
+                    let line = if style.json { format!("{}\n", serde_json::json!({"path": file})) } else { format!("{file}\n") };
+                    budget.write(&mut out, line.as_bytes()).map_err(io)?;
+                }
+            } else if !style.json && !style.heading && !conditions {
                 if a.most != 0 {
-                    doc.find_lines_in(pattern, options(&a, pattern), scope.0.clone(), scope.1, WIDEST as usize, &cancel, &mut |found| {
-                        let mut line = format!("{}:", found.line + 1).into_bytes();
-                        line.extend_from_slice(&found.text);
-                        line.push(b'\n');
+                    doc.find_lines_in(pattern, options(&a, pattern), scope.0.clone(), scope.1, a.widest(), &cancel, &mut |found| {
+                        let mut line = Vec::new();
+                        report::numbered_found(&mut line, found);
                         printed += 1;
                         Ok(!budget.write(&mut out, &line)? || printed == a.most)
                     })
@@ -397,9 +472,8 @@ fn execute(argv: Vec<String>, mut out: &mut dyn Write) -> Result<i32, String> {
                 let found = file_lines(&doc, &a, pattern, &scope, &cancel).map_err(io)?;
                 printed = found.len();
                 for f in &found {
-                    let mut line = format!("{}:", f.line + 1).into_bytes();
-                    line.extend_from_slice(&f.text);
-                    line.push(b'\n');
+                    let mut line = Vec::new();
+                    report::numbered_found(&mut line, f);
                     if !budget.write(&mut out, &line).map_err(io)? {
                         break;
                     }
@@ -419,7 +493,7 @@ fn execute(argv: Vec<String>, mut out: &mut dyn Write) -> Result<i32, String> {
                 let lines: Vec<report::Line> = found
                     .iter()
                     .zip(&scopes)
-                    .map(|(f, scope)| report::Line { number: f.line + 1, start: f.start, text: &f.text, scope: scope.as_ref() })
+                    .map(|(f, scope)| report::Line::found(f, scope.as_ref()))
                     .collect();
                 let mut text = Vec::new();
                 if !lines.is_empty() {
@@ -432,7 +506,7 @@ fn execute(argv: Vec<String>, mut out: &mut dyn Write) -> Result<i32, String> {
                 files_matched: u64::from(printed != 0),
                 lines: Some(printed as u64),
                 matches: None,
-                bytes_searched: doc.len(),
+                bytes_searched: scope.0.end - scope.0.start,
                 seconds: began.elapsed().as_secs_f64(),
             };
             a.finish(&mut out, &totals, &budget).map_err(io)?;
@@ -455,7 +529,7 @@ fn execute(argv: Vec<String>, mut out: &mut dyn Write) -> Result<i32, String> {
             }
             out.flush().map_err(io)?;
             if a.stats {
-                eprintln!("bytes {} to {} of {} ({:.1} MB) in {:.3} s", range.start, range.end, doc.len(), (range.end - range.start) as f64 / 1e6, began.elapsed().as_secs_f64());
+                note!("bytes {} to {} of {} ({:.1} MB) in {:.3} s", range.start, range.end, doc.len(), (range.end - range.start) as f64 / 1e6, began.elapsed().as_secs_f64());
             }
             i32::from(range.is_empty())
         }
@@ -505,7 +579,7 @@ fn execute(argv: Vec<String>, mut out: &mut dyn Write) -> Result<i32, String> {
             // In a folder, the files a search for OLD would show.
             let files: Vec<String> = if Path::new(target).is_dir() {
                 use linework_search::sweep;
-                let mut walk = linework_search::walk::Options { hidden: a.hidden, ignore: !a.no_ignore, batch: 8, ..Default::default() };
+                let mut walk = linework_search::walk::Options { hidden: a.hidden, ignore: !a.no_ignore, pick: pick.as_ref(), batch: 8, ..Default::default() };
                 if let Some(threads) = a.threads {
                     walk.threads = threads;
                 }
@@ -527,14 +601,14 @@ fn execute(argv: Vec<String>, mut out: &mut dyn Write) -> Result<i32, String> {
             // In batches: plan on several threads, keep the batch's record on disk,
             // then save its files on several threads, so their disk flushes overlap.
             for batch in files.chunks(256) {
-                let plans = change::each(batch, |path| change::plan(Path::new(path), old, new, searched, a.dry_run, WIDEST as usize, &cancel));
+                let plans = change::each(batch, |path| change::plan(Path::new(path), old, new, searched, a.dry_run, a.widest(), &cancel));
                 let mut ready = Vec::new();
                 for (path, plan) in batch.iter().zip(plans) {
                     match plan {
                         Ok(Some(planned)) => ready.push((path, planned)),
                         Ok(None) => {}
                         Err(e) => {
-                            eprintln!("lw: {path}: {e}");
+                            note!("lw: {path}: {e}");
                             failed += 1;
                         }
                     }
@@ -553,7 +627,7 @@ fn execute(argv: Vec<String>, mut out: &mut dyn Write) -> Result<i32, String> {
                                 kept.push((path, planned, true));
                             }
                             Err(e) => {
-                                eprintln!("lw: {path}: not changed: {e}");
+                                note!("lw: {path}: not changed: {e}");
                                 failed += 1;
                             }
                         }
@@ -567,20 +641,29 @@ fn execute(argv: Vec<String>, mut out: &mut dyn Write) -> Result<i32, String> {
                     changed += 1;
                     let mut text = Vec::new();
                     match (a.dry_run, style.json) {
+                        // A long line shows in part around its first change, the same part before and after.
                         (true, true) => {
-                            for (line, before, after) in &planned.lines {
-                                let value = serde_json::json!({"path": path, "line": line, "before": String::from_utf8_lossy(before), "after": String::from_utf8_lossy(after)});
+                            for (line, before, after, at) in &planned.lines {
+                                let mut value = serde_json::json!({"path": path, "line": line});
+                                for (name, side) in [("before", before), ("after", after)] {
+                                    let shown = linework_search::sweep::clip(side, *at);
+                                    value[name] = serde_json::json!(String::from_utf8_lossy(&side[shown.clone()]));
+                                    if shown != (0..side.len()) {
+                                        // Bytes left out of this side: before the part shown, and after it.
+                                        value[format!("{name}_omitted")] = serde_json::json!([shown.start, side.len() - shown.end]);
+                                    }
+                                }
                                 text.extend_from_slice(value.to_string().as_bytes());
                                 text.push(b'\n');
                             }
                         }
                         (true, false) => {
                             text.extend_from_slice(format!("{path}\n").as_bytes());
-                            for (line, before, after) in &planned.lines {
+                            for (line, before, after, at) in &planned.lines {
                                 text.extend_from_slice(format!("  {line} - ").as_bytes());
-                                text.extend_from_slice(before);
+                                linework_search::sweep::write_clipped(&mut text, before, *at);
                                 text.extend_from_slice(format!("\n  {line} + ").as_bytes());
-                                text.extend_from_slice(after);
+                                linework_search::sweep::write_clipped(&mut text, after, *at);
                                 text.push(b'\n');
                             }
                             text.push(b'\n');
@@ -617,7 +700,7 @@ fn execute(argv: Vec<String>, mut out: &mut dyn Write) -> Result<i32, String> {
             }
             out.flush().map_err(io)?;
             if failed != 0 {
-                eprintln!("lw: {failed} files could not be changed");
+                note!("lw: {failed} files could not be changed");
                 2
             } else {
                 i32::from(changed == 0)
@@ -658,7 +741,7 @@ fn execute(argv: Vec<String>, mut out: &mut dyn Write) -> Result<i32, String> {
                     Err(_) if !file.saved => {}
                     Err(e) => {
                         refused += 1;
-                        eprintln!("lw: {}: not restored: {e}", file.path.display());
+                        note!("lw: {}: not restored: {e}", file.path.display());
                     }
                 }
             }
@@ -669,7 +752,7 @@ fn execute(argv: Vec<String>, mut out: &mut dyn Write) -> Result<i32, String> {
             i32::from(refused != 0) * 2
         }
         ("files", [folder]) => {
-            let mut options = linework_search::walk::Options { hidden: a.hidden, ignore: !a.no_ignore, ..Default::default() };
+            let mut options = linework_search::walk::Options { hidden: a.hidden, ignore: !a.no_ignore, pick: pick.as_ref(), ..Default::default() };
             if let Some(threads) = a.threads {
                 options.threads = threads;
             }
@@ -700,11 +783,11 @@ fn execute(argv: Vec<String>, mut out: &mut dyn Write) -> Result<i32, String> {
             }
             out.flush().map_err(io)?;
             if budget.cut {
-                eprintln!("lw: output cut at {} bytes (--budget)", budget.written);
+                note!("lw: output cut at {} bytes (--budget)", budget.written);
             }
             if a.account {
                 let found = lists.iter().map(|l| l.iter().filter(|&&b| b == b'\n').count()).sum::<usize>();
-                eprintln!("{found} files listed");
+                note!("{found} files listed");
                 account::print(began, walked, writing.elapsed(), &[], options.threads);
             }
             i32::from(!any)
@@ -716,7 +799,7 @@ fn execute(argv: Vec<String>, mut out: &mut dyn Write) -> Result<i32, String> {
             // Only files holding the name as a whole word are parsed.
             let query = sweep::Query::new(name, true, false, true)?;
             let style = a.style();
-            let pick = |path: &str, bytes: &[u8]| -> Vec<sweep::LineHit> {
+            let lines_of = |path: &str, bytes: &[u8]| -> Vec<sweep::LineHit> {
                 let Ok(text) = std::str::from_utf8(bytes) else { return Vec::new() };
                 let places: Vec<_> =
                     linework_project::places(Path::new(path), text, name).into_iter().filter(|p| p.definition.is_some() == definitions).collect();
@@ -724,13 +807,13 @@ fn execute(argv: Vec<String>, mut out: &mut dyn Write) -> Result<i32, String> {
             };
             let mut budget = report::Budget::new(a.budget);
             let totals = if Path::new(target).is_dir() {
-                let mut options = linework_search::walk::Options { hidden: a.hidden, ignore: !a.no_ignore, batch: 8, ..Default::default() };
+                let mut options = linework_search::walk::Options { hidden: a.hidden, ignore: !a.no_ignore, pick: pick.as_ref(), batch: 8, ..Default::default() };
                 if let Some(threads) = a.threads {
                     options.threads = threads;
                 }
                 let shown = target.trim_end_matches(['/', '\\']);
                 let format = |path: &str, bytes: &[u8], _: &[sweep::LineHit], out: &mut Vec<u8>| -> u64 {
-                    let mut lines = pick(path, bytes);
+                    let mut lines = lines_of(path, bytes);
                     lines.truncate(a.most);
                     if lines.is_empty() {
                         return 0;
@@ -738,7 +821,7 @@ fn execute(argv: Vec<String>, mut out: &mut dyn Write) -> Result<i32, String> {
                     if style.json || style.heading {
                         report::folder_file(out, style, &query, shown, path, bytes, &lines)
                     } else {
-                        report::plain(out, &format!("{shown}/{path}"), bytes, &lines)
+                        report::plain(out, &query, &format!("{shown}/{path}"), bytes, &lines)
                     }
                 };
                 let gathered = sweep::tree_with(Path::new(target), options, &query, &format).map_err(io)?;
@@ -761,7 +844,7 @@ fn execute(argv: Vec<String>, mut out: &mut dyn Write) -> Result<i32, String> {
                 if bytes.len() > linework_project::MAX_SYMBOL_SOURCE {
                     return Err(format!("{target} is over the {} MiB that code is parsed for", linework_project::MAX_SYMBOL_SOURCE >> 20));
                 }
-                let mut lines = pick(target, &bytes);
+                let mut lines = lines_of(target, &bytes);
                 lines.truncate(a.most);
                 let mut text = Vec::new();
                 if !lines.is_empty() {
@@ -771,14 +854,13 @@ fn execute(argv: Vec<String>, mut out: &mut dyn Write) -> Result<i32, String> {
                         let shown: Vec<report::Line> = lines
                             .iter()
                             .zip(&scopes)
-                            .map(|(l, s)| report::Line { number: l.number, start: l.start as u64, text: &bytes[l.start..l.end], scope: s.as_ref() })
+                            .map(|(l, s)| report::Line::whole(l.number, l.start as u64, &bytes[l.start..l.end], s.as_ref()))
                             .collect();
                         report::file(&mut text, style, &query, target, &shown);
                     } else {
                         for l in &lines {
-                            text.extend_from_slice(format!("{}:", l.number).as_bytes());
-                            text.extend_from_slice(&bytes[l.start..l.end]);
-                            text.push(b'\n');
+                            let line = &bytes[l.start..l.end];
+                            report::numbered(&mut text, l.number, line, sweep::first_match(&query, line));
                         }
                     }
                 }
@@ -797,6 +879,10 @@ fn execute(argv: Vec<String>, mut out: &mut dyn Write) -> Result<i32, String> {
         }
         // The files added, changed or removed in a folder since the last look, then a new snapshot.
         ("changes", [folder]) if Path::new(folder).is_dir() => {
+            // A snapshot is of the whole folder, so the next look compares like with like.
+            if pick.is_some() {
+                return Err("lw changes looks at the whole folder; -g, -t and -T apply to the searches (lw find --changed -t rust)".into());
+            }
             let options = linework_search::walk::Options { hidden: a.hidden, ignore: !a.no_ignore, ..Default::default() };
             let root = Path::new(folder);
             let name = a.mark.as_deref().unwrap_or("last");
@@ -806,7 +892,7 @@ fn execute(argv: Vec<String>, mut out: &mut dyn Write) -> Result<i32, String> {
             let mut budget = report::Budget::new(a.budget);
             let found = match &before {
                 None => {
-                    eprintln!("lw: {} files noted as snapshot {name}; the next lw changes shows what changed since", now.len());
+                    note!("lw: {} files noted as snapshot {name}; the next lw changes shows what changed since", now.len());
                     marks::Changes::default()
                 }
                 Some(before) => marks::compare(before, &now),
@@ -879,7 +965,7 @@ fn main() {
     let code = match run() {
         Ok(code) => code,
         Err(message) => {
-            eprintln!("lw: {message}");
+            note!("lw: {message}");
             2
         }
     };

@@ -122,8 +122,12 @@ The installer puts `lw.exe` next to `Linework.exe` and adds that folder to your 
 - `--scope` groups lines under the function, method, class or type around them, found with the same Tree-sitter grammars as the editor's outline, or under the Markdown heading of their section; with `--json` it adds a `scope` object with `name`, `kind`, `line` and `end_line`. It parses every file with a match, so it costs more: 1.5 s instead of 0.11 s for 52,558 lines in 9,848 files.
 - `--budget BYTES` stops printing at a line break once that much output is written, and says so.
 - `--stats` prints the totals on the error stream.
+- `-l` prints only the name of each file with a matching line.
+- A line over 1,000 bytes, such as minified code or a source map, is shown as about 800 bytes around its first match, with the number of bytes left out on each side (`omitted_before` and `omitted_after` in JSON). `--whole-lines` prints such lines whole.
 
 The files of a folder search are printed in path order, so the same search gives the same output each time.
+
+In a folder, `find`, `count`, `replace`, `defs`, `uses` and `files` can choose files by name or type, as ripgrep does: `-g GLOB` searches only files matching the glob (`*.rs`, `*.{ts,tsx}`, `src/**`), `-g !GLOB` leaves them out, `-t TYPE` searches only one type (`rust`, `ts`, `py`, `md` and others; `lw help folders` lists them) and `-T TYPE` leaves a type out.
 
 `find` and `count` also take conditions, each of which may repeat: `--near PATTERN N` keeps a line only when PATTERN matches within N lines before or after it, `--and PATTERN` keeps only files that also contain PATTERN, and `--not PATTERN` keeps only files that do not. With conditions, `count` on a single file counts the matching lines that pass them.
 

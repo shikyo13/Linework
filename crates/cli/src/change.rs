@@ -32,8 +32,15 @@ pub struct Planned {
     pub doc: Document,
     pub path: PathBuf,
     pub edits: Vec<Edit>,
-    /// For a preview: each changed line's number from 1, and its text before and after.
-    pub lines: Vec<(u64, Vec<u8>, Vec<u8>)>,
+    /// For a preview: each changed line's number from 1, its text before and
+    /// after, and where its first change starts in it.
+    pub lines: Vec<(u64, Vec<u8>, Vec<u8>, usize)>,
+}
+
+/// Whether `at` is the end of a text that ends with a line break: the place
+/// after the last line, which belongs to no line (as grep and sed count lines).
+pub fn after_last_line(doc: &Document, at: u64) -> io::Result<bool> {
+    Ok(at != 0 && at == doc.len() && matches!(doc.read(at - 1, 1)?.first(), Some(b'\n' | b'\r')))
 }
 
 /// Replaces every match of `old` in one file in memory. None when nothing matched.
@@ -46,13 +53,24 @@ pub fn plan(path: &Path, old: &str, new: &str, options: SearchOptions, preview: 
             Ok(false)
         })?;
     }
+    let length = doc.len();
+    let phantom = after_last_line(&doc, length)?;
     let mut ranges: Vec<(Range<u64>, u64)> = Vec::new();
-    let count = doc.replace_observed(old, new, options, 0..doc.len(), cancel, |hit, len| ranges.push((hit, len)))?;
-    if count == 0 {
-        return Ok(None);
-    }
+    let count = doc.replace_observed(old, new, options, 0..length, cancel, |hit, len| ranges.push((hit, len)))?;
     if count != ranges.len() {
         return Err(io::Error::other(format!("the engine replaced {count} matches but reported {}", ranges.len())));
+    }
+    if ranges.is_empty() {
+        return Ok(None);
+    }
+    // An empty match after the last line (a pattern like ^ or .* in a text that
+    // ends with a line break) is in no line: sed leaves it, and so does lw. It
+    // is taken out after the old text is read, which needs the change on top
+    // of the engine's undo history.
+    let phantom = phantom && ranges.last().is_some_and(|(hit, _)| hit.is_empty() && hit.start == length);
+    if phantom && ranges.len() == 1 {
+        doc.undo();
+        return Ok(None);
     }
     // The text each match replaced, read from the state before the change.
     if !doc.undo() {
@@ -68,16 +86,23 @@ pub fn plan(path: &Path, old: &str, new: &str, options: SearchOptions, preview: 
         edits.push(Edit { at, new: doc.read(at, *len as usize)?, old });
         shift += *len as i64 - (range.end - range.start) as i64;
     }
+    if phantom {
+        let edit = edits.pop().expect("more than one edit");
+        ranges.pop();
+        doc.replace(edit.at, edit.new.len() as u64, b"")?;
+    }
     // Each changed line before and after: the line's text with the edits that start in it.
     let mut lines = Vec::new();
     let mut next = 0;
     for line in &before {
-        let (start, end) = (line.start, line.start + line.text.len() as u64);
+        // A very long line is read in part: positions count from where its text starts.
+        let (start, end) = (line.text_start, line.text_start + line.text.len() as u64);
         while next < ranges.len() && ranges[next].0.start < start {
             next += 1;
         }
         let mut after = Vec::new();
         let mut taken = 0usize;
+        let first = ranges.get(next).map_or(0, |(r, _)| r.start.saturating_sub(start) as usize);
         let mut i = next;
         while i < ranges.len() && ranges[i].0.start <= end {
             let (from, to) = ((ranges[i].0.start - start) as usize, ((ranges[i].0.end.min(end)) - start) as usize);
@@ -87,7 +112,7 @@ pub fn plan(path: &Path, old: &str, new: &str, options: SearchOptions, preview: 
             i += 1;
         }
         after.extend_from_slice(&line.text[taken.min(line.text.len())..]);
-        lines.push((line.line + 1, line.text.clone(), after));
+        lines.push((line.line + 1, line.text.clone(), after, first));
     }
     // The path as a person would write it, absolute so undo works from any folder.
     let path = std::path::absolute(path)?;

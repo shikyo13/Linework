@@ -136,16 +136,35 @@ pub struct FoundLine {
     pub start: u64,
     /// The first match on the line.
     pub first: Range<u64>,
-    /// The line's text without its line break, at most the `widest` bytes asked for.
+    /// The line's text without its line break, at most the `widest` bytes
+    /// asked for. A longer line gives the part around its first match.
     pub text: Vec<u8>,
+    /// Where `text` starts in the document: `start`, unless the line was longer than `widest`.
+    pub text_start: u64,
+    /// Whether the line goes on past the end of `text`.
+    pub cut: bool,
 }
+/// The text kept of a matching line: where the line starts, where the kept
+/// text starts, the text, and whether the line goes on past it.
+type Kept = (u64, u64, Vec<u8>, bool);
 /// A matching line as one thread found it inside its piece of the document.
 struct PieceLine {
     /// Line breaks between the piece's first byte and the match.
     breaks: u64,
     first: Range<u64>,
-    /// Start and text when the bytes the thread held contained the whole line.
-    found: Option<(u64, Vec<u8>)>,
+    /// The line's text when the bytes the thread held contained the whole line.
+    found: Option<Kept>,
+}
+
+/// Of a line `line_start..line_end` with a match at `at`, the part to keep in
+/// at most `widest` bytes: all of it, or a window that starts a quarter of
+/// `widest` before the match.
+fn window(line_start: u64, line_end: u64, at: u64, widest: usize) -> Range<u64> {
+    if line_end - line_start <= widest as u64 {
+        return line_start..line_end;
+    }
+    let from = at.saturating_sub(widest as u64 / 4).max(line_start);
+    from..(from + widest as u64).min(line_end)
 }
 struct Piece {
     /// Line breaks in the whole piece, counted as the line index counts them.
@@ -519,7 +538,11 @@ impl<'a> Search<'a> {
             let begin = line_begin(buf, s).or((origin == 0).then_some(0));
             let end = memchr::memchr2(b'\n', b'\r', &buf[s..]).map(|e| s + e).or(whole.then_some(buf.len()));
             let found = match (begin, end) {
-                (Some(b), Some(e)) => Some((origin + b as u64, buf[b..e.min(b + widest)].to_vec())),
+                (Some(b), Some(e)) => {
+                    let kept = window(b as u64, e as u64, s as u64, widest);
+                    let text = buf[kept.start as usize..kept.end as usize].to_vec();
+                    Some((origin + b as u64, origin + kept.start, text, kept.end < e as u64))
+                }
                 _ => None,
             };
             lines.push(PieceLine { breaks, first: hit, found });
@@ -653,16 +676,23 @@ impl Document {
         options.backwards = false;
         let search = Search::new(self, query, options, cancel, scope.clone())?;
         let mut last = None;
-        let mut emit = |line: u64, first: Range<u64>, found: Option<(u64, Vec<u8>)>| -> io::Result<bool> {
+        let end = scope.end;
+        let mut emit = |line: u64, first: Range<u64>, found: Option<Kept>| -> io::Result<bool> {
             if last == Some(line) {
                 return Ok(false);
             }
-            last = Some(line);
-            let (start, text) = match found {
+            let (start, text_start, text, cut) = match found {
                 Some(found) => found,
                 None => self.line_text(first.start, widest)?,
             };
-            visit(&FoundLine { line, start, first, text })
+            // An empty match at the end of the scope, where a line would begin
+            // (after the text's last line break, or at the next line of a
+            // span), is in no line of the scope: grep does not count it either.
+            if first.start == end && start == end {
+                return Ok(false);
+            }
+            last = Some(line);
+            visit(&FoundLine { line, start, first, text, text_start, cut })
         };
         if search.opt.regex {
             // A pattern searches the whole text or streams it: take its matches
@@ -764,7 +794,7 @@ impl Document {
     }
     /// Where the line holding `at` starts, and its text without its line break,
     /// at most `widest` bytes. Reads only around `at`.
-    fn line_text(&self, at: u64, widest: usize) -> io::Result<(u64, Vec<u8>)> {
+    fn line_text(&self, at: u64, widest: usize) -> io::Result<Kept> {
         const STEP: u64 = 64 * 1024;
         let len = self.len();
         let (mut start, mut hi) = (0, at);
@@ -780,12 +810,20 @@ impl Document {
             }
             hi = lo;
         }
-        let mut text = vec![0; (len - start).min(widest as u64) as usize];
-        self.read_into(start, &mut text)?;
-        if let Some(e) = memchr::memchr2(b'\n', b'\r', &text) {
-            text.truncate(e);
-        }
-        Ok((start, text))
+        // The line from its start, or when the match lies past `widest` from
+        // there, from a quarter of `widest` before the match; no line break
+        // lies between the line's start and the match.
+        let from = if at - start < widest as u64 / 2 { start } else { at - widest as u64 / 4 };
+        let mut text = vec![0; (len - from).min(widest as u64) as usize];
+        self.read_into(from, &mut text)?;
+        let cut = match memchr::memchr2(b'\n', b'\r', &text) {
+            Some(e) => {
+                text.truncate(e);
+                false
+            }
+            None => from + (text.len() as u64) < len,
+        };
+        Ok((start, from, text, cut))
     }
     pub fn find_cancel(
         &self,
@@ -994,6 +1032,32 @@ mod found_line_tests {
         let expected: Vec<_> = whole.into_iter().filter(|l| scope.contains(&l.first.start)).collect();
         assert!(expected.len() > 1000);
         assert_eq!(part, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn an_empty_match_after_the_last_line_is_no_line() -> io::Result<()> {
+        let cancel = AtomicBool::new(false);
+        let options = SearchOptions { case_sensitive: true, regex: true, wrap: false, ..Default::default() };
+        let lines = |text: &[u8], pattern: &str, scope: Option<Range<u64>>| -> io::Result<Vec<u64>> {
+            let mut d = Document::empty();
+            d.replace(0, 0, text)?;
+            let scope = scope.unwrap_or(0..d.len());
+            let before = d.count_breaks(scope.start, &cancel)?;
+            let mut found = Vec::new();
+            d.find_lines_in(pattern, options, scope, before, 1 << 20, &cancel, &mut |l| {
+                found.push(l.line + 1);
+                Ok(false)
+            })?;
+            Ok(found)
+        };
+        assert_eq!(lines(b"a\nb\n", "^", None)?, [1, 2]);
+        assert_eq!(lines(b"a\r\nb\r\n", "^", None)?, [1, 2]);
+        assert_eq!(lines(b"a\n\n", "^", None)?, [1, 2]);
+        // Without a final line break the last line is real, and $ ends it.
+        assert_eq!(lines(b"a\nb", "$", None)?, [1, 2]);
+        // A span that ends where the next line begins.
+        assert_eq!(lines(b"a\nb\nc\n", "^", Some(0..4))?, [1, 2]);
         Ok(())
     }
 

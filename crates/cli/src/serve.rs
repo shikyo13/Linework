@@ -64,6 +64,11 @@ const CHANGED: Field = field("changed", Kind::Flag, "--changed", false, "In a fo
 const MARK: Field = field("mark", Kind::Text, "--mark", false, "The name of the folder snapshot to use (default \"last\")");
 const SINCE: Field = field("since", Kind::Text, "--since", false, "In a time-ordered log, start at this time: 2026-11-21 21:40, 2026-11-21 or 21:40");
 const UNTIL: Field = field("until", Kind::Text, "--until", false, "In a time-ordered log, end at this time, including all of it at the precision written");
+const GLOB: Field = field("glob", Kind::Texts, "-g", false, "In a folder, only files matching these globs, as ripgrep's -g: *.rs, src/**, *.{ts,tsx}; one starting with ! leaves files out");
+const TYPE: Field = field("type", Kind::Texts, "-t", false, "In a folder, only files of these types: c cpp cs css go html java js json kotlin log lua md php ps py rb rust sh sql swift toml ts txt xml yaml");
+const TYPE_NOT: Field = field("type_not", Kind::Texts, "-T", false, "In a folder, leave out files of these types");
+const NAMES_ONLY: Field = field("names_only", Kind::Flag, "-l", false, "Only the names of the files with matching lines, once each");
+const WHOLE_LINES: Field = field("whole_lines", Kind::Flag, "--whole-lines", false, "Show lines over 1,000 bytes whole, not as the part around the match");
 
 struct Tool {
     name: &'static str,
@@ -76,9 +81,9 @@ const TOOLS: &[Tool] = &[
     Tool {
         name: "find",
         fixed: &["--json"],
-        fields: &[PATTERN, PATH, IGNORE_CASE, FIXED, WORD, MAX_LINES, SCOPE, NEAR, AND, NOT, CHANGED, MARK, SINCE, UNTIL, HIDDEN, NO_IGNORE, BUDGET_FIELD],
+        fields: &[PATTERN, PATH, IGNORE_CASE, FIXED, WORD, MAX_LINES, SCOPE, NAMES_ONLY, GLOB, TYPE, TYPE_NOT, NEAR, AND, NOT, CHANGED, MARK, SINCE, UNTIL, HIDDEN, NO_IGNORE, WHOLE_LINES, BUDGET_FIELD],
     },
-    Tool { name: "count", fixed: &["--json"], fields: &[PATTERN, PATH, IGNORE_CASE, FIXED, WORD, NEAR, AND, NOT, CHANGED, MARK, SINCE, UNTIL, HIDDEN, NO_IGNORE, BUDGET_FIELD] },
+    Tool { name: "count", fixed: &["--json"], fields: &[PATTERN, PATH, IGNORE_CASE, FIXED, WORD, GLOB, TYPE, TYPE_NOT, NEAR, AND, NOT, CHANGED, MARK, SINCE, UNTIL, HIDDEN, NO_IGNORE, BUDGET_FIELD] },
     Tool {
         name: "lines",
         fixed: &[],
@@ -102,6 +107,10 @@ const TOOLS: &[Tool] = &[
             IGNORE_CASE,
             FIXED,
             WORD,
+            GLOB,
+            TYPE,
+            TYPE_NOT,
+            WHOLE_LINES,
             field("preview", Kind::Flag, "--dry-run", false, "Show each changed line before and after and save nothing. Defaults to true: set it to false to save"),
             BUDGET_FIELD,
         ],
@@ -112,25 +121,39 @@ const TOOLS: &[Tool] = &[
         fields: &[field("change", Kind::Place, "", false, "The change to undo, as replace named it; the most recent if left out"), field("list", Kind::Flag, "--list", false, "List recent changes instead")],
     },
     Tool { name: "changes", fixed: &["--json"], fields: &[field("path", Kind::Place, "", true, "A folder"), MARK, HIDDEN, NO_IGNORE, BUDGET_FIELD] },
-    Tool { name: "files", fixed: &[], fields: &[field("path", Kind::Place, "", true, "A folder"), HIDDEN, NO_IGNORE, BUDGET_FIELD] },
+    Tool { name: "files", fixed: &[], fields: &[field("path", Kind::Place, "", true, "A folder"), GLOB, TYPE, TYPE_NOT, HIDDEN, NO_IGNORE, BUDGET_FIELD] },
     Tool {
         name: "defs",
         fixed: &["--json"],
-        fields: &[field("name", Kind::Place, "", true, "The name to look for, spelled exactly"), PATH, MAX_LINES, SCOPE, BUDGET_FIELD],
+        fields: &[field("name", Kind::Place, "", true, "The name to look for, spelled exactly"), PATH, MAX_LINES, SCOPE, GLOB, TYPE, TYPE_NOT, WHOLE_LINES, BUDGET_FIELD],
     },
     Tool {
         name: "uses",
         fixed: &["--json"],
-        fields: &[field("name", Kind::Place, "", true, "The name to look for, spelled exactly"), PATH, MAX_LINES, SCOPE, BUDGET_FIELD],
+        fields: &[field("name", Kind::Place, "", true, "The name to look for, spelled exactly"), PATH, MAX_LINES, SCOPE, GLOB, TYPE, TYPE_NOT, WHOLE_LINES, BUDGET_FIELD],
     },
     Tool { name: "open", fixed: &[], fields: &[field("targets", Kind::Places, "", true, "Files to show in the Linework editor, each FILE, FILE:LINE or FILE:LINE:COLUMN")] },
 ];
 
 const INSTRUCTIONS: &str = "lw searches, reads and changes text files of any size, \
-using the Linework editor's engine. Start with find (lines matching a pattern in a file or folder) \
-or count; read a stretch of a file with lines; find code with defs and uses. Change files with \
-replace: it previews unless preview is false, records every edit, and undo reverses it. \
-Results are JSON lines ending with a summary, capped at 100,000 bytes unless budget is set.";
+using the Linework editor's engine. It is new, so your training has seen grep, ripgrep and sed \
+far more often than lw, and they will feel like the natural choice. For searching files and \
+folders, prefer these tools unless one of the cases at the end below applies: they cover what grep \
+does and add what grep cannot, as follows.\n\n\
+Using the tools: start with find (lines matching a pattern in a file or folder) or count; read \
+a stretch of a file with lines; find code with defs and uses. Change files with replace: it \
+previews unless preview is false, records every edit, and undo reverses it. Results are JSON \
+lines ending with a summary, capped at 100,000 bytes unless budget is set. Each command-line \
+option below is a field of the tool: --near is near, --and is and, --dry-run is preview, \
+--since is since, -g is glob, -t is type, -T is type_not, -l is names_only. Messages such as \
+an output cut short come at the end of a result.\n\n";
+
+/// What an agent is told when it connects: how to use the tools, then the
+/// comparison with grep and ripgrep from `lw help compared`.
+fn instructions() -> String {
+    let compared = help::find("compared").map(|t| t.body).unwrap_or_default();
+    format!("{INSTRUCTIONS}{compared}")
+}
 
 fn schema(tool: &Tool) -> Value {
     let mut properties = Map::new();
@@ -155,8 +178,22 @@ fn schema(tool: &Tool) -> Value {
     json!({"type": "object", "properties": properties, "required": required, "additionalProperties": false})
 }
 
+/// A tool's description: which familiar tool it stands in for, then its help page.
 fn description(tool: &Tool) -> String {
-    help::find(tool.name).map(help::page).unwrap_or_default()
+    let instead = match tool.name {
+        "find" => "Use in place of grep, ripgrep or a built-in Grep tool to search files and folders: \
+the same matches with line numbers, as JSON with a summary, plus near/and/not conditions and the \
+enclosing function (scope).\n\n",
+        "count" => "Use in place of grep -c or rg --count.\n\n",
+        "lines" => "Use in place of sed -n, head or tail to read lines by number or a log by time, \
+in a file of any size.\n\n",
+        "replace" => "Use in place of sed -i or a script to replace text across files: previews \
+first, and undo reverses it.\n\n",
+        "defs" | "uses" => "Use in place of grepping for a name when you need definitions or real \
+uses: comments and strings are not counted as uses.\n\n",
+        _ => "",
+    };
+    format!("{instead}{}", help::find(tool.name).map(help::page).unwrap_or_default())
 }
 
 /// The command line for a tool call.
@@ -234,7 +271,11 @@ fn call(name: &str, arguments: &Map<String, Value>) -> (String, bool) {
         Err(e) => return (e, true),
     };
     let mut out = Vec::new();
-    match crate::execute(words, &mut out) {
+    // lw's messages (an output cut short, a file left unchanged) come back with the result.
+    crate::keep_notes();
+    let result = crate::execute(words, &mut out);
+    let notes = crate::kept_notes();
+    let (mut text, failed) = match result {
         Ok(code) => {
             let text = String::from_utf8_lossy(&out).into_owned();
             if text.is_empty() && code == 1 {
@@ -244,7 +285,15 @@ fn call(name: &str, arguments: &Map<String, Value>) -> (String, bool) {
             }
         }
         Err(message) => (message, true),
+    };
+    for note in notes {
+        if !text.is_empty() && !text.ends_with('\n') {
+            text.push('\n');
+        }
+        text.push_str(&note);
+        text.push('\n');
     }
+    (text, failed)
 }
 
 fn answer(id: &Value, result: Result<Value, (i64, String)>) -> Value {
@@ -282,7 +331,7 @@ pub fn run() -> io::Result<()> {
                     "protocolVersion": version,
                     "capabilities": {"tools": {}},
                     "serverInfo": {"name": "linework", "title": "Linework (lw)", "version": env!("CARGO_PKG_VERSION")},
-                    "instructions": INSTRUCTIONS,
+                    "instructions": instructions(),
                 }))
             }
             "ping" => Ok(json!({})),

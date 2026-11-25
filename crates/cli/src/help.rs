@@ -40,7 +40,9 @@ COMMANDS
 TOPICS
 {topics}
 Run lw help NAME for a command or topic, for example lw help find or
-lw help patterns. lw help --markdown prints all of it as one document.
+lw help patterns. Coming from grep or ripgrep? lw help compared maps what you
+know onto lw and says what lw adds. lw help --markdown prints all of it as one
+document.
 
 Exit code: 0 when something was found or done, 1 when nothing matched, 2 on
 an error (with a message on the error stream).
@@ -50,7 +52,7 @@ pub const TOPICS: &[Topic] = &[
     Topic {
         name: "find",
         summary: "Print the lines that match a pattern, in a file or a folder",
-        usage: "lw find [-i] [-F] [-w] [-m N] [OUTPUT] [CONDITIONS] [--since TIME] [--until TIME] PATTERN PATH",
+        usage: "lw find [-i] [-F] [-w] [-m N] [-l] [FILES] [OUTPUT] [CONDITIONS] [--since TIME] [--until TIME] PATTERN PATH",
         body: r#"Prints every line that matches PATTERN.
 
 PATH may be a file or a folder.
@@ -66,15 +68,24 @@ OPTIONS
   -F            take PATTERN as plain text even if it has special characters
   -w            match whole words only
   -m N          at most N lines: in total for a file, from each file for a folder
-  --hidden      in a folder, include hidden files and names starting with a dot
-  --no-ignore   in a folder, ignore the .gitignore, .ignore and .rgignore files
+  -l            print only the name of each file with a matching line
   -j N          in a folder, use N threads (default: three quarters of the
                 processors, at most 12)
+
+FILES (in a folder; see lw help folders)
+  -g GLOB       only files matching GLOB, such as *.rs, *.{ts,tsx} or src/**;
+                -g !GLOB leaves them out; give -g as often as needed
+  -t TYPE       only files of TYPE, such as rust, ts, py or md
+  -T TYPE       leave out files of TYPE
+  --hidden      include hidden files and names starting with a dot
+  --no-ignore   ignore the .gitignore, .ignore and .rgignore files
 
 OUTPUT (see lw help output)
   --json        one JSON object per line, then a summary
   --heading     each file's name once, then its lines
   --scope       group lines under the function, class or section around them
+  --whole-lines print lines over 1,000 bytes whole, not just the part around
+                the match
   --budget N    stop printing after N bytes, at a line break
   --stats       print the totals on the error stream
 
@@ -91,6 +102,8 @@ TIME (one log file; see lw help time)
 EXAMPLES
   lw find TODO src
   lw find -i -w "fixme|todo" src
+  lw find -t ts -g "!*.d.ts" useState src
+  lw find -l "react-dom/server" src
   lw find --json --scope -m 5 handle_request src
   lw find --near "status=500" 3 "timeout" server.log
   lw find --since "2026-11-21 21:40" --until 21:45 status=503 app.log
@@ -101,7 +114,7 @@ pass, so a 10 GB log is searched in about half a second when it is in memory."#,
     Topic {
         name: "count",
         summary: "Count matches in a file, or matching lines per file in a folder",
-        usage: "lw count [-i] [-F] [-w] [OUTPUT] [CONDITIONS] [--since TIME] [--until TIME] PATTERN PATH",
+        usage: "lw count [-i] [-F] [-w] [FILES] [OUTPUT] [CONDITIONS] [--since TIME] [--until TIME] PATTERN PATH",
         body: r#"Counts what matches PATTERN.
 
   A file:   prints the number of matches (two on one line count as two).
@@ -109,12 +122,18 @@ pass, so a 10 GB log is searched in about half a second when it is in memory."#,
   A folder: prints  PATH/FILE:COUNT  for each file with matching lines, where
             COUNT is the number of matching lines in that file.
 
-Takes the same pattern rules, options, conditions and time span as lw find.
---json prints {"path": ..., "count": ...} per file and a summary.
+So a file's count and a folder's can differ when a line holds two matches:
+the JSON summary always gives "lines" (matching lines) when it knows them,
+and "matches" for a file counted without conditions.
+
+Takes the same pattern rules, options, file choices (-g, -t, -T),
+conditions and time span as lw find. --json prints {"path": ..., "count": ...}
+per file and a summary.
 
 EXAMPLES
   lw count status=503 app.log
   lw count -w unwrap src
+  lw count -i -w -t ts deprecated src
   lw count --json -i error logs"#,
     },
     Topic {
@@ -163,11 +182,12 @@ EXAMPLE
     Topic {
         name: "replace",
         summary: "Replace text in a file or a folder, with a preview and undo",
-        usage: "lw replace [-i] [-F] [-w] [--dry-run] [--json] OLD NEW PATH",
+        usage: "lw replace [-i] [-F] [-w] [FILES] [--dry-run] [--json] OLD NEW PATH",
         body: r#"Replaces every match of OLD with NEW and saves the files.
 
 PATH may be a file or a folder; in a folder, exactly the files lw find OLD
-would show are changed. Each file is changed and saved by Linework's engine:
+would show are changed, and -g, -t and -T choose among them as in lw find
+(lw replace -t ts -g "!*.d.ts" old new src). Each file is changed and saved by Linework's engine:
 it keeps its encoding and line ends, and it is not saved if another program
 changed it on disk after it was read.
 
@@ -180,7 +200,9 @@ OLD is a regular expression, NEW may insert what a group matched:
 When OLD is plain text, NEW is inserted exactly as written.
 
 ALWAYS PREVIEW FIRST
-  --dry-run    show each changed line before (-) and after (+), save nothing
+  --dry-run    show each changed line before (-) and after (+), save nothing;
+               a line over 1,000 bytes shows the same part of both, around
+               its first change (--whole-lines shows all of it)
   --json       with --dry-run: {"path","line","before","after"} per line;
                without: {"path","replacements"} per file; then a summary
 
@@ -229,7 +251,8 @@ at it, prints what differs, and takes a new snapshot.
 The first run on a folder only takes the snapshot. A snapshot holds each
 file's path, size and write time, never its contents; an edit that keeps both
 the size and the write time is not seen. The same folder rules as lw find
-apply (see lw help folders).
+apply (see lw help folders), except -g, -t and -T: a snapshot is always of the
+whole folder, and lw find --changed -t rust narrows the search instead.
 
   --mark NAME   keep a separate snapshot under NAME (default "last"), for
                 example one per task or per agent
@@ -247,11 +270,13 @@ EXAMPLES
     Topic {
         name: "files",
         summary: "List the files a folder search would read",
-        usage: "lw files [--hidden] [--no-ignore] [-j N] FOLDER",
+        usage: "lw files [-g GLOB] [-t TYPE] [-T TYPE] [--hidden] [--no-ignore] [-j N] FOLDER",
         body: r#"Prints the path of every file a folder search would read, one per line, by
 the folder rules (see lw help folders). Useful to check why a file is or is
-not searched.
+not searched, and to list files by name or type.
 
+  -g GLOB       only files matching GLOB; -g !GLOB leaves them out
+  -t TYPE       only files of TYPE;  -T TYPE  leaves them out
   --hidden      include hidden files and names starting with a dot
   --no-ignore   ignore the .gitignore, .ignore and .rgignore files
   --budget N    stop after N bytes, at a line break
@@ -261,6 +286,8 @@ The list is in path order.
 
 EXAMPLES
   lw files src
+  lw files -g "use*.md*" docs
+  lw files -t rust -g "!tests/**" crates
   lw files --hidden --no-ignore src"#,
     },
     Topic {
@@ -275,8 +302,8 @@ TSX, Go, C, C++, C#, Java. Read by line outline (definitions only, no uses):
 PowerShell, shell, Ruby, Lua, SQL and Markdown (where a heading is a definition).
 
 Only files that contain NAME as a whole word are parsed, and files over 4 MiB
-are not. Takes the output options of lw find; --scope shows what each
-definition sits inside.
+are not. Takes the file choices (-g, -t, -T) and output options of lw find;
+--scope shows what each definition sits inside.
 
 EXAMPLES
   lw defs Document crates
@@ -329,6 +356,67 @@ budget, so a broad search cannot flood an agent's context; the summary says
 when output was cut."#,
     },
     Topic {
+        name: "compared",
+        summary: "How lw differs from grep and ripgrep, and when to use which",
+        usage: "",
+        body: r#"lw finds text the way grep and ripgrep do: the same kind of patterns, the
+same files in a folder (ripgrep's ignore rules), the same PATH:LINE:TEXT
+lines. What you know from them carries over:
+
+  grep -rn PATTERN DIR        lw find PATTERN DIR
+  grep -i, grep -w            lw find -i, lw find -w
+  grep -c, rg --count         lw count
+  rg --json                   lw find --json
+  rg -m N                     lw find -m N
+  rg -l, grep -l              lw find -l
+  rg -g GLOB, rg -t TYPE      lw find -g GLOB, lw find -t TYPE
+  rg --files                  lw files
+  sed -n '100,120p' FILE      lw lines FILE 100 120
+  sed -i 's/old/new/g' FILES  lw replace old new PATH, with a preview and undo
+
+WHAT lw ADDS
+
+  Code structure  lw defs NAME finds where a name is defined; lw uses NAME
+                  finds where it is used and skips comments and strings;
+                  --scope names the function, class or section each matching
+                  line sits in.
+  Conditions      --near PATTERN N keeps a line only if PATTERN is within N
+                  lines of it; --and and --not keep only files that also
+                  contain, or do not contain, other patterns. One call instead
+                  of a pipeline of greps.
+  Big files       lw lines prints lines by number from a file of any size,
+                  counting line breaks in parallel instead of reading line by
+                  line; --since and --until find a time span in a time-ordered
+                  log by reading only the part they need (milliseconds in a
+                  10 GB log, where grep reads all of it).
+  Safe changes    lw replace --dry-run shows every changed line before and
+                  after; lw replace records what it changed, and lw undo puts
+                  it back file by file, leaving alone any file edited since.
+  What changed    lw changes lists the files added, changed or removed in a
+                  folder since it last looked; lw find --changed searches
+                  only those.
+  Bounded output  --budget stops output at a size, and the JSON summary says
+                  how many files were searched and matched and whether the
+                  output was cut, so a broad search never silently floods a
+                  terminal or an agent's context. A line over 1,000 bytes
+                  (minified code, a source map) shows only the part around
+                  its match, with how much was left out.
+  Speed           On one Windows 11 PC, with both programs excluded from
+                  antivirus scanning and their output captured, lw searched
+                  source trees 1.2 to 2.7 times as fast as ripgrep, and a
+                  10 GB log 3 to 10 times as fast.
+
+WHEN grep OR ripgrep IS STILL THE TOOL
+
+  - lines of context around each match (grep -C): lw prints line numbers, and
+    lw lines prints the lines around one
+  - searching piped input: lw reads files only
+  - one pattern matching across lines throughout a folder (rg -U): lw matches
+    across lines only within a single file
+  - back-references and look-around (grep -P, rg -P)
+  - systems other than Windows"#,
+    },
+    Topic {
         name: "patterns",
         summary: "How PATTERN, OLD and NAME are read",
         usage: "",
@@ -369,7 +457,17 @@ text and with patterns."#,
     every time. A file starting with a UTF-16 byte-order mark is decoded and
     searched instead; positions in its results are positions in its text as UTF-8.
 
-lw files FOLDER lists exactly the files that are read.
+CHOOSING FILES BY NAME OR TYPE
+  -g GLOB    only files matching GLOB. A glob without / matches a file's name
+             at any depth (*.rs, use*.md); one with / matches its path from
+             the searched folder (src/**, docs/*.md). * and ? stay within a
+             name, ** crosses folders, [a-z] is a set, {ts,tsx} is either.
+  -g !GLOB   leave out the files GLOB matches (quote it in a shell: "!*.min.js")
+  -t TYPE    only files of TYPE;  -T TYPE  leave them out
+When any -g or -t picks files, only picked files are searched. The last glob
+that matches a file decides, and -T always leaves out. The types:
+{types}
+lw files FOLDER lists exactly the files that are read, with the same choices.
 
 These are ripgrep's rules, so lw and ripgrep read the same files. (The
 editor's Find in folder also applies .gitignore files outside Git work trees
@@ -405,6 +503,17 @@ and as the last line a summary:
   {"summary": {"files_searched", "files_matched", "lines", "matches",
                "bytes_searched", "output_bytes", "cut_short", "seconds"}}
 "lines" is null and "matches" set when matches, not lines, were counted.
+"bytes_searched" is what the search read: for a time span, the span.
+With -l each object is just {"path": ...}.
+
+LONG LINES
+A line over 1,000 bytes, such as minified code or a source map, is shown as
+about 800 bytes around its first match:
+  12:[48211 bytes omitted] ...text around the match... [1902 bytes omitted]
+In JSON, "text" is that part, "matches" are positions in it, and
+"omitted_before" and "omitted_after" give the bytes left out ("omitted_after"
+is null when the rest of a line over 1 MiB was not read, and "column" is null
+when its start was not). --whole-lines prints such lines whole.
 
 --budget N stops printing at the last line break before N bytes, says so on
 the error stream (or sets "cut_short" in JSON), and keeps the exit code.
@@ -492,13 +601,25 @@ pub fn find(name: &str) -> Option<&'static Topic> {
     TOPICS.iter().find(|t| t.name == name)
 }
 
+/// A topic's text, with the list of file types filled in where it asks for it.
+pub fn body(topic: &Topic) -> String {
+    if !topic.body.contains("{types}") {
+        return topic.body.to_owned();
+    }
+    let types: String = linework_search::pick::TYPES
+        .iter()
+        .map(|(name, globs)| format!("  {name:8}{}\n", globs.join(" ")))
+        .collect();
+    topic.body.replace("{types}", &types)
+}
+
 /// One topic as the terminal shows it.
 pub fn page(topic: &Topic) -> String {
     let mut text = format!("lw {}: {}\n\n", topic.name, topic.summary);
     if !topic.usage.is_empty() {
         text.push_str(&format!("usage: {}\n\n", topic.usage));
     }
-    text.push_str(topic.body);
+    text.push_str(&body(topic));
     text.push('\n');
     text
 }
@@ -514,7 +635,7 @@ pub fn markdown() -> String {
         if !topic.usage.is_empty() {
             text.push_str(&format!("```text\n{}\n```\n\n", topic.usage));
         }
-        text.push_str(&format!("```text\n{}\n```\n", topic.body));
+        text.push_str(&format!("```text\n{}\n```\n", body(topic)));
     }
     text
 }

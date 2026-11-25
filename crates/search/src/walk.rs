@@ -10,6 +10,7 @@
 //! threads that are all busy never meet.
 use crate::account::{self, Step};
 use crate::ignore::{Rules, Verdict};
+use crate::pick::Pick;
 use std::{
     ffi::OsString,
     os::windows::ffi::{OsStrExt, OsStringExt},
@@ -28,7 +29,7 @@ use windows_sys::Win32::{
 };
 
 #[derive(Debug, Clone, Copy)]
-pub struct Options {
+pub struct Options<'a> {
     /// Include names that start with a dot or carry the hidden attribute.
     pub hidden: bool,
     /// Apply `.gitignore`, `.ignore` and `.rgignore` files.
@@ -44,9 +45,11 @@ pub struct Options {
     pub gitignore_anywhere: bool,
     /// Folder names below the root that are never entered, whatever the rules say.
     pub skip_folders: &'static [&'static str],
+    /// Only the files these globs and types pick (`-g`, `-t`, `-T`).
+    pub pick: Option<&'a Pick>,
 }
 
-impl Default for Options {
+impl Default for Options<'_> {
     fn default() -> Self {
         let logical = std::thread::available_parallelism().map_or(4, |n| n.get());
         Self {
@@ -56,6 +59,7 @@ impl Default for Options {
             batch: 0,
             gitignore_anywhere: false,
             skip_folders: &[],
+            pick: None,
         }
     }
 }
@@ -407,6 +411,9 @@ fn folder<S>(
             continue;
         }
         if is_folder && options.skip_folders.iter().any(|skipped| is(name, skipped)) {
+            continue;
+        }
+        if !is_folder && options.pick.is_some_and(|pick| !pick.keeps(relative)) {
             continue;
         }
         wide.truncate(stem);

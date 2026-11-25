@@ -199,6 +199,59 @@ pub fn matching_lines(query: &Query, bytes: &[u8], numbered: bool, mut visit: im
     found
 }
 
+/// A line longer than this many bytes is shown as a part around its first
+/// match, so one minified line cannot fill a screen or an agent's context.
+pub const LONG_LINE: usize = 1000;
+/// Of a long line: the bytes shown before its first match, and in all.
+const SHOWN_BEFORE: usize = 150;
+const SHOWN: usize = 800;
+
+static CLIPPING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// Whether long lines are shown in part (the default) or whole.
+pub fn set_clipping(on: bool) {
+    CLIPPING.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The part of `line` to show when its first match starts at `at`: all of it
+/// unless it is longer than `LONG_LINE`, otherwise about `SHOWN` bytes from a
+/// little before the match, cut between characters.
+pub fn clip(line: &[u8], at: usize) -> std::ops::Range<usize> {
+    if line.len() <= LONG_LINE || !CLIPPING.load(std::sync::atomic::Ordering::Relaxed) {
+        return 0..line.len();
+    }
+    let follows = |i: usize| i < line.len() && (0x80..0xC0).contains(&line[i]);
+    let mut start = at.min(line.len()).saturating_sub(SHOWN_BEFORE);
+    while follows(start) {
+        start += 1;
+    }
+    let mut end = (start + SHOWN).min(line.len());
+    while follows(end) {
+        end -= 1;
+    }
+    start..end
+}
+
+/// Appends the part of `line` that `clip` shows, with how many bytes were left out on either side.
+pub fn write_clipped(out: &mut Vec<u8>, line: &[u8], at: usize) {
+    let shown = clip(line, at);
+    if shown.start != 0 {
+        out.extend_from_slice(format!("[{} bytes omitted] ", shown.start).as_bytes());
+    }
+    out.extend_from_slice(&line[shown.clone()]);
+    if shown.end != line.len() {
+        out.extend_from_slice(format!(" [{} bytes omitted]", line.len() - shown.end).as_bytes());
+    }
+}
+
+/// Where the first match in a line starts, for showing a long line in part.
+pub fn first_match(query: &Query, line: &[u8]) -> usize {
+    if line.len() <= LONG_LINE {
+        return 0;
+    }
+    query.next(line, 0).map_or(0, |(start, _)| start)
+}
+
 /// Appends a number in decimal.
 fn decimal(out: &mut Vec<u8>, mut n: u64) {
     let mut digits = [0u8; 20];
@@ -223,7 +276,8 @@ fn lines(query: &Query, name: &[u8], bytes: &[u8], report: Report, out: &mut Vec
             out.push(b':');
             decimal(out, hit.number);
             out.push(b':');
-            out.extend_from_slice(&bytes[hit.start..hit.end]);
+            let line = &bytes[hit.start..hit.end];
+            write_clipped(out, line, first_match(query, line));
             out.push(b'\n');
         }
     });

@@ -2,7 +2,7 @@
 //! programs, a heading per file and the enclosing definition for people, a
 //! limit on how much is printed, and the totals of a search.
 use linework_project::Scope;
-use linework_search::sweep::{LineHit, Query};
+use linework_search::sweep::{clip, first_match, LineHit, Query};
 use serde_json::json;
 use std::{io, path::Path};
 
@@ -40,22 +40,65 @@ pub struct Line<'a> {
     pub number: u64,
     /// Where the line starts in its file.
     pub start: u64,
+    /// The line, or of a very long line the part read around its match.
     pub text: &'a [u8],
+    /// Bytes of the line before `text`, and whether the line goes on past it.
+    pub offset: u64,
+    pub cut: bool,
     pub scope: Option<&'a Scope>,
+}
+
+impl<'a> Line<'a> {
+    /// A whole line.
+    pub fn whole(number: u64, start: u64, text: &'a [u8], scope: Option<&'a Scope>) -> Self {
+        Self { number, start, text, offset: 0, cut: false, scope }
+    }
+    /// A line a single-file search found, which may be part of a very long line.
+    pub fn found(f: &'a linework_storage::FoundLine, scope: Option<&'a Scope>) -> Self {
+        Self { number: f.line + 1, start: f.start, text: &f.text, offset: f.text_start - f.start, cut: f.cut, scope }
+    }
+}
+
+/// Appends a line's text, or of a long line the part around `at` (where its
+/// first match starts in `text`), saying how many bytes were left out.
+/// `offset` bytes of the line come before `text`; with `cut`, more follow it.
+pub fn write_line(out: &mut Vec<u8>, text: &[u8], at: usize, offset: u64, cut: bool) {
+    let shown = clip(text, at);
+    let before = offset + shown.start as u64;
+    if before != 0 {
+        out.extend_from_slice(format!("[{before} bytes omitted] ").as_bytes());
+    }
+    out.extend_from_slice(&text[shown.clone()]);
+    if cut {
+        out.extend_from_slice(b" [rest of line omitted]");
+    } else if shown.end != text.len() {
+        out.extend_from_slice(format!(" [{} bytes omitted]", text.len() - shown.end).as_bytes());
+    }
 }
 
 fn json_line(out: &mut Vec<u8>, query: &Query, path: &str, line: &Line) {
     let text = bare(line.text);
     let found = matches(query, text);
     let first = found.first().map_or(0, |m| m[0]);
+    // A long line is given in part: "text" starts "omitted_before" bytes into
+    // the line, and "matches" are positions in "text".
+    let shown = clip(text, first);
+    let inside: Vec<[usize; 2]> =
+        found.iter().filter(|m| m[0] >= shown.start && m[1] <= shown.end).map(|m| [m[0] - shown.start, m[1] - shown.start]).collect();
     let mut value = json!({
         "path": path,
         "line": line.number,
-        "column": String::from_utf8_lossy(&text[..first]).chars().count() + 1,
-        "byte": line.start + first as u64,
-        "text": String::from_utf8_lossy(text),
-        "matches": found,
+        // Characters from the line's start: unknown when only part of a very long line was read.
+        "column": if line.offset == 0 { json!(String::from_utf8_lossy(&text[..first]).chars().count() + 1) } else { json!(null) },
+        "byte": line.start + line.offset + first as u64,
+        "text": String::from_utf8_lossy(&text[shown.clone()]),
+        "matches": inside,
     });
+    if shown != (0..text.len()) || line.offset != 0 || line.cut {
+        value["omitted_before"] = json!(line.offset + shown.start as u64);
+        // Null when the line goes on past what was read, so its length is not known.
+        value["omitted_after"] = if line.cut { json!(null) } else { json!(text.len() - shown.end) };
+    }
     if let Some(scope) = line.scope {
         value["scope"] = json!({"name": scope.name, "kind": scope.kind, "line": scope.line, "end_line": scope.end_line});
     }
@@ -82,7 +125,8 @@ pub fn file(out: &mut Vec<u8>, style: Style, query: &Query, path: &str, lines: &
         }
         shown = line.scope;
         out.extend_from_slice(format!("{}:", line.number).as_bytes());
-        out.extend_from_slice(bare(line.text));
+        let text = bare(line.text);
+        write_line(out, text, first_match(query, text), line.offset, line.cut);
         out.push(b'\n');
     }
     out.push(b'\n');
@@ -104,7 +148,7 @@ pub fn folder_file(out: &mut Vec<u8>, style: Style, query: &Query, shown: &str, 
     let lines: Vec<Line> = hits
         .iter()
         .zip(&scopes)
-        .map(|(hit, scope)| Line { number: hit.number, start: hit.start as u64, text: &bytes[hit.start..hit.end], scope: scope.as_ref() })
+        .map(|(hit, scope)| Line::whole(hit.number, hit.start as u64, &bytes[hit.start..hit.end], scope.as_ref()))
         .collect();
     file(out, style, query, &format!("{shown}/{path}"), &lines);
     hits.len() as u64
@@ -124,14 +168,30 @@ pub fn place_lines(bytes: &[u8], places: &[linework_project::Place]) -> Vec<Line
     lines
 }
 
-/// Matching lines in the plain form, `path:line:text`.
-pub fn plain(out: &mut Vec<u8>, path: &str, bytes: &[u8], hits: &[LineHit]) -> u64 {
+/// Matching lines in the plain form, `path:line:text`, a long line in part around `query`'s first match.
+pub fn plain(out: &mut Vec<u8>, query: &Query, path: &str, bytes: &[u8], hits: &[LineHit]) -> u64 {
     for hit in hits {
         out.extend_from_slice(format!("{path}:{}:", hit.number).as_bytes());
-        out.extend_from_slice(&bytes[hit.start..hit.end]);
+        let line = &bytes[hit.start..hit.end];
+        write_line(out, line, first_match(query, line), 0, false);
         out.push(b'\n');
     }
     hits.len() as u64
+}
+
+/// One numbered line in the plain form, `line:text`, a long line in part around `at`.
+pub fn numbered(out: &mut Vec<u8>, number: u64, line: &[u8], at: usize) {
+    out.extend_from_slice(format!("{number}:").as_bytes());
+    write_line(out, line, at, 0, false);
+    out.push(b'\n');
+}
+
+/// A line a single-file search found, in the plain form `line:text`.
+pub fn numbered_found(out: &mut Vec<u8>, f: &linework_storage::FoundLine) {
+    out.extend_from_slice(format!("{}:", f.line + 1).as_bytes());
+    let at = f.first.start.saturating_sub(f.text_start) as usize;
+    write_line(out, &f.text, at, f.text_start - f.start, f.cut);
+    out.push(b'\n');
 }
 
 /// Conditions beyond the main pattern: other patterns a file must or must not
