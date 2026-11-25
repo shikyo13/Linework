@@ -73,6 +73,22 @@ pub struct Gathered {
 /// What is read of a large file before deciding whether it is text.
 const HEAD: usize = 64 * 1024;
 
+/// Whether bytes start with a UTF-16 byte-order mark (and not a UTF-32 one).
+fn utf16_mark(bytes: &[u8]) -> bool {
+    matches!(bytes, [0xFF, 0xFE, ..] | [0xFE, 0xFF, ..]) && !bytes.starts_with(&[0xFF, 0xFE, 0, 0])
+}
+
+/// A file that starts with a UTF-16 byte-order mark, as UTF-8 text without
+/// the mark; None for any other file. Unpaired halves become U+FFFD.
+fn utf16(bytes: &[u8]) -> Option<String> {
+    if !utf16_mark(bytes) {
+        return None;
+    }
+    let little = bytes[0] == 0xFF;
+    let units = bytes[2..].chunks_exact(2).map(|pair| if little { u16::from_le_bytes([pair[0], pair[1]]) } else { u16::from_be_bytes([pair[0], pair[1]]) });
+    Some(char::decode_utf16(units).map(|c| c.unwrap_or(char::REPLACEMENT_CHARACTER)).collect())
+}
+
 /// Reads a whole file by the name the walk gives, or only its head when that
 /// already holds a zero byte. False when it cannot be read.
 fn read(found: &Found, wide: &mut Vec<u16>, into: &mut Vec<u8>) -> bool {
@@ -117,7 +133,8 @@ fn read(found: &Found, wide: &mut Vec<u16>, into: &mut Vec<u8>) -> bool {
         unsafe { into.set_len(into.len() + got as usize) };
         if head {
             head = false;
-            if memchr::memchr(0, into).is_some() {
+            // UTF-16 text has zero bytes too; a file with its mark is read on and decoded.
+            if memchr::memchr(0, into).is_some() && !utf16_mark(into) {
                 break;
             }
             if got as usize == HEAD {
@@ -221,7 +238,8 @@ fn lines(query: &Query, name: &[u8], bytes: &[u8], report: Report, out: &mut Vec
 
 /// Formats one file's matching lines: called with the file's path relative to
 /// the root, its bytes and its numbered matching lines, on the searching thread.
-pub type Format<'a> = dyn Fn(&str, &[u8], &[LineHit], &mut Vec<u8>) + Sync + 'a;
+/// Returns how many of the lines it kept, which may be fewer when it filters.
+pub type Format<'a> = dyn Fn(&str, &[u8], &[LineHit], &mut Vec<u8>) -> u64 + Sync + 'a;
 
 /// How each searched file's matches become output.
 enum Output<'a> {
@@ -255,9 +273,14 @@ fn search(root: &Path, options: walk::Options, query: &Query, output: Output<'_>
                 // left out, in every kind of report. ripgrep's answer for such a
                 // file depends on which of its threads reads it; this one does not.
                 let checking = account::begin();
-                let text = memchr::memchr(0, &content).is_none();
+                // UTF-16 text is searched as UTF-8; its line numbers are the same,
+                // and positions in the output are positions in that UTF-8 text.
+                let decoded = utf16(&content);
+                let content_text: &[u8] = decoded.as_ref().map_or(&content, |text| text.as_bytes());
+                let text = memchr::memchr(0, content_text).is_none();
                 account::end(Step::Binary, checking);
                 if text {
+                    let content = content_text;
                     let from = gathered.out.len();
                     let matching = account::begin();
                     match &output {
@@ -270,9 +293,9 @@ fn search(root: &Path, options: walk::Options, query: &Query, output: Output<'_>
                         }
                         Output::Formatted(format) => {
                             hits.clear();
-                            gathered.matched_lines += matching_lines(query, &content, true, |hit| hits.push(hit));
+                            matching_lines(query, &content, true, |hit| hits.push(hit));
                             if !hits.is_empty() {
-                                format(found.path, &content, hits, &mut gathered.out);
+                                gathered.matched_lines += format(found.path, &content, hits, &mut gathered.out);
                             }
                         }
                     }
