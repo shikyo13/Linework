@@ -1,4 +1,5 @@
 /target/
+/crates/*/target/
 /dist/
 /Linework.exe
 __pycache__/
