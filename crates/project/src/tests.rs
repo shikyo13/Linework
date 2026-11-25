@@ -165,6 +165,16 @@ fn scopes_are_the_innermost_definition_or_section() {
     assert!(scopes(Path::new("a.unknown"), "x", &[0])[0].is_none());
 }
 #[test]
+fn places_separate_definitions_from_uses_and_skip_comments_and_strings() {
+    let rust = "// widget\nfn widget() {}\nfn main() { let s = \"widget\"; widget(); /* widget */ }\n";
+    let found = places(Path::new("a.rs"), rust, "widget");
+    let kinds: Vec<_> = found.iter().map(|p| (p.line, p.column, p.definition.clone())).collect();
+    assert_eq!(kinds, [(2, 4, Some("function".to_string())), (3, 31, None)]);
+    let md = "# widget\nwidget text\n";
+    let found = places(Path::new("a.md"), md, "widget");
+    assert_eq!(found.iter().map(|p| (p.line, p.definition.is_some())).collect::<Vec<_>>(), [(1, true)]);
+}
+#[test]
 fn captures_build_and_real_filter_output() {
     let dir = tempfile::tempdir().unwrap();
     let report = build(

@@ -195,6 +195,88 @@ pub fn references(root: &Path, name: &str, cancel: &AtomicBool) -> Vec<Symbol> {
     index(root, cancel).references(name)
 }
 
+/// One place where a name appears in code.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Place {
+    /// Byte position in the text, and line and column (in characters) from 1.
+    pub offset: usize,
+    pub line: u64,
+    pub column: u64,
+    /// The kind of definition (`function`, `class`...), or None for a use.
+    pub definition: Option<String>,
+}
+
+/// Where `name` is defined and used in one file, by the same rules as the
+/// outline and the reference index: definitions from the language's tags
+/// query, uses from identifiers in parsed code, so names in comments and
+/// strings are not uses. Languages with a line outline give definitions only.
+pub fn places(path: &Path, text: &str, name: &str) -> Vec<Place> {
+    let mut found = Vec::new();
+    let Some(key) = lang(path) else { return found };
+    if text.len() > MAX_SYMBOL_SOURCE || name.is_empty() {
+        return found;
+    }
+    let column = |offset: usize| {
+        let start = text[..offset].rfind('\n').map_or(0, |at| at + 1);
+        text[start..offset].chars().count() as u64 + 1
+    };
+    let line = |offset: usize| text.as_bytes()[..offset].iter().filter(|&&b| b == b'\n').count() as u64 + 1;
+    if let Some(pattern) = outline_re(key) {
+        let mut at = 0;
+        let kind = if key == "markdown" { "heading" } else { "definition" };
+        for s in text.split_inclusive('\n') {
+            if let Some(m) = pattern.captures(s.trim_end_matches(['\n', '\r'])).and_then(|c| c.iter().skip(1).flatten().next()) {
+                if m.as_str() == name {
+                    let offset = at + m.start();
+                    found.push(Place { offset, line: line(offset), column: column(offset), definition: Some(kind.into()) });
+                }
+            }
+            at += s.len();
+        }
+        return found;
+    }
+    let Some(Ok(grammar)) = grammars().get(key) else { return found };
+    let mut parser = Parser::new();
+    if parser.set_language(&grammar.lang).is_err() {
+        return found;
+    }
+    let Some(tree) = parser.parse(text, None) else { return found };
+    let mut declared = HashSet::new();
+    let mut cursor = QueryCursor::new();
+    let mut matches = cursor.matches(&grammar.tags, tree.root_node(), text.as_bytes());
+    let labels = grammar.tags.capture_names();
+    while let Some(m) = matches.next() {
+        let Some(kind) = m.captures.iter().find_map(|c| labels[c.index as usize].strip_prefix("definition.")) else { continue };
+        let Some(c) = m.captures.iter().find(|c| labels[c.index as usize] == "name") else { continue };
+        if text.get(c.node.byte_range()) == Some(name) && declared.insert(c.node.start_byte()) {
+            let offset = c.node.start_byte();
+            found.push(Place { offset, line: c.node.start_position().row as u64 + 1, column: column(offset), definition: Some(kind.into()) });
+        }
+    }
+    let mut walk = tree.walk();
+    loop {
+        let node = walk.node();
+        let kind = node.kind();
+        if (kind == "identifier" || kind.ends_with("_identifier") || kind == "field_name")
+            && node.child_count() == 0
+            && text.get(node.byte_range()) == Some(name)
+            && !declared.contains(&node.start_byte())
+        {
+            let offset = node.start_byte();
+            found.push(Place { offset, line: node.start_position().row as u64 + 1, column: column(offset), definition: None });
+        }
+        if walk.goto_first_child() {
+            continue;
+        }
+        while !walk.goto_next_sibling() {
+            if !walk.goto_parent() {
+                found.sort_by_key(|p| p.offset);
+                return found;
+            }
+        }
+    }
+}
+
 /// The definition around a place in a file: a function, class, method or
 /// type, or for line outlines such as Markdown a heading and its section.
 #[derive(Clone, Debug, PartialEq, Eq)]
