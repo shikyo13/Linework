@@ -106,6 +106,8 @@ The installer puts `lw.exe` next to `Linework.exe` and adds that folder to your 
 | `lw info FILE` | Prints the size, line count, encoding and line ends |
 | `lw replace [-i] [-F] [-w] [--dry-run] OLD NEW FILE` | Replaces every match and saves, or only counts with `--dry-run` |
 | `lw files [--hidden] [--no-ignore] FOLDER` | Lists the files a folder search would read |
+| `lw defs [output options] NAME PATH` | Prints where NAME is defined in code |
+| `lw uses [output options] NAME PATH` | Prints where NAME is used in code, leaving out comments and strings |
 | `lw open [--dry-run] FILE[:LINE[:COLUMN]]...` | Shows files in the Linework window, at a line and column when given |
 
 `find` and `count` take output options:
@@ -118,7 +120,13 @@ The installer puts `lw.exe` next to `Linework.exe` and adds that folder to your 
 
 The files of a folder search are printed in path order, so the same search gives the same output each time.
 
-`-i` ignores case, `-F` treats the pattern as plain text, `-w` matches whole words and `-m N` stops after N lines. A pattern with characters such as `.`, `*` or `(` is a regular expression unless `-F` is given. A folder search reads every file the `.gitignore`, `.ignore` and `.rgignore` files leave in (`.gitignore` only inside a Git work tree), skips names that start with a dot and hidden files unless `--hidden` is given, does not follow links, and leaves out any file that contains a zero byte. Lines are numbered in the same pass as the search, so a large file needs no line index first. The exit code is 0 when something matched, 1 when nothing did and 2 on an error.
+`find` and `count` also take conditions, each of which may repeat: `--near PATTERN N` keeps a line only when PATTERN matches within N lines before or after it, `--and PATTERN` keeps only files that also contain PATTERN, and `--not PATTERN` keeps only files that do not. With conditions, `count` on a single file counts the matching lines that pass them.
+
+`lw defs` and `lw uses` use the same Tree-sitter grammars and rules as the editor's outline and references: a definition comes from the language's tags, a use is an identifier in parsed code, so a name in a comment or a string is neither. Markdown headings and the other line outlines count as definitions. Only files that contain NAME as a whole word are parsed, and files over 4 MiB are not. Finding the 1,733 uses of `useState` in a 29,498-file tree took 0.93 s.
+
+A folder search decodes files that start with a UTF-16 byte-order mark and searches their text; positions in its output are positions in that text as UTF-8. Single files in any encoding Linework opens are searched as their text.
+
+`-i` ignores case, `-F` treats the pattern as plain text, `-w` matches whole words and `-m N` stops after N lines. A pattern with characters such as `.`, `*` or `(` is a regular expression unless `-F` is given. A folder search reads every file the `.gitignore`, `.ignore` and `.rgignore` files leave in (`.gitignore` only inside a Git work tree), skips names that start with a dot and hidden files unless `--hidden` is given, does not follow links, and leaves out any file that contains a zero byte, other than UTF-16 text. Lines are numbered in the same pass as the search, so a large file needs no line index first. The exit code is 0 when something matched, 1 when nothing did and 2 on an error.
 
 Measured on the machine described in "Measured Windows performance" above, both programs excluded from Microsoft Defender scanning, output read through a pipe, median of 7 runs: counting matches in a 10 GB log took 0.49–0.51 s against ripgrep 15.2's 1.57–4.63 s, printing all 84,139 matching lines with numbers took 0.57 s against 1.90 s, and searching a 29,498-file source tree took 0.09–0.13 s against 0.19–0.23 s.
 

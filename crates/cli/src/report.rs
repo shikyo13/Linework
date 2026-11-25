@@ -98,7 +98,7 @@ pub fn scopes(wanted: bool, path: &str, bytes: &[u8], starts: &[usize]) -> Vec<O
 }
 
 /// One file of a folder search: its numbered matching lines, formatted.
-pub fn folder_file(out: &mut Vec<u8>, style: Style, query: &Query, shown: &str, path: &str, bytes: &[u8], hits: &[LineHit]) {
+pub fn folder_file(out: &mut Vec<u8>, style: Style, query: &Query, shown: &str, path: &str, bytes: &[u8], hits: &[LineHit]) -> u64 {
     let starts: Vec<usize> = hits.iter().map(|h| h.start).collect();
     let scopes = scopes(style.scope, path, bytes, &starts);
     let lines: Vec<Line> = hits
@@ -107,6 +107,65 @@ pub fn folder_file(out: &mut Vec<u8>, style: Style, query: &Query, shown: &str, 
         .map(|(hit, scope)| Line { number: hit.number, start: hit.start as u64, text: &bytes[hit.start..hit.end], scope: scope.as_ref() })
         .collect();
     file(out, style, query, &format!("{shown}/{path}"), &lines);
+    hits.len() as u64
+}
+
+/// The lines that hold places in code, once each, in order.
+pub fn place_lines(bytes: &[u8], places: &[linework_project::Place]) -> Vec<LineHit> {
+    let mut lines: Vec<LineHit> = Vec::new();
+    for place in places {
+        if lines.last().is_some_and(|l| l.number == place.line) {
+            continue;
+        }
+        let start = memchr::memrchr(b'\n', &bytes[..place.offset]).map_or(0, |at| at + 1);
+        let end = memchr::memchr(b'\n', &bytes[place.offset..]).map_or(bytes.len(), |at| place.offset + at);
+        lines.push(LineHit { number: place.line, start, end });
+    }
+    lines
+}
+
+/// Matching lines in the plain form, `path:line:text`.
+pub fn plain(out: &mut Vec<u8>, path: &str, bytes: &[u8], hits: &[LineHit]) -> u64 {
+    for hit in hits {
+        out.extend_from_slice(format!("{path}:{}:", hit.number).as_bytes());
+        out.extend_from_slice(&bytes[hit.start..hit.end]);
+        out.push(b'\n');
+    }
+    hits.len() as u64
+}
+
+/// Conditions beyond the main pattern: other patterns a file must or must not
+/// hold anywhere, and patterns that must appear within some lines of a match.
+#[derive(Default)]
+pub struct Filters {
+    pub near: Vec<(Query, u64)>,
+    pub and: Vec<Query>,
+    pub not: Vec<Query>,
+}
+impl Filters {
+    pub fn is_empty(&self) -> bool {
+        self.near.is_empty() && self.and.is_empty() && self.not.is_empty()
+    }
+    /// Whether the whole file passes --and and --not.
+    pub fn file_passes(&self, bytes: &[u8]) -> bool {
+        self.and.iter().all(|q| q.within(bytes)) && !self.not.iter().any(|q| q.within(bytes))
+    }
+    /// The lines that have each --near pattern within its number of lines, before or after.
+    pub fn near(&self, bytes: &[u8], hits: &[LineHit]) -> Vec<LineHit> {
+        let mut kept = hits.to_vec();
+        for (query, reach) in &self.near {
+            let mut numbers = Vec::new();
+            linework_search::sweep::matching_lines(query, bytes, true, |hit| numbers.push(hit.number));
+            kept.retain(|hit| close(&numbers, hit.number, *reach));
+        }
+        kept
+    }
+}
+
+/// Whether any of the ascending `numbers` lies within `reach` of `line`.
+pub fn close(numbers: &[u64], line: u64, reach: u64) -> bool {
+    let from = numbers.partition_point(|&n| n + reach < line);
+    numbers.get(from).is_some_and(|&n| n <= line + reach)
 }
 
 /// A file's match count as one JSON object.
