@@ -141,6 +141,9 @@ pub struct Found<'a> {
     pub modified: u64,
     pub accessed: u64,
     pub created: u64,
+    /// When the file's size, times, name or owner last changed, as the system
+    /// keeps it: it moves on even if a tool sets the modified time back.
+    pub changed: u64,
 }
 
 /// The rules of one folder: its own ignore files, most binding first.
@@ -475,7 +478,7 @@ fn labour<S>(shared: &Shared, options: Options, mut state: S, visit: &(impl Fn(&
                     relative.clear();
                     relative.push_str(&batch.relative);
                     relative.push_str(&String::from_utf8_lossy(name));
-                    visit(&mut state, &Found { path: relative, native, size: file.size, modified: file.modified, accessed: file.accessed, created: file.created });
+                    visit(&mut state, &Found { path: relative, native, size: file.size, modified: file.modified, accessed: file.accessed, created: file.created, changed: file.changed });
                 }
             }
         }
@@ -527,6 +530,7 @@ struct Listed {
     modified: u64,
     accessed: u64,
     created: u64,
+    changed: u64,
 }
 
 // The few names of <sys/attr.h> and <sys/vnode.h> the bulk listing needs.
@@ -535,6 +539,7 @@ const ATTR_CMN_NAME: u32 = 0x0000_0001;
 const ATTR_CMN_OBJTYPE: u32 = 0x0000_0008;
 const ATTR_CMN_CRTIME: u32 = 0x0000_0200;
 const ATTR_CMN_MODTIME: u32 = 0x0000_0400;
+const ATTR_CMN_CHGTIME: u32 = 0x0000_0800;
 const ATTR_CMN_ACCTIME: u32 = 0x0000_1000;
 const ATTR_CMN_ERROR: u32 = 0x2000_0000;
 const ATTR_CMN_RETURNED_ATTRS: u32 = 0x8000_0000;
@@ -581,7 +586,7 @@ fn list_bulk(scratch: &mut Scratch) -> Result<bool, std::io::Error> {
     let mut asked = AttrList {
         bitmapcount: ATTR_BIT_MAP_COUNT,
         reserved: 0,
-        commonattr: ATTR_CMN_RETURNED_ATTRS | ATTR_CMN_ERROR | ATTR_CMN_NAME | ATTR_CMN_OBJTYPE | ATTR_CMN_CRTIME | ATTR_CMN_MODTIME | ATTR_CMN_ACCTIME,
+        commonattr: ATTR_CMN_RETURNED_ATTRS | ATTR_CMN_ERROR | ATTR_CMN_NAME | ATTR_CMN_OBJTYPE | ATTR_CMN_CRTIME | ATTR_CMN_MODTIME | ATTR_CMN_CHGTIME | ATTR_CMN_ACCTIME,
         volattr: 0,
         dirattr: 0,
         fileattr: ATTR_FILE_DATALENGTH,
@@ -637,13 +642,17 @@ fn list_bulk(scratch: &mut Scratch) -> Result<bool, std::io::Error> {
                 typed = true;
                 field += 4;
             }
-            let (mut created, mut modified, mut accessed, mut size) = (0, 0, 0, 0);
+            let (mut created, mut modified, mut changed, mut accessed, mut size) = (0, 0, 0, 0, 0);
             if common & ATTR_CMN_CRTIME != 0 {
                 created = nanos(i64_at(entry, field), i64_at(entry, field + 8));
                 field += 16;
             }
             if common & ATTR_CMN_MODTIME != 0 {
                 modified = nanos(i64_at(entry, field), i64_at(entry, field + 8));
+                field += 16;
+            }
+            if common & ATTR_CMN_CHGTIME != 0 {
+                changed = nanos(i64_at(entry, field), i64_at(entry, field + 8));
                 field += 16;
             }
             if common & ATTR_CMN_ACCTIME != 0 {
@@ -659,7 +668,7 @@ fn list_bulk(scratch: &mut Scratch) -> Result<bool, std::io::Error> {
             }
             let start = scratch.names.len();
             scratch.names.extend_from_slice(name);
-            let mut listed = Listed { name: start..scratch.names.len(), kind, size, modified, accessed, created };
+            let mut listed = Listed { name: start..scratch.names.len(), kind, size, modified, accessed, created, changed };
             if failed || !typed {
                 // The system could not describe this one in the batch: ask about it alone.
                 ask(fd, &mut scratch.names, &mut listed);
@@ -686,6 +695,7 @@ fn ask(folder: c_int, names: &mut Vec<u8>, listed: &mut Listed) {
         listed.modified = nanos(st.st_mtime, st.st_mtime_nsec);
         listed.accessed = nanos(st.st_atime, st.st_atime_nsec);
         listed.created = nanos(st.st_birthtime, st.st_birthtime_nsec);
+        listed.changed = nanos(st.st_ctime, st.st_ctime_nsec);
     } else {
         listed.kind = Kind::Other;
     }
@@ -720,7 +730,7 @@ fn list_names(scratch: &mut Scratch, details: bool) -> Result<(), std::io::Error
                 libc::DT_UNKNOWN => None,
                 _ => Some(Kind::Other),
             };
-            let mut listed = Listed { name: start..scratch.names.len(), kind: kind.unwrap_or(Kind::Other), size: 0, modified: 0, accessed: 0, created: 0 };
+            let mut listed = Listed { name: start..scratch.names.len(), kind: kind.unwrap_or(Kind::Other), size: 0, modified: 0, accessed: 0, created: 0, changed: 0 };
             if details || kind.is_none() {
                 ask(fd, &mut scratch.names, &mut listed);
             }
@@ -929,7 +939,7 @@ fn folder<S>(
                 more.push(Work::Files(std::mem::replace(pending, fresh(native))));
             }
         } else {
-            visit(state, &Found { path: relative, native, size: entry.size, modified: entry.modified, accessed: entry.accessed, created: entry.created });
+            visit(state, &Found { path: relative, native, size: entry.size, modified: entry.modified, accessed: entry.accessed, created: entry.created, changed: entry.changed });
         }
     }
     if let Some(pending) = batch {

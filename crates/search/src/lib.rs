@@ -3,6 +3,8 @@
 pub mod account;
 pub mod ignore;
 pub mod input;
+#[cfg(target_os = "macos")]
+pub mod kept;
 pub mod matcher;
 pub mod options;
 pub mod pick;

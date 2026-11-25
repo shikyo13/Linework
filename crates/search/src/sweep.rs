@@ -308,7 +308,7 @@ pub fn tree_with(root: &Path, options: walk::Options, query: &Query, format: &Fo
 #[cfg(windows)]
 type Scratch = (Gathered, Vec<u16>);
 #[cfg(target_os = "macos")]
-type Scratch = (Gathered, Vec<u8>);
+type Scratch = (Gathered, Vec<u8>, crate::kept::Fresh);
 
 /// One file of a walk as read: where it is, and its bytes, which are all of it
 /// unless reading stopped after a head that held a zero byte.
@@ -331,9 +331,31 @@ pub type Visit<'a> = dyn Fn(&FileRead, &mut Vec<u8>) -> Outcome + Sync + 'a;
 /// Reads every file the walk reports under `root` and hands it to `visit`
 /// on the reading thread. With `whole`, a file whose head holds a zero byte
 /// is read to its end too (binary files are then searched, not passed over).
+#[cfg(windows)]
 pub fn files(root: &Path, options: walk::Options, whole: bool, visit: &Visit<'_>) -> std::io::Result<Vec<Gathered>> {
     walk::walk(root, options, Scratch::default, |scratch, found| visit_one(scratch, found, whole, visit))
         .map(|states| states.into_iter().map(|(gathered, ..)| gathered).collect())
+}
+
+/// Reads every file the walk reports under `root` and hands it to `visit`
+/// on the reading thread. With `whole`, a file whose head holds a zero byte
+/// is read to its end too (binary files are then searched, not passed over).
+/// Where a kept copy of the project's text is on, a file that has not changed
+/// since it was kept is answered from it without being opened.
+#[cfg(target_os = "macos")]
+pub fn files(root: &Path, options: walk::Options, whole: bool, visit: &Visit<'_>) -> std::io::Result<Vec<Gathered>> {
+    let kept = if options.details { crate::kept::Kept::for_walk(root) } else { None };
+    let states = walk::walk(root, options, Scratch::default, |scratch, found| visit_kept(scratch, found, whole, visit, kept.as_ref()))?;
+    let mut gathered = Vec::with_capacity(states.len());
+    let mut fresh = Vec::with_capacity(states.len());
+    for (found, _, kept) in states {
+        gathered.push(found);
+        fresh.push(kept);
+    }
+    if let Some(kept) = kept {
+        kept.settle(fresh);
+    }
+    Ok(gathered)
 }
 
 /// `files` for a given list of files under `root` (paths relative to it, with their sizes).
@@ -358,7 +380,7 @@ pub fn files_listed(root: &Path, list: &[(String, u64)], threads: usize, whole: 
                         native.extend_from_slice(&base);
                         native.push(b'/');
                         native.extend_from_slice(path.as_bytes());
-                        let found = Found { path, native: &native, size: *size, modified: 0, accessed: 0, created: 0 };
+                        let found = Found { path, native: &native, size: *size, modified: 0, accessed: 0, created: 0, changed: 0 };
                         visit_one(&mut scratch, &found, whole, visit);
                     }
                 })
@@ -397,6 +419,55 @@ pub fn files_listed(root: &Path, list: &[(String, u64)], threads: usize, whole: 
     }))
 }
 
+#[cfg(target_os = "macos")]
+fn visit_one(scratch: &mut Scratch, found: &Found, whole: bool, visit: &Visit<'_>) {
+    visit_kept(scratch, found, whole, visit, None)
+}
+
+/// Hands one file to `visit`: from the kept copy when the file is as it was
+/// when kept, else read from the disk, and then kept for the next search.
+#[cfg(target_os = "macos")]
+fn visit_kept((gathered, name, fresh): &mut Scratch, found: &Found, whole: bool, visit: &Visit<'_>, kept: Option<&crate::kept::Kept>) {
+    use crate::kept::Kind;
+    let mut content = std::mem::take(&mut gathered.content);
+    let known = kept.and_then(|kept| {
+        kept.name_into(found.path, &mut fresh.key);
+        kept.bytes(&fresh.key, found.size, found.modified, found.changed, whole)
+    });
+    let read = known.is_some() || read_file(found, name, &mut content, whole);
+    if read {
+        if let (None, Some(kept)) = (known, kept.filter(|kept| !kept.has(&fresh.key, found.size, found.modified, found.changed))) {
+            // Kept as a read without `whole` would give it: all of the file, or
+            // the head of a larger file when the head holds a zero byte.
+            let binary_head = memchr::memchr(0, &content[..content.len().min(HEAD)]).is_some() && !utf16_mark(&content);
+            if binary_head && found.size > HEAD as u64 {
+                if content.len() >= HEAD {
+                    kept.keep(fresh, found.size, found.modified, found.changed, &content[..HEAD], Kind::Head);
+                }
+            } else if content.len() as u64 == found.size {
+                kept.keep(fresh, found.size, found.modified, found.changed, &content, Kind::Whole);
+            }
+        }
+        let bytes: &[u8] = known.unwrap_or(&content);
+        gathered.files += 1;
+        let complete = whole || bytes.len() as u64 >= found.size;
+        gathered.bytes += bytes.len() as u64;
+        let from = gathered.out.len();
+        let matching = account::begin();
+        let outcome = visit(&FileRead { found, bytes, complete }, &mut gathered.out);
+        account::end(Step::Match, matching);
+        gathered.matched_lines += outcome.lines;
+        gathered.matches += outcome.matches;
+        gathered.files_matched += u64::from(outcome.lines > 0);
+        if gathered.out.len() > from {
+            gathered.parts.push((found.path.to_owned(), from..gathered.out.len()));
+            gathered.times.push((found.modified, found.accessed, found.created));
+        }
+    }
+    gathered.content = content;
+}
+
+#[cfg(windows)]
 fn visit_one((gathered, wide): &mut Scratch, found: &Found, whole: bool, visit: &Visit<'_>) {
     let mut content = std::mem::take(&mut gathered.content);
     if read_file(found, wide, &mut content, whole) {
