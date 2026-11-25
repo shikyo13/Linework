@@ -53,10 +53,6 @@ impl<'a> Line<'a> {
     pub fn whole(number: u64, start: u64, text: &'a [u8], scope: Option<&'a Scope>) -> Self {
         Self { number, start, text, offset: 0, cut: false, scope }
     }
-    /// A line a single-file search found, which may be part of a very long line.
-    pub fn found(f: &'a linework_storage::FoundLine, scope: Option<&'a Scope>) -> Self {
-        Self { number: f.line + 1, start: f.start, text: &f.text, offset: f.text_start - f.start, cut: f.cut, scope }
-    }
 }
 
 /// Appends a line's text, or of a long line the part around `at` (where its
@@ -183,54 +179,6 @@ pub fn plain(out: &mut Vec<u8>, query: &Query, path: &str, bytes: &[u8], hits: &
 pub fn numbered(out: &mut Vec<u8>, number: u64, line: &[u8], at: usize) {
     out.extend_from_slice(format!("{number}:").as_bytes());
     write_line(out, line, at, 0, false);
-    out.push(b'\n');
-}
-
-/// A line a single-file search found, in the plain form `line:text`.
-pub fn numbered_found(out: &mut Vec<u8>, f: &linework_storage::FoundLine) {
-    out.extend_from_slice(format!("{}:", f.line + 1).as_bytes());
-    let at = f.first.start.saturating_sub(f.text_start) as usize;
-    write_line(out, &f.text, at, f.text_start - f.start, f.cut);
-    out.push(b'\n');
-}
-
-/// Conditions beyond the main pattern: other patterns a file must or must not
-/// hold anywhere, and patterns that must appear within some lines of a match.
-#[derive(Default)]
-pub struct Filters {
-    pub near: Vec<(Query, u64)>,
-    pub and: Vec<Query>,
-    pub not: Vec<Query>,
-}
-impl Filters {
-    pub fn is_empty(&self) -> bool {
-        self.near.is_empty() && self.and.is_empty() && self.not.is_empty()
-    }
-    /// Whether the whole file passes --and and --not.
-    pub fn file_passes(&self, bytes: &[u8]) -> bool {
-        self.and.iter().all(|q| q.within(bytes)) && !self.not.iter().any(|q| q.within(bytes))
-    }
-    /// The lines that have each --near pattern within its number of lines, before or after.
-    pub fn near(&self, bytes: &[u8], hits: &[LineHit]) -> Vec<LineHit> {
-        let mut kept = hits.to_vec();
-        for (query, reach) in &self.near {
-            let mut numbers = Vec::new();
-            linework_search::sweep::matching_lines(query, bytes, true, |hit| numbers.push(hit.number));
-            kept.retain(|hit| close(&numbers, hit.number, *reach));
-        }
-        kept
-    }
-}
-
-/// Whether any of the ascending `numbers` lies within `reach` of `line`.
-pub fn close(numbers: &[u64], line: u64, reach: u64) -> bool {
-    let from = numbers.partition_point(|&n| n + reach < line);
-    numbers.get(from).is_some_and(|&n| n <= line + reach)
-}
-
-/// A file's match count as one JSON object.
-pub fn json_count(out: &mut Vec<u8>, path: &str, count: u64) {
-    serde_json::to_writer(&mut *out, &json!({"path": path, "count": count})).expect("writing to memory");
     out.push(b'\n');
 }
 

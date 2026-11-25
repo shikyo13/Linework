@@ -48,7 +48,7 @@ pub fn plan(path: &Path, old: &str, new: &str, options: SearchOptions, preview: 
     let mut doc = Document::open(path)?;
     let mut before = Vec::new();
     if preview {
-        doc.find_lines(old, options, widest, cancel, &mut |line| {
+        doc.find_lines(old, options, widest, linework_storage::LineEnds::LineFeed, cancel, &mut |line| {
             before.push(line.clone());
             Ok(false)
         })?;
@@ -95,8 +95,10 @@ pub fn plan(path: &Path, old: &str, new: &str, options: SearchOptions, preview: 
     let mut lines = Vec::new();
     let mut next = 0;
     for line in &before {
+        // The preview shows lines without their ending, so the CR of a CRLF line is left off.
+        let text = line.text.strip_suffix(b"\r").unwrap_or(&line.text);
         // A very long line is read in part: positions count from where its text starts.
-        let (start, end) = (line.text_start, line.text_start + line.text.len() as u64);
+        let (start, end) = (line.text_start, line.text_start + text.len() as u64);
         while next < ranges.len() && ranges[next].0.start < start {
             next += 1;
         }
@@ -106,13 +108,13 @@ pub fn plan(path: &Path, old: &str, new: &str, options: SearchOptions, preview: 
         let mut i = next;
         while i < ranges.len() && ranges[i].0.start <= end {
             let (from, to) = ((ranges[i].0.start - start) as usize, ((ranges[i].0.end.min(end)) - start) as usize);
-            after.extend_from_slice(&line.text[taken.min(from)..from]);
+            after.extend_from_slice(&text[taken.min(from)..from]);
             after.extend_from_slice(&edits[i].new);
             taken = to.max(from);
             i += 1;
         }
-        after.extend_from_slice(&line.text[taken.min(line.text.len())..]);
-        lines.push((line.line + 1, line.text.clone(), after, first));
+        after.extend_from_slice(&text[taken.min(text.len())..]);
+        lines.push((line.line + 1, text.to_vec(), after, first));
     }
     // The path as a person would write it, absolute so undo works from any folder.
     let path = std::path::absolute(path)?;

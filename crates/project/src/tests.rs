@@ -163,6 +163,12 @@ fn scopes_are_the_innermost_definition_or_section() {
     assert_eq!((one.name.as_str(), one.line, one.end_line), ("One", 2, 3));
     assert_eq!(found[2].as_ref().map(|s| (s.name.as_str(), s.end_line)), Some(("Two", 5)));
     assert!(scopes(Path::new("a.unknown"), "x", &[0])[0].is_none());
+    // The whole chain, outermost first.
+    let nested = "mod outside {\n    fn middle() {\n        fn inmost() {\n            let y = 2;\n        }\n    }\n}\n// after\n";
+    let chains = scope_chains(Path::new("a.rs"), nested, &[nested.find("let y").unwrap(), nested.find("// after").unwrap()]);
+    let names: Vec<&str> = chains[0].iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(names, ["outside", "middle", "inmost"]);
+    assert!(chains[1].is_empty());
 }
 #[test]
 fn places_separate_definitions_from_uses_and_skip_comments_and_strings() {

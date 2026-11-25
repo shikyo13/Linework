@@ -173,6 +173,45 @@ struct Piece {
     /// The end of the last match, for the rule that matches do not overlap.
     last_end: Option<u64>,
 }
+/// Which bytes end a line when matching lines are found and numbered.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum LineEnds {
+    /// The editor's rule: CR, LF and CRLF each end one line.
+    #[default]
+    Editor,
+    /// grep's rule: only LF ends a line, and a CR is part of the line's text.
+    LineFeed,
+}
+
+impl LineEnds {
+    /// Line ends in `buf`; `next` is the byte after it, to tell a lone CR from a CRLF's.
+    fn count(self, buf: &[u8], next: Option<u8>) -> u64 {
+        match self {
+            LineEnds::Editor => source::count(buf, next),
+            LineEnds::LineFeed => memchr::memchr_iter(b'\n', buf).count() as u64,
+        }
+    }
+
+    /// Where the line holding `buf[upto]` starts in `buf`; None when no line end before it is in `buf`.
+    fn begin(self, buf: &[u8], upto: usize) -> Option<usize> {
+        match self {
+            LineEnds::Editor => line_begin(buf, upto),
+            LineEnds::LineFeed => memchr::memrchr(b'\n', &buf[..upto]).map(|i| i + 1),
+        }
+    }
+
+    /// Where the text of the line holding `buf[at]` ends: at the first CR or
+    /// LF for the editor; at the LF for grep, whose line keeps a CRLF's CR as
+    /// it prints it. None when that cannot be told from `buf` alone.
+    fn end(self, buf: &[u8], at: usize, whole: bool) -> Option<usize> {
+        let found = match self {
+            LineEnds::LineFeed => memchr::memchr(b'\n', &buf[at..]),
+            LineEnds::Editor => memchr::memchr2(b'\n', b'\r', &buf[at..]),
+        };
+        found.map(|e| at + e).or(whole.then_some(buf.len()))
+    }
+}
+
 /// Counts line breaks forward from the start of a document, for matches that
 /// arrive in order.
 struct LineCounter<'a> {
@@ -180,6 +219,7 @@ struct LineCounter<'a> {
     pos: u64,
     breaks: u64,
     block: Vec<u8>,
+    ends: LineEnds,
 }
 impl LineCounter<'_> {
     /// The line, counted from 0, that holds `at`. `at` never goes backwards.
@@ -189,7 +229,7 @@ impl LineCounter<'_> {
             // One byte more, to tell a lone CR from the CR of a CRLF.
             self.block.resize((n as u64 + 1).min(self.d.len() - self.pos) as usize, 0);
             self.d.read_into(self.pos, &mut self.block)?;
-            self.breaks += source::count(&self.block[..n], self.block.get(n).copied());
+            self.breaks += self.ends.count(&self.block[..n], self.block.get(n).copied());
             self.pos += n as u64;
         }
         Ok(self.breaks)
@@ -521,7 +561,8 @@ impl<'a> Search<'a> {
     /// read from `origin`, and count its line breaks in the same pass: for each
     /// matching line, the breaks before its first match, and its text when the
     /// whole line is in `buf`. Breaks are counted from `left` whatever `from` is.
-    fn piece(&self, buf: &[u8], origin: u64, left: u64, right: u64, from: u64, widest: usize) -> io::Result<Piece> {
+    #[allow(clippy::too_many_arguments)]
+    fn piece(&self, buf: &[u8], origin: u64, left: u64, right: u64, from: u64, widest: usize, ends: LineEnds) -> io::Result<Piece> {
         let rel = |at: u64| (at - origin) as usize;
         let mut lines: Vec<PieceLine> = Vec::new();
         let (mut counted, mut breaks) = (rel(left), 0u64);
@@ -529,14 +570,15 @@ impl<'a> Search<'a> {
         let whole = origin + buf.len() as u64 == self.d.len();
         self.matches(buf, origin, &(from..right), false, &mut |hit, _| {
             let s = rel(hit.start);
-            breaks += source::count(&buf[counted..s], buf.get(s).copied());
+            breaks += ends.count(&buf[counted..s], buf.get(s).copied());
             counted = s;
             last_end = Some(hit.end);
             if lines.last().is_some_and(|l| l.breaks == breaks) {
                 return Ok(false);
             }
-            let begin = line_begin(buf, s).or((origin == 0).then_some(0));
-            let end = memchr::memchr2(b'\n', b'\r', &buf[s..]).map(|e| s + e).or(whole.then_some(buf.len()));
+            let begin = ends.begin(buf, s).or((origin == 0).then_some(0));
+            // A line end at the buffer's edge is settled by reading the line on its own.
+            let end = ends.end(buf, s, whole);
             let found = match (begin, end) {
                 (Some(b), Some(e)) => {
                     let kept = window(b as u64, e as u64, s as u64, widest);
@@ -549,7 +591,7 @@ impl<'a> Search<'a> {
             Ok(false)
         })?;
         let end = rel(right);
-        breaks += source::count(&buf[counted..end], buf.get(end).copied());
+        breaks += ends.count(&buf[counted..end], buf.get(end).copied());
         Ok(Piece { breaks, lines, last_end })
     }
 }
@@ -651,14 +693,15 @@ impl Document {
         query: &str,
         options: SearchOptions,
         widest: usize,
+        ends: LineEnds,
         cancel: &AtomicBool,
         visit: &mut dyn FnMut(&FoundLine) -> io::Result<bool>,
     ) -> io::Result<bool> {
-        self.find_lines_in(query, options, 0..self.len(), 0, widest, cancel, visit)
+        self.find_lines_in(query, options, 0..self.len(), 0, widest, ends, cancel, visit)
     }
     /// `find_lines` for the matches that start in `scope`, numbering lines from
     /// `breaks_before`, the number of line breaks before `scope.start`
-    /// (`count_breaks` gives it).
+    /// (`count_breaks` gives it, by the same `ends`).
     #[allow(clippy::too_many_arguments)]
     pub fn find_lines_in(
         &self,
@@ -667,6 +710,7 @@ impl Document {
         scope: Range<u64>,
         breaks_before: u64,
         widest: usize,
+        ends: LineEnds,
         cancel: &AtomicBool,
         visit: &mut dyn FnMut(&FoundLine) -> io::Result<bool>,
     ) -> io::Result<bool> {
@@ -683,7 +727,7 @@ impl Document {
             }
             let (start, text_start, text, cut) = match found {
                 Some(found) => found,
-                None => self.line_text(first.start, widest)?,
+                None => self.line_text(first.start, widest, ends)?,
             };
             // An empty match at the end of the scope, where a line would begin
             // (after the text's last line break, or at the next line of a
@@ -697,7 +741,7 @@ impl Document {
         if search.opt.regex {
             // A pattern searches the whole text or streams it: take its matches
             // in order and count the lines up to each in one forward pass.
-            let mut counter = LineCounter { d: self, pos: scope.start, breaks: breaks_before, block: Vec::new() };
+            let mut counter = LineCounter { d: self, pos: scope.start, breaks: breaks_before, block: Vec::new(), ends };
             return search.scan(scope.start..scope.end + 1, false, &mut |hit, _| {
                 let line = counter.line_of(hit.start)?;
                 emit(line, hit, None)
@@ -714,7 +758,7 @@ impl Document {
             let (left, right) = search.bounds(&range, k as u64);
             let piece = if piece.lines.first().is_some_and(|l| l.first.start < floor) {
                 let origin = search.load(left, right, &mut bytes, |at, out| self.read_into(at, out))?;
-                search.piece(&bytes, origin, left, right, floor.min(right), widest)?
+                search.piece(&bytes, origin, left, right, floor.min(right), widest, ends)?
             } else {
                 piece
             };
@@ -736,7 +780,7 @@ impl Document {
                 search.check()?;
                 let (left, right) = search.bounds(&range, k as u64);
                 let origin = search.load(left, right, &mut own, |at, out| self.read_into(at, out))?;
-                let piece = search.piece(&own, origin, left, right, left, widest)?;
+                let piece = search.piece(&own, origin, left, right, left, widest, ends)?;
                 if take(k, piece)? {
                     return Ok(true);
                 }
@@ -751,7 +795,7 @@ impl Document {
                 search.check()?;
                 let (left, right) = search.bounds(&range, k as u64);
                 let origin = search.load(left, right, own, |at, out| reader.read_into(at, out))?;
-                search.piece(own, origin, left, right, left, widest)
+                search.piece(own, origin, left, right, left, widest, ends)
             },
             take,
         )
@@ -760,11 +804,17 @@ impl Document {
     /// LF and CRLF: from the index when it covers `upto`, otherwise counted on
     /// several threads.
     pub fn count_breaks(&self, upto: u64, cancel: &AtomicBool) -> io::Result<u64> {
+        self.count_ends(upto, LineEnds::Editor, cancel)
+    }
+    /// The number of line ends before `upto` by `ends`' rule: from the line
+    /// index when it covers `upto` and counts by the same rule, otherwise
+    /// counted on several threads.
+    pub fn count_ends(&self, upto: u64, ends: LineEnds, cancel: &AtomicBool) -> io::Result<u64> {
         let upto = upto.min(self.len());
         if upto == 0 {
             return Ok(0);
         }
-        if self.indexed_bytes() >= upto {
+        if ends == LineEnds::Editor && self.indexed_bytes() >= upto {
             return Ok(self.line_of(upto));
         }
         let chunks = upto.div_ceil(CHUNK) as usize;
@@ -783,7 +833,7 @@ impl Document {
                 bytes.resize(((right + 1).min(self.len()) - left) as usize, 0);
                 reader.read_into(left, bytes)?;
                 let n = (right - left) as usize;
-                Ok(source::count(&bytes[..n], bytes.get(n).copied()))
+                Ok(ends.count(&bytes[..n], bytes.get(n).copied()))
             },
             |_, n| {
                 total += n;
@@ -794,7 +844,7 @@ impl Document {
     }
     /// Where the line holding `at` starts, and its text without its line break,
     /// at most `widest` bytes. Reads only around `at`.
-    fn line_text(&self, at: u64, widest: usize) -> io::Result<Kept> {
+    fn line_text(&self, at: u64, widest: usize, ends: LineEnds) -> io::Result<Kept> {
         const STEP: u64 = 64 * 1024;
         let len = self.len();
         let (mut start, mut hi) = (0, at);
@@ -804,7 +854,7 @@ impl Document {
             // One byte past `hi`, to tell a lone CR from the CR of a CRLF.
             block.resize(((hi + 1).min(len) - lo) as usize, 0);
             self.read_into(lo, &mut block)?;
-            if let Some(b) = line_begin(&block, (hi - lo) as usize) {
+            if let Some(b) = ends.begin(&block, (hi - lo) as usize) {
                 start = lo + b as u64;
                 break;
             }
@@ -816,7 +866,11 @@ impl Document {
         let from = if at - start < widest as u64 / 2 { start } else { at - widest as u64 / 4 };
         let mut text = vec![0; (len - from).min(widest as u64) as usize];
         self.read_into(from, &mut text)?;
-        let cut = match memchr::memchr2(b'\n', b'\r', &text) {
+        let found = match ends {
+            LineEnds::LineFeed => memchr::memchr(b'\n', &text),
+            LineEnds::Editor => memchr::memchr2(b'\n', b'\r', &text),
+        };
+        let cut = match found {
             Some(e) => {
                 text.truncate(e);
                 false
@@ -1016,7 +1070,7 @@ mod found_line_tests {
         let cancel = AtomicBool::new(false);
         let options = SearchOptions { case_sensitive: true, wrap: false, ..Default::default() };
         let mut whole = Vec::new();
-        d.find_lines("needle", options, 1 << 20, &cancel, &mut |l| {
+        d.find_lines("needle", options, 1 << 20, LineEnds::Editor, &cancel, &mut |l| {
             whole.push(l.clone());
             Ok(false)
         })?;
@@ -1025,7 +1079,7 @@ mod found_line_tests {
         }
         let scope = d.len() / 3 + 2..2 * d.len() / 3;
         let mut part = Vec::new();
-        d.find_lines_in("needle", options, scope.clone(), d.count_breaks(scope.start, &cancel)?, 1 << 20, &cancel, &mut |l| {
+        d.find_lines_in("needle", options, scope.clone(), d.count_breaks(scope.start, &cancel)?, 1 << 20, LineEnds::Editor, &cancel, &mut |l| {
             part.push(l.clone());
             Ok(false)
         })?;
@@ -1045,7 +1099,7 @@ mod found_line_tests {
             let scope = scope.unwrap_or(0..d.len());
             let before = d.count_breaks(scope.start, &cancel)?;
             let mut found = Vec::new();
-            d.find_lines_in(pattern, options, scope, before, 1 << 20, &cancel, &mut |l| {
+            d.find_lines_in(pattern, options, scope, before, 1 << 20, LineEnds::Editor, &cancel, &mut |l| {
                 found.push(l.line + 1);
                 Ok(false)
             })?;
@@ -1100,7 +1154,7 @@ mod found_line_tests {
                 }
             }
             let mut found = Vec::new();
-            d.find_lines(query, options, 1 << 30, &cancel, &mut |l| {
+            d.find_lines(query, options, 1 << 30, LineEnds::Editor, &cancel, &mut |l| {
                 found.push(l.clone());
                 Ok(false)
             })?;

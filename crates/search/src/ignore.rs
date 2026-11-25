@@ -36,18 +36,45 @@ struct Rule {
     folders_only: bool,
     /// Tied to the ignore file's folder; otherwise the last name alone is tested.
     tied: bool,
+    /// Matched ignoring letter case (ASCII and Unicode simple folding).
+    fold: bool,
+    /// The line as written, for saying which rule decided.
+    text: String,
 }
 
 #[derive(Debug, Default)]
 pub struct Rules {
     rules: Vec<Rule>,
+    /// Some rule ignores letter case, so paths are folded once for them.
+    folding: bool,
+    /// Where the rules came from, for saying which rule decided.
+    source: String,
+}
+
+/// The rule that decided a verdict: where it came from and how it is written.
+#[derive(Debug, Clone, Copy)]
+pub struct Decided<'a> {
+    pub verdict: Verdict,
+    pub source: &'a str,
+    pub rule: &'a str,
 }
 
 impl Rules {
     pub fn parse(text: &[u8]) -> Self {
+        Self::parse_from(text, "", false)
+    }
+
+    /// Rules read from `source` (a file's path, for messages), all ignoring letter case when `fold`.
+    pub fn parse_from(text: &[u8], source: &str, fold: bool) -> Self {
         let text = text.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(text);
-        let rules = text.split(|&b| b == b'\n').filter_map(|line| rule(line.strip_suffix(b"\r").unwrap_or(line))).collect();
-        Self { rules }
+        Self::from_lines(text.split(|&b| b == b'\n').map(|line| (line.strip_suffix(b"\r").unwrap_or(line), fold)), source)
+    }
+
+    /// Rules from lines, each with its own choice of ignoring letter case.
+    pub fn from_lines<'l>(lines: impl IntoIterator<Item = (&'l [u8], bool)>, source: &str) -> Self {
+        let rules: Vec<Rule> = lines.into_iter().filter_map(|(line, fold)| rule(line, fold)).collect();
+        let folding = rules.iter().any(|r| r.fold);
+        Self { rules, folding, source: source.to_owned() }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -57,21 +84,48 @@ impl Rules {
     /// `path` is relative to the ignore file's folder, with `/` between names.
     /// None when no rule speaks about it.
     pub fn verdict(&self, path: &[u8], is_folder: bool) -> Option<Verdict> {
-        let name = match memchr::memrchr(b'/', path) {
-            Some(at) => &path[at + 1..],
-            None => path,
-        };
+        self.decide(path, is_folder).map(|d| d.verdict)
+    }
+
+    /// The verdict and the rule that gave it.
+    pub fn decide(&self, path: &[u8], is_folder: bool) -> Option<Decided<'_>> {
+        let folded = self.folding.then(|| fold(path));
+        let name_of = |p: &'_ [u8]| -> usize { memchr::memrchr(b'/', p).map_or(0, |at| at + 1) };
         self.rules.iter().rev().find_map(|rule| {
             if rule.folders_only && !is_folder {
                 return None;
             }
-            let subject = if rule.tied { path } else { name };
-            matches(&rule.tokens, subject).then_some(if rule.exception { Verdict::Kept } else { Verdict::Ignored })
+            let full: &[u8] = match (&folded, rule.fold) {
+                (Some(folded), true) => folded,
+                _ => path,
+            };
+            let subject = if rule.tied { full } else { &full[name_of(full)..] };
+            matches(&rule.tokens, subject).then_some(Decided {
+                verdict: if rule.exception { Verdict::Kept } else { Verdict::Ignored },
+                source: &self.source,
+                rule: &rule.text,
+            })
         })
     }
 }
 
-fn rule(line: &[u8]) -> Option<Rule> {
+/// Text with letter case folded, for rules that ignore it.
+fn fold(bytes: &[u8]) -> Vec<u8> {
+    match std::str::from_utf8(bytes) {
+        Ok(text) => text.to_lowercase().into_bytes(),
+        Err(_) => bytes.to_ascii_lowercase(),
+    }
+}
+
+fn rule(line: &[u8], fold_case: bool) -> Option<Rule> {
+    let text = String::from_utf8_lossy(line).into_owned();
+    let line_folded;
+    let line = if fold_case {
+        line_folded = fold(line);
+        &line_folded[..]
+    } else {
+        line
+    };
     // Trailing spaces do not count unless the last one is escaped.
     let mut end = line.len();
     while end > 0 && line[end - 1] == b' ' && !(end > 1 && line[end - 2] == b'\\') {
@@ -96,7 +150,7 @@ fn rule(line: &[u8]) -> Option<Rule> {
     if line.is_empty() {
         return None;
     }
-    Some(Rule { tokens: tokens(line), exception, folders_only, tied })
+    Some(Rule { tokens: tokens(line), exception, folders_only, tied, fold: fold_case, text })
 }
 
 fn tokens(mut p: &[u8]) -> Vec<Token> {

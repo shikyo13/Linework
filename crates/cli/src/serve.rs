@@ -54,7 +54,7 @@ const FIXED: Field = field("fixed", Kind::Flag, "-F", false, "Take the pattern a
 const WORD: Field = field("word", Kind::Flag, "-w", false, "Match whole words only");
 const HIDDEN: Field = field("hidden", Kind::Flag, "--hidden", false, "In a folder, include hidden files and names starting with a dot");
 const NO_IGNORE: Field = field("no_ignore", Kind::Flag, "--no-ignore", false, "In a folder, ignore .gitignore, .ignore and .rgignore files");
-const MAX_LINES: Field = field("max_lines", Kind::Number, "-m", false, "At most this many lines: in total for a file, from each file for a folder");
+const MAX_LINES: Field = field("max_lines", Kind::Number, "-m", false, "At most this many matching lines from each file");
 const SCOPE: Field = field("scope", Kind::Flag, "--scope", false, "Add the function, class or section around each line (costs a parse of each matching file)");
 const BUDGET_FIELD: Field = field("budget", Kind::Number, "--budget", false, "Stop after this many bytes of output (default 100000); the summary says if output was cut");
 const NEAR: Field = field("near", Kind::Near, "--near", false, "Keep a line only if each {pattern, lines} matches within that many lines of it");
@@ -68,6 +68,26 @@ const GLOB: Field = field("glob", Kind::Texts, "-g", false, "In a folder, only f
 const TYPE: Field = field("type", Kind::Texts, "-t", false, "In a folder, only files of these types: c cpp cs css go html java js json kotlin log lua md php ps py rb rust sh sql swift toml ts txt xml yaml");
 const TYPE_NOT: Field = field("type_not", Kind::Texts, "-T", false, "In a folder, leave out files of these types");
 const NAMES_ONLY: Field = field("names_only", Kind::Flag, "-l", false, "Only the names of the files with matching lines, once each");
+const CONTEXT: Field = field("context", Kind::Number, "-C", false, "Show this many lines before and after each matching line");
+const BEFORE: Field = field("before", Kind::Number, "-B", false, "Show this many lines before each matching line");
+const AFTER: Field = field("after", Kind::Number, "-A", false, "Show this many lines after each matching line");
+const INVERT: Field = field("invert", Kind::Flag, "-v", false, "Show the lines that do not match");
+const ONLY: Field = field("only_matching", Kind::Flag, "-o", false, "Show only the matched text, each match on its own line");
+const SMART: Field = field("smart_case", Kind::Flag, "-S", false, "Ignore case unless the pattern has a capital letter");
+const LINE: Field = field("whole_line", Kind::Flag, "-x", false, "Match whole lines only");
+const MULTILINE: Field = field("multiline", Kind::Flag, "-U", false, "Let the pattern match across lines");
+const PCRE2: Field = field("pcre2", Kind::Flag, "-P", false, "Use PCRE2, for look-around and back-references");
+const PATTERNS: Field = field("patterns", Kind::Texts, "-e", false, "More patterns; a line matches when any of them matches");
+const WITHOUT: Field = field("files_without_match", Kind::Flag, "--files-without-match", false, "Only the names of the files with no matching line");
+const COUNT_MATCHES: Field = field("count_matches", Kind::Flag, "--count-matches", false, "Count matches, not matching lines");
+const FOLLOW: Field = field("follow", Kind::Flag, "-L", false, "In a folder, follow links");
+const DEPTH: Field = field("max_depth", Kind::Number, "-d", false, "In a folder, go at most this many folders deep");
+const MAX_SIZE: Field = field("max_filesize", Kind::Text, "--max-filesize", false, "In a folder, leave out files larger than this, such as 2M");
+const ENCODING: Field = field("encoding", Kind::Text, "-E", false, "Read files in this encoding (utf-16le, windows-1252, ...) when they carry no byte-order mark");
+const ZIP: Field = field("search_zip", Kind::Flag, "-z", false, "Search inside compressed files");
+const SORT: Field = field("sort", Kind::Text, "--sort", false, "Order files by path (default), modified, accessed or created");
+const NEAR_BEFORE: Field = field("near_before", Kind::Near, "--near-before", false, "Like near, looking only before the line");
+const NEAR_AFTER: Field = field("near_after", Kind::Near, "--near-after", false, "Like near, looking only after the line");
 const WHOLE_LINES: Field = field("whole_lines", Kind::Flag, "--whole-lines", false, "Show lines over 1,000 bytes whole, not as the part around the match");
 
 struct Tool {
@@ -81,9 +101,20 @@ const TOOLS: &[Tool] = &[
     Tool {
         name: "find",
         fixed: &["--json"],
-        fields: &[PATTERN, PATH, IGNORE_CASE, FIXED, WORD, MAX_LINES, SCOPE, NAMES_ONLY, GLOB, TYPE, TYPE_NOT, NEAR, AND, NOT, CHANGED, MARK, SINCE, UNTIL, HIDDEN, NO_IGNORE, WHOLE_LINES, BUDGET_FIELD],
+        fields: &[
+            PATTERN, PATH, PATTERNS, IGNORE_CASE, SMART, FIXED, WORD, LINE, INVERT, MULTILINE, PCRE2, CONTEXT, BEFORE, AFTER, ONLY, MAX_LINES, SCOPE,
+            NAMES_ONLY, WITHOUT, GLOB, TYPE, TYPE_NOT, NEAR, NEAR_BEFORE, NEAR_AFTER, AND, NOT, CHANGED, MARK, SINCE, UNTIL, HIDDEN, NO_IGNORE, FOLLOW,
+            DEPTH, MAX_SIZE, ENCODING, ZIP, SORT, WHOLE_LINES, BUDGET_FIELD,
+        ],
     },
-    Tool { name: "count", fixed: &["--json"], fields: &[PATTERN, PATH, IGNORE_CASE, FIXED, WORD, GLOB, TYPE, TYPE_NOT, NEAR, AND, NOT, CHANGED, MARK, SINCE, UNTIL, HIDDEN, NO_IGNORE, BUDGET_FIELD] },
+    Tool {
+        name: "count",
+        fixed: &["--json"],
+        fields: &[
+            PATTERN, PATH, PATTERNS, IGNORE_CASE, SMART, FIXED, WORD, LINE, INVERT, MULTILINE, PCRE2, COUNT_MATCHES, GLOB, TYPE, TYPE_NOT, NEAR, NEAR_BEFORE,
+            NEAR_AFTER, AND, NOT, CHANGED, MARK, SINCE, UNTIL, HIDDEN, NO_IGNORE, FOLLOW, DEPTH, MAX_SIZE, ENCODING, ZIP, BUDGET_FIELD,
+        ],
+    },
     Tool {
         name: "lines",
         fixed: &[],
@@ -121,7 +152,7 @@ const TOOLS: &[Tool] = &[
         fields: &[field("change", Kind::Place, "", false, "The change to undo, as replace named it; the most recent if left out"), field("list", Kind::Flag, "--list", false, "List recent changes instead")],
     },
     Tool { name: "changes", fixed: &["--json"], fields: &[field("path", Kind::Place, "", true, "A folder"), MARK, HIDDEN, NO_IGNORE, BUDGET_FIELD] },
-    Tool { name: "files", fixed: &[], fields: &[field("path", Kind::Place, "", true, "A folder"), GLOB, TYPE, TYPE_NOT, HIDDEN, NO_IGNORE, BUDGET_FIELD] },
+    Tool { name: "files", fixed: &[], fields: &[field("path", Kind::Place, "", true, "A folder"), GLOB, TYPE, TYPE_NOT, HIDDEN, NO_IGNORE, FOLLOW, DEPTH, MAX_SIZE, SORT, BUDGET_FIELD] },
     Tool {
         name: "defs",
         fixed: &["--json"],
@@ -247,10 +278,10 @@ fn argv(tool: &Tool, arguments: &Map<String, Value>) -> Result<Vec<String>, Stri
                 }
             }
             Kind::Near => {
-                for v in value.as_array().ok_or("near must be a list")? {
-                    let pattern = v.get("pattern").and_then(Value::as_str).ok_or("each near needs a pattern")?;
-                    let lines = v.get("lines").and_then(Value::as_u64).ok_or("each near needs lines")?;
-                    options.extend(["--near".to_owned(), pattern.to_owned(), lines.to_string()]);
+                for v in value.as_array().ok_or(format!("{} must be a list", f.name))? {
+                    let pattern = v.get("pattern").and_then(Value::as_str).ok_or(format!("each {} needs a pattern", f.name))?;
+                    let lines = v.get("lines").and_then(Value::as_u64).ok_or(format!("each {} needs lines", f.name))?;
+                    options.extend([f.option.to_owned(), pattern.to_owned(), lines.to_string()]);
                 }
             }
         }

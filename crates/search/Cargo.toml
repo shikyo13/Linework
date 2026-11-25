@@ -10,6 +10,15 @@ description = "Linework's own search over folders: walking, ignore rules, matchi
 [dependencies]
 memchr = "2.7"
 regex = "1.11"
+regex-syntax = "0.8"
+pcre2 = "0.2"
+encoding_rs = "0.8"
+flate2 = "1"
+bzip2 = "0.5"
+xz2 = "0.1"
+zstd = "0.13"
+brotli-decompressor = "5"
+lz4_flex = { version = "0.11", default-features = false, features = ["frame", "std"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_Security", "Win32_System_IO", "Win32_System_Threading"] }

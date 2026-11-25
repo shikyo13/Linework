@@ -101,35 +101,46 @@ The installer puts `lw.exe` next to `Linework.exe` and adds that folder to your 
 `lw serve` makes the same commands available to AI agents as Model Context Protocol tools, each described by its help page: add it to Claude Code with `claude mcp add linework -- lw serve`, or to Codex with a `[mcp_servers.linework]` entry whose command is `lw` and whose arguments are `["serve"]`. A replace through the server only previews unless the call sets `preview` to false, and every tool's output is capped at 100,000 bytes unless the call sets `budget`. It uses the same file engine as the editor and the same profile, so a line index saved by either is used by the other.
 
 | Command | What it does |
-|---|---|
-| `lw find [-i] [-F] [-w] [-m N] [output options] PATTERN PATH` | Prints each matching line as `line:text` for a file, or `path:line:text` for a folder |
-| `lw count [-i] [-F] [-w] [output options] PATTERN PATH` | Prints the number of matches in a file, or `path:count` per file of a folder |
+|-|-|
+| `lw [OPTIONS] PATTERN [PATH...]` | The same as `lw find`: prints each matching line, as `line:text` for one file or `path:line:text` for several or a folder |
+| `lw count [OPTIONS] PATTERN [PATH...]` | Prints the number of matching lines per file, the same as `-c`; `--count-matches` counts matches instead |
+| `lw files [OPTIONS] [PATH...]` | Lists the files a search would read, the same as `--files` |
 | `lw lines FILE FROM [TO]` | Prints lines FROM to TO, counted from 1 |
 | `lw lines --since TIME [--until TIME] FILE` | Prints the part of a time-ordered log between two times |
 | `lw info FILE` | Prints the size, line count, encoding and line ends |
 | `lw replace [-i] [-F] [-w] [--dry-run] [--json] OLD NEW PATH` | Replaces every match in a file or a folder and saves, or shows each changed line before and after with `--dry-run` |
 | `lw changes [--mark NAME] [--json] FOLDER` | Lists the files added, changed or removed since the last time it looked at the folder |
 | `lw undo [--list] [CHANGE]` | Undoes the last replace, or the one named; `--list` shows the recent ones |
-| `lw files [--hidden] [--no-ignore] FOLDER` | Lists the files a folder search would read |
 | `lw defs [output options] NAME PATH` | Prints where NAME is defined in code |
 | `lw uses [output options] NAME PATH` | Prints where NAME is used in code, leaving out comments and strings |
 | `lw open [--dry-run] FILE[:LINE[:COLUMN]]...` | Shows files in the Linework window, at a line and column when given |
 
-`find` and `count` take output options:
+### Options from ripgrep and grep
 
-- `--json` prints one JSON object per matching line, with `path`, `line`, `column` (counted in characters from 1), `byte` (the first match's position in the file), `text` (without its line break) and `matches` (each match as a byte range within `text`); `count --json` prints `path` and `count` per file. The last object is a `summary` with the files searched and matched, the lines found, the bytes searched and printed, whether the output was cut short, and the seconds taken.
-- `--heading` prints each file's path once, then its lines, with a blank line between files.
-- `--scope` groups lines under the function, method, class or type around them, found with the same Tree-sitter grammars as the editor's outline, or under the Markdown heading of their section; with `--json` it adds a `scope` object with `name`, `kind`, `line` and `end_line`. It parses every file with a match, so it costs more: 1.5 s instead of 0.11 s for 52,558 lines in 9,848 files.
+`lw` takes ripgrep's options, and GNU grep's where ripgrep has no option of that name, with the same meaning and the same output: `lw -C2 -w -t rust foo src` prints the same lines, separators, colours and exit code as `rg -n -C2 -w -t rust foo src`. This was checked byte for byte on 241 cases against ripgrep 15.2 and GNU grep 3.0, including files of several gigabytes, colours, links, statistics, piped input and preprocessors. Short options combine (`-iwC2`), a value may be attached or follow (`-m5`, `-m 5`, `--max-count=5`), a later option undoes an earlier one that decides the same thing, grep's `-NUM` is context, and a misspelt long option gets a suggestion. Run `lw help options` for every option, grouped, and `lw help compared` for what carries over and what differs.
+
+Where the two programs use one letter differently, ripgrep's meaning wins and grep's long name still works: `-L` follows links (grep's is `--files-without-match`), `-r` shows matches replaced, `-s` matches case (`--no-messages` for grep's), `-h` is help, `-E` names an encoding (`--extended-regexp` for grep's), `-T` leaves out a file type (`--initial-tab` for grep's), `-0` writes a zero byte after paths, and `-U` matches across lines.
+
+What the options cover:
+
+- Patterns: several with `-e` or from a file with `-f`, plain text (`-F`), whole words (`-w`) or lines (`-x`), letter case (`-i`, `-s`, smart case `-S`), basic grep syntax (`-G`), Perl-compatible patterns with look-around and back-references (`-P`, or `--engine auto` to use them only when needed), patterns across lines (`-U`), and `-v` for lines that do not match.
+- Which files: globs (`-g`, `--iglob`, grep's `--include`, `--exclude` and `--exclude-dir`), file types (`-t`, `-T`, `--type-add`, `--type-list`), hidden files, the `.gitignore`, `.ignore` and `.rgignore` files and the switches that turn each kind off (`--no-ignore` and its family, `-u` up to `-uuu`), extra ignore files, links (`-L`), depth (`-d`), size (`--max-filesize`), one file system, and order (`--sort` and `--sortr` by path or time). `lw help folders` gives the rules and their precedence.
+- Reading: compressed files (`-z`: gzip, bzip2, xz, lzma, lz4, zstd, brotli and `.Z`), encodings (`-E`, and UTF-16 by its byte-order mark), preprocessors (`--pre`, `--pre-glob`), text with zero bytes as lines (`--null-data`), CRLF line ends (`--crlf`), and binary files (`-a`, `--binary`; `lw help binary`).
+- Output: context (`-A`, `-B`, `-C`, separators), only the matches (`-o`), replacements shown (`-r` with `$1` and `${name}`), columns and byte offsets, `--vimgrep`, headings, file names on or off, colours (`--color`, `--colors`), clickable links (`--hyperlink-format`), counts and file lists (`-c`, `--count-matches`, `-l`, `--files-without-match`, `--include-zero`), limits (`-m`, `-M`, `--max-columns-preview`), `-q`, `--stats`, and the separators used by tools that read paths (`-0`, `--path-separator`).
+
+Options in the file named by the `LW_CONFIG_PATH` environment variable, one per line, come before those typed; `--no-config` leaves them out. `lw --generate man` writes a manual page, and `lw --generate complete-bash`, `complete-zsh`, `complete-fish` or `complete-powershell` a completion script for that shell.
+
+### What lw adds and where it differs
+
+- `--json` prints one JSON object per matching or context line, with `path`, `line`, `column` (counted in characters from 1), `byte` (the first match's position in the file, or the line's for a context line), `text` (without its line break) and `matches` (each match as a byte range within `text`); with `-c` it prints `path` and `count` per file, and with `-l` each `path`. The last object is a `summary` with the files searched and matched, the lines and matches found, the bytes searched and printed, whether the output was cut short, and the seconds taken. It is lw's own format, not ripgrep's.
+- `--scope` groups lines under the functions, methods, classes or types around them, outermost first, found with the same Tree-sitter grammars as the editor's outline, or under the Markdown heading of their section; with `--json` it adds a `scope` object with `name`, `kind`, `line` and `end_line`, and the outer ones under `within`. It parses every file with a match, so it costs more: 1.5 s instead of 0.11 s for 52,558 lines in 9,848 files.
+- Conditions, each of which may repeat: `--near PATTERN N` keeps a line only when PATTERN matches within N lines before or after it (`--near-before` and `--near-after` look one way), `--and PATTERN` keeps only files that also contain PATTERN, and `--not PATTERN` keeps only files that do not.
 - `--budget BYTES` stops printing at a line break once that much output is written, and says so.
-- `--stats` prints the totals on the error stream.
-- `-l` prints only the name of each file with a matching line.
-- A line over 1,000 bytes, such as minified code or a source map, is shown as about 800 bytes around its first match, with the number of bytes left out on each side (`omitted_before` and `omitted_after` in JSON). `--whole-lines` prints such lines whole.
+- A line over 1,000 bytes, such as minified code or a source map, is shown as about 800 bytes around its first match, with the number of bytes left out on each side (`omitted_before` and `omitted_after` in JSON). `-M`, `--max-columns` or `--whole-lines` change that.
+- Line numbers are on by default, also in a pipe (`-N` turns them off); paths use `/`; the files of a folder search are printed in path order, so the same search gives the same output each time.
+- A file is binary when its first 64 KiB holds a zero byte, and a later zero byte stops the search there with a warning, so the answer does not depend on how the file happened to be read.
 
-The files of a folder search are printed in path order, so the same search gives the same output each time.
-
-In a folder, `find`, `count`, `replace`, `defs`, `uses` and `files` can choose files by name or type, as ripgrep does: `-g GLOB` searches only files matching the glob (`*.rs`, `*.{ts,tsx}`, `src/**`), `-g !GLOB` leaves them out, `-t TYPE` searches only one type (`rust`, `ts`, `py`, `md` and others; `lw help folders` lists them) and `-T TYPE` leaves a type out.
-
-`find` and `count` also take conditions, each of which may repeat: `--near PATTERN N` keeps a line only when PATTERN matches within N lines before or after it, `--and PATTERN` keeps only files that also contain PATTERN, and `--not PATTERN` keeps only files that do not. With conditions, `count` on a single file counts the matching lines that pass them.
+In a folder, `replace`, `defs` and `uses` choose files with the same options as a search.
 
 `lw replace` on a folder changes the files a search for OLD would show. Each file is changed and saved by the editor's engine, in its own encoding, and is not saved if it changed on disk since it was read. In a pattern replacement, `$1` or `${1}` inserts a captured group; write `${1}x` when a letter or digit follows, since `$1x` names a group called `1x`. Before any file is saved, the edits that will be made in it (each place, the new text and the text it replaces) are written to a change record in the `changes` folder of the profile. `lw undo` reads that record and restores each file only if every changed place still holds the text the replace put there; a file edited since is left as it is and reported, and the change can be undone again once it is dealt with. A replace stopped partway through, by a crash or power cut, can be undone the same way: files that were never saved are left alone. On the machine described above, replacing in 2,000 small files took 2.9 s, and undoing it 2.9 s. A change record takes about 50 bytes per replacement; deleting old records is safe once their changes need no undoing.
 
@@ -139,11 +150,11 @@ In a folder, `find`, `count`, `replace`, `defs`, `uses` and `files` can choose f
 
 `lw changes FOLDER` keeps a snapshot of the folder's listing (each file's path, size and last write time) in the `marks` folder of the profile, and on the next run lists what was added, changed or removed since, then takes a new snapshot. `--mark NAME` keeps a separate snapshot, for example one per task. `lw find --changed PATTERN FOLDER` searches only the files added or changed since the snapshot and leaves it as it is. A change that keeps both a file's size and its write time is not seen. For a 163,662-file folder, finding that nothing changed took 0.38 s and `find --changed` 0.29 s, against 9.1 s for a full search with half a million matching lines.
 
-A folder search decodes files that start with a UTF-16 byte-order mark and searches their text; positions in its output are positions in that text as UTF-8. Single files in any encoding Linework opens are searched as their text.
+A file that starts with a byte-order mark is read in its encoding (UTF-16 is decoded to UTF-8), and positions in the output are positions in that text as UTF-8; `-E ENCODING` reads files without a mark in a named encoding.
 
-`-i` ignores case, `-F` treats the pattern as plain text, `-w` matches whole words and `-m N` stops after N lines. A pattern with characters such as `.`, `*` or `(` is a regular expression unless `-F` is given. A folder search reads every file the `.gitignore`, `.ignore` and `.rgignore` files leave in (`.gitignore` only inside a Git work tree), skips names that start with a dot and hidden files unless `--hidden` is given, does not follow links, and leaves out any file that contains a zero byte, other than UTF-16 text. Lines are numbered in the same pass as the search, so a large file needs no line index first. The exit code is 0 when something matched, 1 when nothing did and 2 on an error.
+By default a pattern with characters such as `.`, `*` or `(` is a regular expression unless `-F` is given, and a folder search reads every file the `.gitignore`, `.ignore` and `.rgignore` files leave in (`.gitignore` only inside a Git work tree), skips hidden files, does not follow links, and leaves out binary files. With no PATH, `lw` searches what is piped to it, or else the current folder. A large file is searched in parallel by the editor's own engine, and lines are numbered in the same pass, so it needs no line index first. The exit code is 0 when something matched, 1 when nothing did and 2 on an error.
 
-Measured on the machine described in "Measured Windows performance" above, both programs excluded from Microsoft Defender scanning, output read through a pipe, median of 7 runs: counting matches in a 10 GB log took 0.49–0.51 s against ripgrep 15.2's 1.57–4.63 s, printing all 84,139 matching lines with numbers took 0.57 s against 1.90 s, and searching a 29,498-file source tree took 0.09–0.13 s against 0.19–0.23 s.
+Measured on 2026-11-25 on the machine described in "Measured Windows performance" above, both programs excluded from Microsoft Defender scanning, output captured as a program would capture it, median of 5 runs taken in turn with ripgrep 15.2 (lower is better): in a 29,498-file source tree, printing every line with a common word took 0.165 s against ripgrep's 0.290 s, a case-insensitive pattern 0.129 s against 0.261 s, and a whole word with two lines of context 0.100 s against 0.221 s; finding a rare line in a 10 GB log took 0.58 s against 4.45 s with ripgrep's memory-mapped reading.
 
 ## Implementation and compatibility
 

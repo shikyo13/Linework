@@ -12,51 +12,7 @@ use windows_sys::Win32::{
     Storage::FileSystem::{CreateFileW, ReadFile, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING},
 };
 
-pub struct Query {
-    text: Option<memchr::memmem::Finder<'static>>,
-    pattern: Option<regex::bytes::Regex>,
-}
-
-impl Query {
-    /// `pattern` is plain text when `plain`, otherwise a regular expression.
-    pub fn new(pattern: &str, plain: bool, ignore_case: bool, whole_word: bool) -> Result<Self, String> {
-        if plain && !ignore_case && !whole_word {
-            return Ok(Self { text: Some(memchr::memmem::Finder::new(pattern.as_bytes()).into_owned()), pattern: None });
-        }
-        let mut source = if plain { regex::escape(pattern) } else { pattern.to_owned() };
-        if whole_word {
-            source = format!(r"\b(?:{source})\b");
-        }
-        let built = regex::bytes::RegexBuilder::new(&source).case_insensitive(ignore_case).multi_line(true).unicode(true).build();
-        Ok(Self { text: None, pattern: Some(built.map_err(|e| e.to_string())?) })
-    }
-
-    /// The next match at or after `from`, as a byte range.
-    pub fn next(&self, bytes: &[u8], from: usize) -> Option<(usize, usize)> {
-        match (&self.text, &self.pattern) {
-            (Some(text), _) => text.find(&bytes[from..]).map(|at| (from + at, from + at + text.needle().len())),
-            (_, Some(pattern)) => pattern.find_at(bytes, from).map(|m| (m.start(), m.end())),
-            _ => None,
-        }
-    }
-
-    /// Whether the pattern matches anywhere in `line`.
-    pub fn within(&self, line: &[u8]) -> bool {
-        match (&self.text, &self.pattern) {
-            (Some(text), _) => text.find(line).is_some(),
-            (_, Some(pattern)) => pattern.is_match(line),
-            _ => false,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Report {
-    /// `path:line:text` for every matching line.
-    Lines,
-    /// `path:count` for every file with matching lines.
-    Counts,
-}
+pub use crate::matcher::Query;
 
 /// What one thread gathers.
 #[derive(Default)]
@@ -67,6 +23,11 @@ pub struct Gathered {
     pub files: u64,
     pub bytes: u64,
     pub matched_lines: u64,
+    /// Matches counted by the caller's visit, and files with a selected line.
+    pub matches: u64,
+    pub files_matched: u64,
+    /// For each part: the file's modified, accessed and created times, for --sort.
+    pub times: Vec<(u64, u64, u64)>,
     content: Vec<u8>,
 }
 
@@ -89,9 +50,9 @@ fn utf16(bytes: &[u8]) -> Option<String> {
     Some(char::decode_utf16(units).map(|c| c.unwrap_or(char::REPLACEMENT_CHARACTER)).collect())
 }
 
-/// Reads a whole file by the name the walk gives, or only its head when that
-/// already holds a zero byte. False when it cannot be read.
-fn read(found: &Found, wide: &mut Vec<u16>, into: &mut Vec<u8>) -> bool {
+/// Reads a whole file by the name the walk gives, or without `whole` only its
+/// head when that already holds a zero byte. False when it cannot be read.
+fn read_file(found: &Found, wide: &mut Vec<u16>, into: &mut Vec<u8>, whole: bool) -> bool {
     wide.clear();
     wide.extend_from_slice(found.wide);
     wide.push(0);
@@ -134,7 +95,7 @@ fn read(found: &Found, wide: &mut Vec<u16>, into: &mut Vec<u8>) -> bool {
         if head {
             head = false;
             // UTF-16 text has zero bytes too; a file with its mark is read on and decoded.
-            if memchr::memchr(0, into).is_some() && !utf16_mark(into) {
+            if !whole && memchr::memchr(0, into).is_some() && !utf16_mark(into) {
                 break;
             }
             if got as usize == HEAD {
@@ -252,96 +213,83 @@ pub fn first_match(query: &Query, line: &[u8]) -> usize {
     query.next(line, 0).map_or(0, |(start, _)| start)
 }
 
-/// Appends a number in decimal.
-fn decimal(out: &mut Vec<u8>, mut n: u64) {
-    let mut digits = [0u8; 20];
-    let mut at = digits.len();
-    loop {
-        at -= 1;
-        digits[at] = b'0' + (n % 10) as u8;
-        n /= 10;
-        if n == 0 {
-            break;
-        }
-    }
-    out.extend_from_slice(&digits[at..]);
-}
-
-/// The matching lines of one file's bytes, appended to `out` in the plain form.
-fn lines(query: &Query, name: &[u8], bytes: &[u8], report: Report, out: &mut Vec<u8>) -> u64 {
-    let numbered = report == Report::Lines;
-    let found = matching_lines(query, bytes, numbered, |hit| {
-        if numbered {
-            out.extend_from_slice(name);
-            out.push(b':');
-            decimal(out, hit.number);
-            out.push(b':');
-            let line = &bytes[hit.start..hit.end];
-            write_clipped(out, line, first_match(query, line));
-            out.push(b'\n');
-        }
-    });
-    if report == Report::Counts && found != 0 {
-        out.extend_from_slice(name);
-        out.push(b':');
-        decimal(out, found);
-        out.push(b'\n');
-    }
-    found
-}
-
 /// Formats one file's matching lines: called with the file's path relative to
 /// the root, its bytes and its numbered matching lines, on the searching thread.
 /// Returns how many of the lines it kept, which may be fewer when it filters.
 pub type Format<'a> = dyn Fn(&str, &[u8], &[LineHit], &mut Vec<u8>) -> u64 + Sync + 'a;
 
-/// How each searched file's matches become output.
-enum Output<'a> {
-    Plain(&'a str, Report),
-    Formatted(&'a Format<'a>),
-}
-
-/// Searches every file the walk reports under `root`. `shown` is put in front
-/// of each relative path in the output.
-pub fn tree(root: &Path, shown: &str, options: walk::Options, query: &Query, report: Report) -> std::io::Result<Vec<Gathered>> {
-    search(root, options, query, Output::Plain(shown, report))
-}
-
-/// Searches every file the walk reports under `root` and hands each file with
-/// matching lines to `format`, which writes that file's part of the output.
+/// Searches every text file the walk reports under `root` and hands each file
+/// with matching lines to `format`, which writes that file's part of the
+/// output. A file with a zero byte is passed over; UTF-16 text is searched as
+/// UTF-8, and positions in the output are positions in that UTF-8 text.
 pub fn tree_with(root: &Path, options: walk::Options, query: &Query, format: &Format<'_>) -> std::io::Result<Vec<Gathered>> {
-    search(root, options, query, Output::Formatted(format))
+    files(root, options, false, &|read: &FileRead, out: &mut Vec<u8>| {
+        let checking = account::begin();
+        let decoded = utf16(read.bytes);
+        let content: &[u8] = decoded.as_ref().map_or(read.bytes, |text| text.as_bytes());
+        let text = read.complete && memchr::memchr(0, content).is_none();
+        account::end(Step::Binary, checking);
+        if !text {
+            return Outcome::default();
+        }
+        let mut hits = Vec::new();
+        matching_lines(query, content, true, |hit| hits.push(hit));
+        if hits.is_empty() {
+            return Outcome::default();
+        }
+        Outcome { lines: format(read.found.path, content, &hits, out), matches: 0 }
+    })
 }
 
-/// What one searching thread keeps: its results and the buffers it reuses.
-type Scratch = (Gathered, Vec<u16>, Vec<u8>, Vec<LineHit>);
+/// What one searching thread keeps: its results and the buffer it names files in.
+type Scratch = (Gathered, Vec<u16>);
 
-fn search(root: &Path, options: walk::Options, query: &Query, output: Output<'_>) -> std::io::Result<Vec<Gathered>> {
-    walk::walk(root, options, Scratch::default, |scratch, found| one(scratch, found, query, &output))
+/// One file of a walk as read: where it is, and its bytes, which are all of it
+/// unless reading stopped after a head that held a zero byte.
+pub struct FileRead<'a> {
+    pub found: &'a Found<'a>,
+    pub bytes: &'a [u8],
+    pub complete: bool,
+}
+
+/// What searching one file gave: selected lines and matches.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Outcome {
+    pub lines: u64,
+    pub matches: u64,
+}
+
+/// Searches one file read by `files`, appending its output.
+pub type Visit<'a> = dyn Fn(&FileRead, &mut Vec<u8>) -> Outcome + Sync + 'a;
+
+/// Reads every file the walk reports under `root` and hands it to `visit`
+/// on the reading thread. With `whole`, a file whose head holds a zero byte
+/// is read to its end too (binary files are then searched, not passed over).
+pub fn files(root: &Path, options: walk::Options, whole: bool, visit: &Visit<'_>) -> std::io::Result<Vec<Gathered>> {
+    walk::walk(root, options, Scratch::default, |scratch, found| visit_one(scratch, found, whole, visit))
         .map(|states| states.into_iter().map(|(gathered, ..)| gathered).collect())
 }
 
-/// Searches the given files under `root` (paths relative to it with `/`, and
-/// their listed sizes) on `threads` threads, as `tree_with` searches a walk's.
-pub fn listed_with(root: &Path, files: &[(String, u64)], threads: usize, query: &Query, format: &Format<'_>) -> std::io::Result<Vec<Gathered>> {
+/// `files` for a given list of files under `root` (paths relative to it, with their sizes).
+pub fn files_listed(root: &Path, list: &[(String, u64)], threads: usize, whole: bool, visit: &Visit<'_>) -> std::io::Result<Vec<Gathered>> {
     use std::os::windows::ffi::OsStrExt;
     use std::sync::atomic::{AtomicUsize, Ordering};
     let base: Vec<u16> = std::path::absolute(root)?.as_os_str().encode_wide().collect();
-    let output = Output::Formatted(format);
     let next = AtomicUsize::new(0);
     Ok(std::thread::scope(|scope| {
-        let workers: Vec<_> = (0..threads.clamp(1, files.len().max(1)))
+        let workers: Vec<_> = (0..threads.clamp(1, list.len().max(1)))
             .map(|_| {
                 scope.spawn(|| {
                     let mut scratch = Scratch::default();
                     let mut wide = Vec::new();
                     loop {
-                        let Some((path, size)) = files.get(next.fetch_add(1, Ordering::Relaxed)) else { return scratch.0 };
+                        let Some((path, size)) = list.get(next.fetch_add(1, Ordering::Relaxed)) else { return scratch.0 };
                         wide.clear();
                         wide.extend_from_slice(&base);
                         wide.push(u16::from(b'\\'));
                         wide.extend(path.encode_utf16().map(|unit| if unit == u16::from(b'/') { u16::from(b'\\') } else { unit }));
-                        one(&mut scratch, &Found { path, wide: &wide, size: *size, modified: 0 }, query, &output);
+                        let found = Found { path, wide: &wide, size: *size, modified: 0, accessed: 0, created: 0 };
+                        visit_one(&mut scratch, &found, whole, visit);
                     }
                 })
             })
@@ -350,49 +298,57 @@ pub fn listed_with(root: &Path, files: &[(String, u64)], threads: usize, query: 
     }))
 }
 
-/// Reads, decodes and searches one file, adding its output to the thread's results.
-fn one((gathered, wide, name, hits): &mut Scratch, found: &Found, query: &Query, output: &Output<'_>) {
+fn visit_one((gathered, wide): &mut Scratch, found: &Found, whole: bool, visit: &Visit<'_>) {
     let mut content = std::mem::take(&mut gathered.content);
-    if read(found, wide, &mut content) {
+    if read_file(found, wide, &mut content, whole) {
         gathered.files += 1;
+        let complete = whole || content.len() as u64 >= found.size;
         gathered.bytes += content.len() as u64;
-        // A file with a zero byte anywhere is taken to be binary and
-        // left out, in every kind of report. ripgrep's answer for such a
-        // file depends on which of its threads reads it; this one does not.
-        let checking = account::begin();
-        // UTF-16 text is searched as UTF-8; its line numbers are the same,
-        // and positions in the output are positions in that UTF-8 text.
-        let decoded = utf16(&content);
-        let content_text: &[u8] = decoded.as_ref().map_or(&content, |text| text.as_bytes());
-        let text = memchr::memchr(0, content_text).is_none();
-        account::end(Step::Binary, checking);
-        if text {
-            let content = content_text;
-            let from = gathered.out.len();
-            let matching = account::begin();
-            match output {
-                Output::Plain(shown, report) => {
-                    name.clear();
-                    name.extend_from_slice(shown.as_bytes());
-                    name.push(b'/');
-                    name.extend_from_slice(found.path.as_bytes());
-                    gathered.matched_lines += lines(query, name, &content, *report, &mut gathered.out);
-                }
-                Output::Formatted(format) => {
-                    hits.clear();
-                    matching_lines(query, &content, true, |hit| hits.push(hit));
-                    if !hits.is_empty() {
-                        gathered.matched_lines += format(found.path, &content, hits, &mut gathered.out);
-                    }
-                }
-            }
-            account::end(Step::Match, matching);
-            if gathered.out.len() > from {
-                gathered.parts.push((found.path.to_owned(), from..gathered.out.len()));
-            }
+        let from = gathered.out.len();
+        let matching = account::begin();
+        let outcome = visit(&FileRead { found, bytes: &content, complete }, &mut gathered.out);
+        account::end(Step::Match, matching);
+        gathered.matched_lines += outcome.lines;
+        gathered.matches += outcome.matches;
+        gathered.files_matched += u64::from(outcome.lines > 0);
+        if gathered.out.len() > from {
+            gathered.parts.push((found.path.to_owned(), from..gathered.out.len()));
+            gathered.times.push((found.modified, found.accessed, found.created));
         }
     }
     gathered.content = content;
+}
+
+/// How the files of a folder search are put in order.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Order {
+    /// Path order ignoring letter case (lw's own).
+    Path,
+    /// Names compared as bytes, folder by folder (ripgrep's --sort path).
+    Bytes,
+    Modified,
+    Accessed,
+    Created,
+}
+
+/// Every file's part of the output in the order asked for, reversed with `reverse`.
+pub fn ordered(gathered: &[Gathered], order: Order, reverse: bool) -> Vec<(&str, &[u8])> {
+    let mut parts: Vec<(&str, &[u8], (u64, u64, u64))> = gathered
+        .iter()
+        .flat_map(|g| g.parts.iter().zip(&g.times).map(move |((path, range), times)| (path.as_str(), &g.out[range.clone()], *times)))
+        .collect();
+    match order {
+        Order::Path => parts.sort_unstable_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()).then_with(|| a.0.cmp(b.0))),
+        Order::Bytes => parts.sort_unstable_by(|a, b| a.0.split('/').cmp(b.0.split('/'))),
+        // Ties keep path order, so the result is the same every time.
+        Order::Modified => parts.sort_by(|a, b| a.2 .0.cmp(&b.2 .0).then_with(|| a.0.cmp(b.0))),
+        Order::Accessed => parts.sort_by(|a, b| a.2 .1.cmp(&b.2 .1).then_with(|| a.0.cmp(b.0))),
+        Order::Created => parts.sort_by(|a, b| a.2 .2.cmp(&b.2 .2).then_with(|| a.0.cmp(b.0))),
+    }
+    if reverse {
+        parts.reverse();
+    }
+    parts.into_iter().map(|(p, out, _)| (p, out)).collect()
 }
 
 /// Every file's part of the output, ordered by path, so the same search gives
@@ -408,24 +364,24 @@ pub fn in_order(gathered: &[Gathered]) -> Vec<(&str, &[u8])> {
 mod tests {
     use super::*;
 
-    fn found(pattern: &str, plain: bool, text: &str) -> String {
+    fn found(pattern: &str, plain: bool, text: &str) -> Vec<(u64, String)> {
         let query = Query::new(pattern, plain, false, false).unwrap();
-        let mut out = Vec::new();
-        lines(&query, b"f", text.as_bytes(), Report::Lines, &mut out);
-        String::from_utf8(out).unwrap()
+        let mut lines = Vec::new();
+        matching_lines(&query, text.as_bytes(), true, |hit| lines.push((hit.number, text[hit.start..hit.end].to_owned())));
+        lines
     }
 
     #[test]
     fn each_matching_line_is_reported_once_with_its_number() {
-        assert_eq!(found("ab", true, "ab ab\nx\nab"), "f:1:ab ab\nf:3:ab\n");
-        assert_eq!(found("x", true, "a\n\nx\n"), "f:3:x\n");
-        assert_eq!(found("zz", true, "a\nb\n"), "");
-        // A pattern that can run across a line break still reports whole lines,
-        // and only lines it matches by themselves.
-        assert_eq!(found(r"a\s+b", false, "a\nb\na b\n"), "f:3:a b\n");
-        assert_eq!(found(r"^b", false, "ab\nb\n"), "f:2:b\n");
-        assert_eq!(found(r"b$", false, "ab\r\nb"), "f:2:b\n");
+        let pair = |n: u64, t: &str| (n, t.to_owned());
+        assert_eq!(found("ab", true, "ab ab\nx\nab"), [pair(1, "ab ab"), pair(3, "ab")]);
+        assert_eq!(found("x", true, "a\n\nx\n"), [pair(3, "x")]);
+        assert_eq!(found("zz", true, "a\nb\n"), []);
+        // A pattern never matches across a line end: \s stops at it, as in ripgrep.
+        assert_eq!(found(r"a\s+b", false, "a\nb\na b\n"), [pair(3, "a b")]);
+        assert_eq!(found(r"^b", false, "ab\nb\n"), [pair(2, "b")]);
+        assert_eq!(found(r"b$", false, "ab\r\nb"), [pair(2, "b")]);
         // The last line needs no line break.
-        assert_eq!(found("end", true, "x\nthe end"), "f:2:the end\n");
+        assert_eq!(found("end", true, "x\nthe end"), [pair(2, "the end")]);
     }
 }

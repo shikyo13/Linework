@@ -293,10 +293,38 @@ pub struct Scope {
 /// outline reaches until the next one. None outside every definition, for
 /// languages without an outline, and for text over the outline's size limit.
 pub fn scopes(path: &Path, text: &str, offsets: &[usize]) -> Vec<Option<Scope>> {
-    let none = || vec![None; offsets.len()];
-    let Some(key) = lang(path) else { return none() };
+    scope_chains(path, text, offsets).into_iter().map(|mut chain| chain.pop()).collect()
+}
+
+/// For each byte offset into `text`, every definition that contains it,
+/// outermost first: the class, then the method in it, then a function
+/// inside that. Empty outside every definition.
+pub fn scope_chains(path: &Path, text: &str, offsets: &[usize]) -> Vec<Vec<Scope>> {
+    let Some(found) = definitions(path, text) else { return vec![Vec::new(); offsets.len()] };
+    offsets
+        .iter()
+        .map(|&at| {
+            // A node the tags query names twice (a method is also a function)
+            // counts once, as the first name found for it.
+            let mut around: Vec<&(usize, usize, Scope)> = Vec::new();
+            for definition in found.iter().filter(|(start, end, _)| *start <= at && at < *end) {
+                if !around.iter().any(|seen| seen.0 == definition.0 && seen.1 == definition.1) {
+                    around.push(definition);
+                }
+            }
+            // Outermost first: the longest span first.
+            around.sort_by(|a, b| (b.1 - b.0).cmp(&(a.1 - a.0)).then(a.0.cmp(&b.0)));
+            around.into_iter().map(|(_, _, scope)| scope.clone()).collect()
+        })
+        .collect()
+}
+
+/// Every definition in `text` with its byte span; None for languages without
+/// an outline and for text over the outline's size limit.
+fn definitions(path: &Path, text: &str) -> Option<Vec<(usize, usize, Scope)>> {
+    let key = lang(path)?;
     if text.len() > MAX_SYMBOL_SOURCE {
-        return none();
+        return None;
     }
     // (start byte, end byte, scope); the innermost is the shortest that contains.
     let mut found: Vec<(usize, usize, Scope)> = Vec::new();
@@ -317,10 +345,8 @@ pub fn scopes(path: &Path, text: &str, offsets: &[usize]) -> Vec<Option<Scope>> 
         }
     } else if let Some(Ok(grammar)) = grammars().get(key) {
         let mut parser = Parser::new();
-        if parser.set_language(&grammar.lang).is_err() {
-            return none();
-        }
-        let Some(tree) = parser.parse(text, None) else { return none() };
+        parser.set_language(&grammar.lang).ok()?;
+        let tree = parser.parse(text, None)?;
         let mut cursor = QueryCursor::new();
         let mut matches = cursor.matches(&grammar.tags, tree.root_node(), text.as_bytes());
         let labels = grammar.tags.capture_names();
@@ -338,16 +364,7 @@ pub fn scopes(path: &Path, text: &str, offsets: &[usize]) -> Vec<Option<Scope>> 
             found.push((node.start_byte(), node.end_byte(), scope));
         }
     }
-    offsets
-        .iter()
-        .map(|&at| {
-            found
-                .iter()
-                .filter(|(start, end, _)| *start <= at && at < *end)
-                .min_by_key(|(start, end, _)| end - start)
-                .map(|(_, _, scope)| scope.clone())
-        })
-        .collect()
+    Some(found)
 }
 
 fn lang(path: &Path) -> Option<&'static str> {

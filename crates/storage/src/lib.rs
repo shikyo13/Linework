@@ -31,7 +31,7 @@ mod source;
 #[cfg(windows)]
 mod write_lease;
 mod tree;
-pub use search::{FoundLine, SearchOptions};
+pub use search::{FoundLine, LineEnds, SearchOptions};
 
 use codec::Codec;
 pub use codec::{set_detection, ENCODINGS};
