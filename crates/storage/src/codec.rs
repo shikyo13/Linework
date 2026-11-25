@@ -186,42 +186,17 @@ fn build(cp: u32, name: &'static str) -> Option<Table> {
     back.dedup_by_key(|x| x.0);
     Some(Table { name, chars, back })
 }
-/// The same table from macOS's own converters, asked by the Windows code page number.
-#[cfg(target_os = "macos")]
-fn build(cp: u32, name: &'static str) -> Option<Table> {
-    use std::ffi::c_void;
-    #[link(name = "CoreFoundation", kind = "framework")]
-    extern "C" {
-        fn CFStringConvertWindowsCodepageToEncoding(codepage: u32) -> u32;
-        fn CFStringIsEncodingAvailable(encoding: u32) -> u8;
-        fn CFStringCreateWithBytes(alloc: *const c_void, bytes: *const u8, count: isize, encoding: u32, external: u8) -> *const c_void;
-        fn CFStringGetLength(string: *const c_void) -> isize;
-        fn CFStringGetCharacterAtIndex(string: *const c_void, index: isize) -> u16;
-        fn CFRelease(object: *const c_void);
-    }
-    // macOS has no converter for code page 858, which is 850 with the euro sign in place of the dotless i.
-    let asked = if cp == 858 { 850 } else { cp };
-    let encoding = unsafe { CFStringConvertWindowsCodepageToEncoding(asked) };
-    if encoding == u32::MAX || unsafe { CFStringIsEncodingAvailable(encoding) } == 0 {
-        return None;
-    }
+/// Away from Windows the tables are the ones Windows gives, kept in the program,
+/// so a file opens to the same text on every system. (macOS's own converters
+/// differ from them in nine of the twenty tables and lack code page 858.)
+#[cfg(not(windows))]
+fn build(_: u32, name: &'static str) -> Option<Table> {
+    let (_, row) = crate::code_pages::WINDOWS.iter().find(|(known, _)| *known == name)?;
     let mut chars = [None; 256];
-    for (b, slot) in chars.iter_mut().enumerate() {
-        let byte = b as u8;
-        let string = unsafe { CFStringCreateWithBytes(std::ptr::null(), &byte, 1, encoding, 0) };
-        if string.is_null() {
-            continue;
+    for (slot, &point) in chars.iter_mut().zip(row) {
+        if point != crate::code_pages::NONE {
+            *slot = char::from_u32(point);
         }
-        if unsafe { CFStringGetLength(string) } == 1 {
-            *slot = char::from_u32(u32::from(unsafe { CFStringGetCharacterAtIndex(string, 0) }));
-        }
-        unsafe { CFRelease(string) };
-    }
-    if cp == 858 {
-        chars[0xD5] = Some('\u{20AC}');
-    }
-    if chars[b'A' as usize] != Some('A') {
-        return None;
     }
     let mut back: Vec<(char, u8)> = chars
         .iter()
@@ -232,10 +207,6 @@ fn build(cp: u32, name: &'static str) -> Option<Table> {
     back.sort();
     back.dedup_by_key(|x| x.0);
     Some(Table { name, chars, back })
-}
-#[cfg(not(any(windows, target_os = "macos")))]
-fn build(_: u32, _: &'static str) -> Option<Table> {
-    None
 }
 
 /// The legacy encoding to read `bytes` with, which are not valid UTF-8.

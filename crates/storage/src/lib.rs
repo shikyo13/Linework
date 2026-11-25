@@ -3,6 +3,8 @@ pub use change_map::ChangeMap;
 mod unicode;
 mod spill;
 mod codec;
+#[cfg(not(windows))]
+mod code_pages;
 mod selection_set;
 pub use selection_set::{SelectionSet,SelectionBuilder};
 mod folds;
