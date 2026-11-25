@@ -1,4 +1,4 @@
-use super::{parallel, Document, invalid};
+use super::{parallel, source, Document, invalid};
 use memchr::memmem;
 use regex::bytes::{Regex, RegexBuilder};
 #[path = "replace_stream.rs"]
@@ -126,6 +126,68 @@ impl Fold {
         }
         Some(hits)
     }
+}
+/// One line that holds a match, from `Document::find_lines`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FoundLine {
+    /// Counted from 0, as `Document::line_of` counts.
+    pub line: u64,
+    /// Where the line starts in the document.
+    pub start: u64,
+    /// The first match on the line.
+    pub first: Range<u64>,
+    /// The line's text without its line break, at most the `widest` bytes asked for.
+    pub text: Vec<u8>,
+}
+/// A matching line as one thread found it inside its piece of the document.
+struct PieceLine {
+    /// Line breaks between the piece's first byte and the match.
+    breaks: u64,
+    first: Range<u64>,
+    /// Start and text when the bytes the thread held contained the whole line.
+    found: Option<(u64, Vec<u8>)>,
+}
+struct Piece {
+    /// Line breaks in the whole piece, counted as the line index counts them.
+    breaks: u64,
+    lines: Vec<PieceLine>,
+    /// The end of the last match, for the rule that matches do not overlap.
+    last_end: Option<u64>,
+}
+/// Counts line breaks forward from the start of a document, for matches that
+/// arrive in order.
+struct LineCounter<'a> {
+    d: &'a Document,
+    pos: u64,
+    breaks: u64,
+    block: Vec<u8>,
+}
+impl LineCounter<'_> {
+    /// The line, counted from 0, that holds `at`. `at` never goes backwards.
+    fn line_of(&mut self, at: u64) -> io::Result<u64> {
+        while self.pos < at {
+            let n = (at - self.pos).min(CHUNK) as usize;
+            // One byte more, to tell a lone CR from the CR of a CRLF.
+            self.block.resize((n as u64 + 1).min(self.d.len() - self.pos) as usize, 0);
+            self.d.read_into(self.pos, &mut self.block)?;
+            self.breaks += source::count(&self.block[..n], self.block.get(n).copied());
+            self.pos += n as u64;
+        }
+        Ok(self.breaks)
+    }
+}
+/// Where the line holding `buf[upto]` starts in `buf`, or `None` when no line
+/// break before it is in `buf`. CR, LF and CRLF each end one line.
+fn line_begin(buf: &[u8], upto: usize) -> Option<usize> {
+    let mut end = upto;
+    while let Some(i) = memchr::memrchr2(b'\n', b'\r', &buf[..end]) {
+        // A CR directly before an LF is part of one CRLF break, which ends with the LF.
+        if buf[i] == b'\n' || buf.get(i + 1) != Some(&b'\n') {
+            return Some(i + 1);
+        }
+        end = i;
+    }
+    None
 }
 type Groups<'a> = dyn Fn(usize) -> Option<Range<u64>> + 'a;
 type Visitor<'a> = dyn FnMut(Range<u64>, Option<&Groups<'_>>) -> io::Result<bool> + 'a;
@@ -436,6 +498,37 @@ impl<'a> Search<'a> {
         }
         Ok(false)
     }
+    /// Search the piece `left..right` of a forward scan from `from`, in `buf`
+    /// read from `origin`, and count its line breaks in the same pass: for each
+    /// matching line, the breaks before its first match, and its text when the
+    /// whole line is in `buf`. Breaks are counted from `left` whatever `from` is.
+    fn piece(&self, buf: &[u8], origin: u64, left: u64, right: u64, from: u64, widest: usize) -> io::Result<Piece> {
+        let rel = |at: u64| (at - origin) as usize;
+        let mut lines: Vec<PieceLine> = Vec::new();
+        let (mut counted, mut breaks) = (rel(left), 0u64);
+        let mut last_end = None;
+        let whole = origin + buf.len() as u64 == self.d.len();
+        self.matches(buf, origin, &(from..right), false, &mut |hit, _| {
+            let s = rel(hit.start);
+            breaks += source::count(&buf[counted..s], buf.get(s).copied());
+            counted = s;
+            last_end = Some(hit.end);
+            if lines.last().is_some_and(|l| l.breaks == breaks) {
+                return Ok(false);
+            }
+            let begin = line_begin(buf, s).or((origin == 0).then_some(0));
+            let end = memchr::memchr2(b'\n', b'\r', &buf[s..]).map(|e| s + e).or(whole.then_some(buf.len()));
+            let found = match (begin, end) {
+                (Some(b), Some(e)) => Some((origin + b as u64, buf[b..e.min(b + widest)].to_vec())),
+                _ => None,
+            };
+            lines.push(PieceLine { breaks, first: hit, found });
+            Ok(false)
+        })?;
+        let end = rel(right);
+        breaks += source::count(&buf[counted..end], buf.get(end).copied());
+        Ok(Piece { breaks, lines, last_end })
+    }
 }
 impl Document {
     pub fn replacement_for(
@@ -524,6 +617,123 @@ impl Document {
             Ok(false)
         })?;
         Ok(ranges)
+    }
+    /// Every line that holds a match, in document order, with its number and
+    /// text, each passed to `visit` as it is found; `visit` returns true to stop.
+    /// Line numbers are counted in the same pass as the search, so this needs
+    /// neither the line index nor a second read of the file. Returns true when
+    /// `visit` stopped the search.
+    pub fn find_lines(
+        &self,
+        query: &str,
+        mut options: SearchOptions,
+        widest: usize,
+        cancel: &AtomicBool,
+        visit: &mut dyn FnMut(&FoundLine) -> io::Result<bool>,
+    ) -> io::Result<bool> {
+        if query.is_empty() || self.is_empty() {
+            return Ok(false);
+        }
+        options.backwards = false;
+        let search = Search::new(self, query, options, cancel, 0..self.len())?;
+        let mut last = None;
+        let mut emit = |line: u64, first: Range<u64>, found: Option<(u64, Vec<u8>)>| -> io::Result<bool> {
+            if last == Some(line) {
+                return Ok(false);
+            }
+            last = Some(line);
+            let (start, text) = match found {
+                Some(found) => found,
+                None => self.line_text(first.start, widest)?,
+            };
+            visit(&FoundLine { line, start, first, text })
+        };
+        if search.opt.regex {
+            // A pattern searches the whole text or streams it: take its matches
+            // in order and count the lines up to each in one forward pass.
+            let mut counter = LineCounter { d: self, pos: 0, breaks: 0, block: Vec::new() };
+            return search.scan(0..self.len() + 1, false, &mut |hit, _| {
+                let line = counter.line_of(hit.start)?;
+                emit(line, hit, None)
+            });
+        }
+        let range = 0..self.len();
+        let count = range.end.div_ceil(CHUNK) as usize;
+        let (mut base, mut floor) = (0u64, 0u64);
+        let mut bytes = Vec::new();
+        // Matches never overlap the one before them, including one that ends in
+        // the next piece. A piece whose first match starts inside the previous
+        // match is searched again here from that match's end.
+        let mut take = |k: usize, piece: Piece| -> io::Result<bool> {
+            let (left, right) = search.bounds(&range, k as u64);
+            let piece = if piece.lines.first().is_some_and(|l| l.first.start < floor) {
+                let origin = search.load(left, right, &mut bytes, |at, out| self.read_into(at, out))?;
+                search.piece(&bytes, origin, left, right, floor.min(right), widest)?
+            } else {
+                piece
+            };
+            for l in piece.lines {
+                if emit(base + l.breaks, l.first, l.found)? {
+                    return Ok(true);
+                }
+            }
+            base += piece.breaks;
+            if let Some(end) = piece.last_end {
+                floor = end;
+            }
+            Ok(false)
+        };
+        let workers = parallel::threads().min(count);
+        if workers < 2 {
+            let mut own = Vec::new();
+            for k in 0..count {
+                search.check()?;
+                let (left, right) = search.bounds(&range, k as u64);
+                let origin = search.load(left, right, &mut own, |at, out| self.read_into(at, out))?;
+                let piece = search.piece(&own, origin, left, right, left, widest)?;
+                if take(k, piece)? {
+                    return Ok(true);
+                }
+            }
+            return Ok(false);
+        }
+        parallel::ordered(
+            count,
+            workers,
+            || (parallel::Reader::new(self), Vec::new(), search.fork()),
+            |k, (reader, own, search): &mut (parallel::Reader<'_>, Vec<u8>, Search<'_>)| {
+                search.check()?;
+                let (left, right) = search.bounds(&range, k as u64);
+                let origin = search.load(left, right, own, |at, out| reader.read_into(at, out))?;
+                search.piece(own, origin, left, right, left, widest)
+            },
+            take,
+        )
+    }
+    /// Where the line holding `at` starts, and its text without its line break,
+    /// at most `widest` bytes. Reads only around `at`.
+    fn line_text(&self, at: u64, widest: usize) -> io::Result<(u64, Vec<u8>)> {
+        const STEP: u64 = 64 * 1024;
+        let len = self.len();
+        let (mut start, mut hi) = (0, at);
+        let mut block = Vec::new();
+        while hi > 0 {
+            let lo = hi.saturating_sub(STEP);
+            // One byte past `hi`, to tell a lone CR from the CR of a CRLF.
+            block.resize(((hi + 1).min(len) - lo) as usize, 0);
+            self.read_into(lo, &mut block)?;
+            if let Some(b) = line_begin(&block, (hi - lo) as usize) {
+                start = lo + b as u64;
+                break;
+            }
+            hi = lo;
+        }
+        let mut text = vec![0; (len - start).min(widest as u64) as usize];
+        self.read_into(start, &mut text)?;
+        if let Some(e) = memchr::memchr2(b'\n', b'\r', &text) {
+            text.truncate(e);
+        }
+        Ok((start, text))
     }
     pub fn find_cancel(
         &self,
@@ -694,5 +904,69 @@ impl Document {
             replacing::Change::Whole(root) => self.commit(root)?,
         }
         Ok((set, caret))
+    }
+}
+
+#[cfg(test)]
+mod found_line_tests {
+    use super::*;
+
+    /// Lines numbered in the search's own pass carry the numbers, starts and
+    /// text the line index gives: across pieces, with CR, LF and CRLF breaks, a
+    /// CRLF split between two pieces, and lines longer than a whole piece.
+    #[test]
+    fn found_lines_agree_with_the_line_index() -> io::Result<()> {
+        let piece = CHUNK as usize;
+        let breaks: [&[u8]; 3] = [b"\n", b"\r\n", b"\r"];
+        let mut text = Vec::new();
+        let mut n = 0usize;
+        while text.len() < 6 * piece {
+            if n % 997 == 5 {
+                text.resize(text.len() + piece + 17, b'z');
+            }
+            text.extend_from_slice(if n % 3 == 0 { b"one needle two" } else { b"plain Needle words" });
+            text.extend_from_slice(breaks[n % 3]);
+            n += 1;
+            let edge = (text.len() / piece + 1) * piece;
+            if edge - text.len() < 60 {
+                text.resize(edge - 1, b'y');
+                text.extend_from_slice(b"\r\n");
+            }
+        }
+        text.extend_from_slice(b"needle");
+        let mut d = Document::empty();
+        d.replace(0, 0, &text)?;
+        let cancel = AtomicBool::new(false);
+        for (query, options) in [
+            ("needle", SearchOptions { case_sensitive: true, wrap: false, ..Default::default() }),
+            ("needle", SearchOptions { wrap: false, ..Default::default() }),
+            ("ne+dle", SearchOptions { regex: true, case_sensitive: true, wrap: false, ..Default::default() }),
+        ] {
+            let mut expected = Vec::new();
+            for hit in d.find_all_bounded(query, options, usize::MAX, &cancel)? {
+                let line = d.line_of(hit.start);
+                if expected.last().is_none_or(|&(l, _)| l != line) {
+                    expected.push((line, hit));
+                }
+            }
+            let mut found = Vec::new();
+            d.find_lines(query, options, 1 << 30, &cancel, &mut |l| {
+                found.push(l.clone());
+                Ok(false)
+            })?;
+            assert_eq!(found.len(), expected.len(), "{query}");
+            assert!(found.len() > 1000, "{query}");
+            for (f, (line, hit)) in found.iter().zip(&expected) {
+                assert_eq!((f.line, &f.first), (*line, hit), "{query}");
+                assert_eq!(f.start, d.line_start(*line), "{query}");
+                let next = if line + 1 < d.line_count() { d.line_start(line + 1) } else { d.len() };
+                let mut want = d.read(f.start, (next - f.start) as usize)?;
+                while matches!(want.last(), Some(b'\n' | b'\r')) {
+                    want.pop();
+                }
+                assert_eq!(f.text, want, "{query} line {line}");
+            }
+        }
+        Ok(())
     }
 }

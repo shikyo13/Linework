@@ -31,11 +31,11 @@ mod source;
 #[cfg(windows)]
 mod write_lease;
 mod tree;
-pub use search::SearchOptions;
+pub use search::{FoundLine, SearchOptions};
 
 use codec::Codec;
 pub use codec::{set_detection, ENCODINGS};
-pub use source::set_index_cache;
+pub use source::{set_index_cache, set_line_indexing};
 use serde::{Deserialize, Serialize};
 use source::{read_at, Source};
 use std::collections::{HashMap, HashSet};

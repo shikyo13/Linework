@@ -17,6 +17,17 @@ const BATCH: usize = PAGE * 32;
 /// Batches per thread below which a line index is not worth more threads.
 const PARALLEL_BATCHES: usize = 8;
 const SLOTS: usize = 12;
+/// Whether opening a large file starts counting its lines in the background.
+static LINE_INDEXING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// Whether documents opened from now on count their lines in the background.
+/// A program that only searches, and numbers lines as it goes, turns this off
+/// so the count does not read the whole file a second time beside the search.
+/// Line numbers, line starts and the line count of such a document are not
+/// available until it is reopened with indexing on.
+pub fn set_line_indexing(on: bool) {
+    LINE_INDEXING.store(on, Ordering::Relaxed);
+}
 
 pub(crate) fn read_at(f: &File, mut pos: u64, mut dst: &mut [u8]) -> io::Result<()> {
     while !dst.is_empty() {
@@ -197,7 +208,7 @@ impl Source {
                 s.counts.write().unwrap().push(count(&buf, None));
             }
             s.prefix.store(len, Ordering::Release);
-        } else {
+        } else if LINE_INDEXING.load(Ordering::Relaxed) {
             let weak = Arc::downgrade(&s);
             thread::Builder::new()
                 .name("Linework line index".into())
