@@ -32,7 +32,7 @@ impl Query {
     }
 
     /// The next match at or after `from`, as a byte range.
-    fn next(&self, bytes: &[u8], from: usize) -> Option<(usize, usize)> {
+    pub fn next(&self, bytes: &[u8], from: usize) -> Option<(usize, usize)> {
         match (&self.text, &self.pattern) {
             (Some(text), _) => text.find(&bytes[from..]).map(|at| (from + at, from + at + text.needle().len())),
             (_, Some(pattern)) => pattern.find_at(bytes, from).map(|m| (m.start(), m.end())),
@@ -40,7 +40,8 @@ impl Query {
         }
     }
 
-    fn within(&self, line: &[u8]) -> bool {
+    /// Whether the pattern matches anywhere in `line`.
+    pub fn within(&self, line: &[u8]) -> bool {
         match (&self.text, &self.pattern) {
             (Some(text), _) => text.find(line).is_some(),
             (_, Some(pattern)) => pattern.is_match(line),
@@ -61,6 +62,8 @@ pub enum Report {
 #[derive(Default)]
 pub struct Gathered {
     pub out: Vec<u8>,
+    /// Each file's part of `out`: its path relative to the root, and the range.
+    pub parts: Vec<(String, std::ops::Range<usize>)>,
     pub files: u64,
     pub bytes: u64,
     pub matched_lines: u64,
@@ -137,44 +140,37 @@ fn read(found: &Found, wide: &mut Vec<u16>, into: &mut Vec<u8>) -> bool {
     ok
 }
 
-/// The matching lines of one file's bytes, appended to `out`.
-fn lines(query: &Query, name: &[u8], bytes: &[u8], report: Report, out: &mut Vec<u8>) -> u64 {
+/// One matching line of a file's bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LineHit {
+    /// Counted from 1; 0 when the lines were not numbered.
+    pub number: u64,
+    /// The line is `bytes[start..end]`, without its line break.
+    pub start: usize,
+    pub end: usize,
+}
+
+/// Every line of `bytes` the query matches, in order, passed to `visit`.
+/// A match may touch several lines; each is judged on its own, because a line
+/// matches only if the pattern matches inside that line. With `numbered`, each
+/// line carries its number, counted as the search moves forward.
+pub fn matching_lines(query: &Query, bytes: &[u8], numbered: bool, mut visit: impl FnMut(LineHit)) -> u64 {
     let mut found = 0u64;
-    // Line number of the byte at `counted`, kept as the search moves forward.
     let (mut counted, mut number) = (0usize, 1u64);
     let mut from = 0usize;
     while from <= bytes.len() {
         let Some((start, end)) = query.next(bytes, from) else { break };
-        // A match may touch several lines; each is judged on its own, because
-        // a line matches only if the pattern matches inside that line.
         let mut line_start = memchr::memrchr(b'\n', &bytes[..start]).map_or(0, |at| at + 1);
         let last = end.max(start + 1).min(bytes.len());
         loop {
             let line_end = memchr::memchr(b'\n', &bytes[line_start..]).map_or(bytes.len(), |at| line_start + at);
-            let line = &bytes[line_start..line_end];
-            if line_start < bytes.len() && query.within(line) {
+            if line_start < bytes.len() && query.within(&bytes[line_start..line_end]) {
                 found += 1;
-                if report == Report::Lines {
+                if numbered {
                     number += memchr::memchr_iter(b'\n', &bytes[counted..line_start]).count() as u64;
                     counted = line_start;
-                    out.extend_from_slice(name);
-                    out.push(b':');
-                    let mut digits = [0u8; 20];
-                    let mut at = digits.len();
-                    let mut n = number;
-                    loop {
-                        at -= 1;
-                        digits[at] = b'0' + (n % 10) as u8;
-                        n /= 10;
-                        if n == 0 {
-                            break;
-                        }
-                    }
-                    out.extend_from_slice(&digits[at..]);
-                    out.push(b':');
-                    out.extend_from_slice(line);
-                    out.push(b'\n');
                 }
+                visit(LineHit { number: if numbered { number } else { 0 }, start: line_start, end: line_end });
             }
             from = line_end + 1;
             line_start = line_end + 1;
@@ -183,23 +179,74 @@ fn lines(query: &Query, name: &[u8], bytes: &[u8], report: Report, out: &mut Vec
             }
         }
     }
+    found
+}
+
+/// Appends a number in decimal.
+fn decimal(out: &mut Vec<u8>, mut n: u64) {
+    let mut digits = [0u8; 20];
+    let mut at = digits.len();
+    loop {
+        at -= 1;
+        digits[at] = b'0' + (n % 10) as u8;
+        n /= 10;
+        if n == 0 {
+            break;
+        }
+    }
+    out.extend_from_slice(&digits[at..]);
+}
+
+/// The matching lines of one file's bytes, appended to `out` in the plain form.
+fn lines(query: &Query, name: &[u8], bytes: &[u8], report: Report, out: &mut Vec<u8>) -> u64 {
+    let numbered = report == Report::Lines;
+    let found = matching_lines(query, bytes, numbered, |hit| {
+        if numbered {
+            out.extend_from_slice(name);
+            out.push(b':');
+            decimal(out, hit.number);
+            out.push(b':');
+            out.extend_from_slice(&bytes[hit.start..hit.end]);
+            out.push(b'\n');
+        }
+    });
     if report == Report::Counts && found != 0 {
         out.extend_from_slice(name);
         out.push(b':');
-        out.extend_from_slice(found.to_string().as_bytes());
+        decimal(out, found);
         out.push(b'\n');
     }
     found
 }
 
+/// Formats one file's matching lines: called with the file's path relative to
+/// the root, its bytes and its numbered matching lines, on the searching thread.
+pub type Format<'a> = dyn Fn(&str, &[u8], &[LineHit], &mut Vec<u8>) + Sync + 'a;
+
+/// How each searched file's matches become output.
+enum Output<'a> {
+    Plain(&'a str, Report),
+    Formatted(&'a Format<'a>),
+}
+
 /// Searches every file the walk reports under `root`. `shown` is put in front
 /// of each relative path in the output.
 pub fn tree(root: &Path, shown: &str, options: walk::Options, query: &Query, report: Report) -> std::io::Result<Vec<Gathered>> {
+    search(root, options, query, Output::Plain(shown, report))
+}
+
+/// Searches every file the walk reports under `root` and hands each file with
+/// matching lines to `format`, which writes that file's part of the output.
+pub fn tree_with(root: &Path, options: walk::Options, query: &Query, format: &Format<'_>) -> std::io::Result<Vec<Gathered>> {
+    search(root, options, query, Output::Formatted(format))
+}
+
+fn search(root: &Path, options: walk::Options, query: &Query, output: Output<'_>) -> std::io::Result<Vec<Gathered>> {
     walk::walk(
         root,
         options,
-        || (Gathered::default(), Vec::<u16>::new(), Vec::<u8>::new()),
-        |(gathered, wide, name), found| {
+        || (Gathered::default(), Vec::<u16>::new(), Vec::<u8>::new(), Vec::<LineHit>::new()),
+        |(gathered, wide, name, hits), found| {
             let mut content = std::mem::take(&mut gathered.content);
             if read(found, wide, &mut content) {
                 gathered.files += 1;
@@ -211,19 +258,43 @@ pub fn tree(root: &Path, shown: &str, options: walk::Options, query: &Query, rep
                 let text = memchr::memchr(0, &content).is_none();
                 account::end(Step::Binary, checking);
                 if text {
-                    name.clear();
-                    name.extend_from_slice(shown.as_bytes());
-                    name.push(b'/');
-                    name.extend_from_slice(found.path.as_bytes());
+                    let from = gathered.out.len();
                     let matching = account::begin();
-                    gathered.matched_lines += lines(query, name, &content, report, &mut gathered.out);
+                    match &output {
+                        Output::Plain(shown, report) => {
+                            name.clear();
+                            name.extend_from_slice(shown.as_bytes());
+                            name.push(b'/');
+                            name.extend_from_slice(found.path.as_bytes());
+                            gathered.matched_lines += lines(query, name, &content, *report, &mut gathered.out);
+                        }
+                        Output::Formatted(format) => {
+                            hits.clear();
+                            gathered.matched_lines += matching_lines(query, &content, true, |hit| hits.push(hit));
+                            if !hits.is_empty() {
+                                format(found.path, &content, hits, &mut gathered.out);
+                            }
+                        }
+                    }
                     account::end(Step::Match, matching);
+                    if gathered.out.len() > from {
+                        gathered.parts.push((found.path.to_owned(), from..gathered.out.len()));
+                    }
                 }
             }
             gathered.content = content;
         },
     )
-    .map(|states| states.into_iter().map(|(gathered, _, _)| gathered).collect())
+    .map(|states| states.into_iter().map(|(gathered, ..)| gathered).collect())
+}
+
+/// Every file's part of the output, ordered by path, so the same search gives
+/// the same output whichever threads found what.
+pub fn in_order(gathered: &[Gathered]) -> Vec<(&str, &[u8])> {
+    let mut parts: Vec<(&str, &[u8])> =
+        gathered.iter().flat_map(|g| g.parts.iter().map(move |(path, range)| (path.as_str(), &g.out[range.clone()]))).collect();
+    parts.sort_unstable_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()).then_with(|| a.0.cmp(b.0)));
+    parts
 }
 
 #[cfg(test)]
