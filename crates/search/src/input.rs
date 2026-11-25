@@ -197,12 +197,16 @@ impl Config {
 /// PATH, trying each extension in PATHEXT, as Windows itself looks.
 pub fn find_program(name: &str) -> Result<std::path::PathBuf, String> {
     let given = Path::new(name);
+    // Windows finds a program by trying each executable extension; elsewhere the name is the file.
+    #[cfg(windows)]
     let extensions: Vec<String> = std::env::var("PATHEXT")
         .unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into())
         .split(';')
         .filter(|e| !e.is_empty())
         .map(str::to_ascii_lowercase)
         .collect();
+    #[cfg(not(windows))]
+    let extensions: Vec<String> = Vec::new();
     let candidates = |base: &Path| -> Vec<std::path::PathBuf> {
         let mut all = vec![base.to_path_buf()];
         if base.extension().is_none() {
@@ -572,7 +576,7 @@ mod tests {
         assert_eq!(Packed::sniff(&[0x1F, 0x8B, 8, 0]), Some(Packed::Gzip));
         assert_eq!(Packed::sniff(b"BZh9"), Some(Packed::Bzip2));
         assert_eq!(Packed::sniff(b"plain"), None);
-        assert!(find_program("cmd").is_ok());
+        assert!(find_program(if cfg!(windows) { "cmd" } else { "sh" }).is_ok());
         assert!(find_program("no-such-program-anywhere").unwrap_err().contains("could not find executable in PATH"));
     }
 

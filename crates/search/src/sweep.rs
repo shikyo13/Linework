@@ -7,6 +7,7 @@
 use crate::account::{self, Step};
 use crate::walk::{self, Found};
 use std::path::Path;
+#[cfg(windows)]
 use windows_sys::Win32::{
     Foundation::{CloseHandle, GENERIC_READ, INVALID_HANDLE_VALUE},
     Storage::FileSystem::{CreateFileW, ReadFile, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING},
@@ -52,6 +53,7 @@ fn utf16(bytes: &[u8]) -> Option<String> {
 
 /// Reads a whole file by the name the walk gives, or without `whole` only its
 /// head when that already holds a zero byte. False when it cannot be read.
+#[cfg(windows)]
 fn read_file(found: &Found, wide: &mut Vec<u16>, into: &mut Vec<u8>, whole: bool) -> bool {
     wide.clear();
     wide.extend_from_slice(found.wide);
@@ -114,6 +116,67 @@ fn read_file(found: &Found, wide: &mut Vec<u16>, into: &mut Vec<u8>, whole: bool
     // which became the bottleneck (twice as slow over 29,498 files).
     let closing = account::begin();
     unsafe { CloseHandle(handle) };
+    account::end(Step::FileClose, closing);
+    ok
+}
+
+/// Reads a whole file by the name the walk gives, or without `whole` only its
+/// head when that already holds a zero byte. False when it cannot be read.
+#[cfg(target_os = "macos")]
+fn read_file(found: &Found, name: &mut Vec<u8>, into: &mut Vec<u8>, whole: bool) -> bool {
+    name.clear();
+    name.extend_from_slice(found.native);
+    name.push(0);
+    let opening = account::begin();
+    let fd = unsafe { libc::open(name.as_ptr().cast(), libc::O_RDONLY | libc::O_CLOEXEC) };
+    account::end(Step::FileOpen, opening);
+    if fd < 0 {
+        return false;
+    }
+    into.clear();
+    // The listing gave the size, so one read usually takes the whole file and
+    // no second read is needed to learn that it has ended. A large file is
+    // read in two steps, its head and then exactly the rest, so a binary one
+    // (a zero byte in its head) is left after the head; the caller skips any
+    // file with a zero byte, and the rest cannot change that.
+    let size = found.size as usize;
+    let mut head = size > HEAD;
+    let mut want = if head { HEAD } else { size.max(1) };
+    let mut ok = true;
+    loop {
+        into.reserve(want);
+        let reading = account::begin();
+        let got = unsafe { libc::read(fd, into.spare_capacity_mut().as_mut_ptr().cast(), want) };
+        account::end(Step::FileRead, reading);
+        if got < 0 {
+            if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            ok = false;
+            break;
+        }
+        let got = got as usize;
+        unsafe { into.set_len(into.len() + got) };
+        if head {
+            head = false;
+            // UTF-16 text has zero bytes too; a file with its mark is read on and decoded.
+            if !whole && memchr::memchr(0, into).is_some() && !utf16_mark(into) {
+                break;
+            }
+            if got == HEAD {
+                want = size - HEAD;
+                continue;
+            }
+        }
+        // A full first read of the listed size is the whole file. Anything
+        // else (a short read, or a file that grew) is followed to its end.
+        if got == 0 || (got == want && into.len() as u64 == found.size) {
+            break;
+        }
+        want = 64 * 1024;
+    }
+    let closing = account::begin();
+    unsafe { libc::close(fd) };
     account::end(Step::FileClose, closing);
     ok
 }
@@ -242,7 +305,10 @@ pub fn tree_with(root: &Path, options: walk::Options, query: &Query, format: &Fo
 }
 
 /// What one searching thread keeps: its results and the buffer it names files in.
+#[cfg(windows)]
 type Scratch = (Gathered, Vec<u16>);
+#[cfg(target_os = "macos")]
+type Scratch = (Gathered, Vec<u8>);
 
 /// One file of a walk as read: where it is, and its bytes, which are all of it
 /// unless reading stopped after a head that held a zero byte.
@@ -271,6 +337,39 @@ pub fn files(root: &Path, options: walk::Options, whole: bool, visit: &Visit<'_>
 }
 
 /// `files` for a given list of files under `root` (paths relative to it, with their sizes).
+#[cfg(target_os = "macos")]
+pub fn files_listed(root: &Path, list: &[(String, u64)], threads: usize, whole: bool, visit: &Visit<'_>) -> std::io::Result<Vec<Gathered>> {
+    use std::os::unix::ffi::OsStrExt;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let mut base: Vec<u8> = std::path::absolute(root)?.as_os_str().as_bytes().to_vec();
+    while base.last() == Some(&b'/') {
+        base.pop();
+    }
+    let next = AtomicUsize::new(0);
+    Ok(std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..threads.clamp(1, list.len().max(1)))
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut scratch = Scratch::default();
+                    let mut native = Vec::new();
+                    loop {
+                        let Some((path, size)) = list.get(next.fetch_add(1, Ordering::Relaxed)) else { return scratch.0 };
+                        native.clear();
+                        native.extend_from_slice(&base);
+                        native.push(b'/');
+                        native.extend_from_slice(path.as_bytes());
+                        let found = Found { path, native: &native, size: *size, modified: 0, accessed: 0, created: 0 };
+                        visit_one(&mut scratch, &found, whole, visit);
+                    }
+                })
+            })
+            .collect();
+        workers.into_iter().map(|worker| worker.join().expect("a searching thread stopped")).collect()
+    }))
+}
+
+/// `files` for a given list of files under `root` (paths relative to it, with their sizes).
+#[cfg(windows)]
 pub fn files_listed(root: &Path, list: &[(String, u64)], threads: usize, whole: bool, visit: &Visit<'_>) -> std::io::Result<Vec<Gathered>> {
     use std::os::windows::ffi::OsStrExt;
     use std::sync::atomic::{AtomicUsize, Ordering};

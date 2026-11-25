@@ -106,7 +106,7 @@ impl Plan {
     }
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 impl Plan {
     /// How a folder is walked under the settings `s`: the ignore rules, the
     /// file choice, depth, size, links. The caller adds its own reporting.

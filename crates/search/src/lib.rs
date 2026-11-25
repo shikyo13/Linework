@@ -11,5 +11,8 @@ pub mod searcher;
 pub mod settings;
 #[cfg(windows)]
 pub mod walk;
-#[cfg(windows)]
+#[cfg(target_os = "macos")]
+#[path = "walk_mac.rs"]
+pub mod walk;
+#[cfg(any(windows, target_os = "macos"))]
 pub mod sweep;
