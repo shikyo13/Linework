@@ -96,7 +96,9 @@ A dense CSV transformation replaced **45 million Unicode regex matches** in **24
 
 ## Command line: lw
 
-The installer puts `lw.exe` next to `Linework.exe` and adds that folder to your user `PATH`, so `lw` runs in any terminal. It uses the same file engine as the editor and the same profile, so a line index saved by either is used by the other.
+The installer puts `lw.exe` next to `Linework.exe` and adds that folder to your user `PATH`, so `lw` runs in any terminal. Run `lw` or `lw help` for a short introduction and the list of commands, and `lw help COMMAND` (or `lw COMMAND --help`) for one command in full, with examples. The complete reference is in [docs/lw.md](docs/lw.md), generated from the same text.
+
+`lw serve` makes the same commands available to AI agents as Model Context Protocol tools, each described by its help page: add it to Claude Code with `claude mcp add linework -- lw serve`, or to Codex with a `[mcp_servers.linework]` entry whose command is `lw` and whose arguments are `["serve"]`. A replace through the server only previews unless the call sets `preview` to false, and every tool's output is capped at 100,000 bytes unless the call sets `budget`. It uses the same file engine as the editor and the same profile, so a line index saved by either is used by the other.
 
 | Command | What it does |
 |---|---|

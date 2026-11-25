@@ -1,17 +1,5 @@
-//! lw: Linework's large-file engine from the command line, for scripts and
-//! for programs that drive an editor without a window.
-//!
-//!   lw count   [-i] [-F] [-w] PATTERN FILE     number of matches
-//!   lw find    [-i] [-F] [-w] [-m N] PATTERN FILE   matching lines as line:text
-//!   lw lines   FILE FROM [TO]                  lines FROM to TO, counted from 1
-//!   lw info    FILE                            size, lines, encoding, line ends
-//!   lw replace [-i] [-F] [-w] [--dry-run] OLD NEW FILE   replace all and save, or preview
-//!   lw undo    [--list] [CHANGE]                undo a replace from its record
-//!   lw files   [--hidden] [--no-ignore] FOLDER    the files a search would read
-//!
-//! PATTERN is a regular expression unless it holds no special character or -F
-//! is given. Exit code: 0 when something was found or done, 1 when nothing
-//! matched, 2 on an error.
+//! lw: Linework's file engine from the command line, for people, scripts and
+//! AI agents. The commands and their help are in `help.rs`; `lw help` shows them.
 use linework_storage::{Document, SearchOptions};
 use std::{
     env,
@@ -21,38 +9,6 @@ use std::{
     time::Duration,
 };
 
-const USAGE: &str = "usage:
-  lw count   [-i] [-F] [-w] [OUTPUT] [CONDITIONS] PATTERN FILE
-  lw find    [-i] [-F] [-w] [-m N] [OUTPUT] [CONDITIONS] PATTERN FILE
-  lw lines   FILE FROM [TO]
-  lw lines   --since TIME [--until TIME] FILE   a span of a time-ordered log
-  lw info    FILE
-  lw replace [-i] [-F] [-w] [--dry-run] [--json] OLD NEW FILE
-  lw undo    [--list] [CHANGE]       undo the last replace, or the one named
-  lw changes [--mark NAME] [--json] FOLDER   files added, changed or removed since the last look
-  lw files   [--hidden] [--no-ignore] FOLDER
-  lw defs    [OUTPUT] NAME FILE    where NAME is defined in code
-  lw uses    [OUTPUT] NAME FILE    where NAME is used in code, not in comments or strings
-  lw open    [--dry-run] FILE[:LINE[:COLUMN]]...
-
-OUTPUT: --json (one object per line, then a summary), --heading (each file
-once, then its lines), --scope (the function, class or section around each
-line), --budget BYTES (stop printing there), --stats (totals on stderr).
-On a folder, --changed [--mark NAME] searches only the files added or changed
-since lw changes last took that folder's snapshot.
-
-TIME: 2026-11-21 21:40[:15[.250]], 2026-11-21, or 21:40 on the log's first
-date. find and count on a log take --since and --until too. Logs with ISO,
-web-server or syslog timestamps are read; lines without one go with the line
-before.
-
-CONDITIONS, each may repeat: --near PATTERN N (keep a line only if PATTERN is
-within N lines of it), --and PATTERN (only files that also hold PATTERN),
---not PATTERN (only files that do not).
-
-A FOLDER in place of FILE searches every file under it that the ignore rules
-leave in. `lw open` shows files in the Linework window, at a line and column
-when given; with --dry-run it prints the command instead.";
 /// Matches kept in memory for one command: 16 bytes each.
 const MOST: usize = 50_000_000;
 /// Bytes of one line printed by `find` before it is cut.
@@ -246,15 +202,41 @@ fn counted(doc: &Document) -> io::Result<()> {
 }
 
 fn run() -> Result<i32, String> {
+    let argv: Vec<String> = env::args().skip(1).collect();
+    if argv.first().is_some_and(|c| c == "serve") {
+        return serve::run().map(|()| 0).map_err(|e| e.to_string());
+    }
+    let out = io::stdout();
+    let mut out = io::BufWriter::with_capacity(1 << 16, out.lock());
+    execute(argv, &mut out)
+}
+
+/// Runs one lw command, given as its words after `lw`, writing its output to `out`.
+fn execute(argv: Vec<String>, mut out: &mut dyn Write) -> Result<i32, String> {
     let began = std::time::Instant::now();
-    let mut args = env::args().skip(1);
-    let command = args.next().ok_or(USAGE)?;
+    // Help: lw, lw help [NAME | --markdown], lw COMMAND --help.
+    let first = argv.first().map(String::as_str).unwrap_or("help");
+    let asks = argv.iter().take_while(|w| *w != "--").any(|w| w == "--help" || w == "-h");
+    if matches!(first, "help" | "--help" | "-h") || asks {
+        let name = if asks && help::find(first).is_some() { Some(first) } else { argv.get(1).map(String::as_str) };
+        let text = match name {
+            Some("--markdown") => help::markdown(),
+            Some(name) => help::page(help::find(name).ok_or(format!("there is no help for {name}; lw help lists the commands and topics"))?),
+            None => help::overview(),
+        };
+        out.write_all(text.as_bytes()).map_err(|e| e.to_string())?;
+        out.flush().map_err(|e| e.to_string())?;
+        return Ok(0);
+    }
+    let mut args = argv.clone().into_iter();
+    let command = args.next().unwrap_or_default();
     let a = parse(args)?;
     let io = |e: io::Error| e.to_string();
     let profile = profile();
     linework_storage::set_index_cache(Some(&profile.join("line-index")));
-    let out = io::stdout();
-    let mut out = io::BufWriter::with_capacity(1 << 16, out.lock());
+    // A command that only searches turns this off for itself; a server runs
+    // many commands in one process, so each starts from the default.
+    linework_storage::set_line_indexing(true);
     let cancel = AtomicBool::new(false);
     let code = match (command.as_str(), a.rest.as_slice()) {
         // A folder: every file under it that the ignore rules leave in.
@@ -291,13 +273,15 @@ fn run() -> Result<i32, String> {
             } else {
                 None
             };
-            let gathered = if !filters.is_empty() || style.json || (command == "find" && style.heading) || only.is_some() {
+            let gathered = if !filters.is_empty() || style.json || (command == "find" && style.heading) || only.is_some() || a.most != usize::MAX {
                 // Every file with a match passes the conditions first; then its kept lines are shown.
                 let format = |path: &str, bytes: &[u8], hits: &[sweep::LineHit], out: &mut Vec<u8>| -> u64 {
                     if !filters.file_passes(bytes) {
                         return 0;
                     }
-                    let kept = if filters.near.is_empty() { hits.to_vec() } else { filters.near(bytes, hits) };
+                    let mut kept = if filters.near.is_empty() { hits.to_vec() } else { filters.near(bytes, hits) };
+                    // -m N: at most N lines from each file, as in ripgrep.
+                    kept.truncate(a.most);
                     if kept.is_empty() {
                         return 0;
                     }
@@ -537,7 +521,7 @@ fn run() -> Result<i32, String> {
                 vec![target.clone()]
             };
             let changes = profile.join("changes");
-            let mut record = if a.dry_run { None } else { Some(change::Record::start(&changes, &env::args().collect::<Vec<_>>()).map_err(io)?) };
+            let mut record = if a.dry_run { None } else { Some(change::Record::start(&changes, &std::iter::once("lw".to_owned()).chain(argv.iter().cloned()).collect::<Vec<_>>()).map_err(io)?) };
             let mut budget = report::Budget::new(a.budget);
             let (mut replaced, mut changed, mut failed) = (0usize, 0usize, 0usize);
             // In batches: plan on several threads, keep the batch's record on disk,
@@ -704,12 +688,20 @@ fn run() -> Result<i32, String> {
             .map_err(io)?;
             let walked = walking.elapsed();
             let writing = std::time::Instant::now();
-            let mut any = false;
-            for listed in &lists {
-                any |= !listed.is_empty();
-                out.write_all(listed).map_err(io)?;
+            // In path order, so the same folder lists the same way every time.
+            let mut paths: Vec<&[u8]> = lists.iter().flat_map(|l| l.split_inclusive(|&b| b == b'\n')).collect();
+            paths.sort_unstable_by(|a, b| a.to_ascii_lowercase().cmp(&b.to_ascii_lowercase()).then_with(|| a.cmp(b)));
+            let any = !paths.is_empty();
+            let mut budget = report::Budget::new(a.budget);
+            for path in &paths {
+                if !budget.write(&mut out, path).map_err(io)? {
+                    break;
+                }
             }
             out.flush().map_err(io)?;
+            if budget.cut {
+                eprintln!("lw: output cut at {} bytes (--budget)", budget.written);
+            }
             if a.account {
                 let found = lists.iter().map(|l| l.iter().filter(|&&b| b == b'\n').count()).sum::<usize>();
                 eprintln!("{found} files listed");
@@ -738,7 +730,8 @@ fn run() -> Result<i32, String> {
                 }
                 let shown = target.trim_end_matches(['/', '\\']);
                 let format = |path: &str, bytes: &[u8], _: &[sweep::LineHit], out: &mut Vec<u8>| -> u64 {
-                    let lines = pick(path, bytes);
+                    let mut lines = pick(path, bytes);
+                    lines.truncate(a.most);
                     if lines.is_empty() {
                         return 0;
                     }
@@ -768,7 +761,8 @@ fn run() -> Result<i32, String> {
                 if bytes.len() > linework_project::MAX_SYMBOL_SOURCE {
                     return Err(format!("{target} is over the {} MiB that code is parsed for", linework_project::MAX_SYMBOL_SOURCE >> 20));
                 }
-                let lines = pick(target, &bytes);
+                let mut lines = pick(target, &bytes);
+                lines.truncate(a.most);
                 let mut text = Vec::new();
                 if !lines.is_empty() {
                     if style.json || style.heading {
@@ -861,7 +855,12 @@ fn run() -> Result<i32, String> {
             }
             0
         }
-        _ => return Err(USAGE.into()),
+        _ => {
+            return Err(match help::find(&command).filter(|t| !t.usage.is_empty()) {
+                Some(topic) => format!("wrong words for {command}; usage: {}\nlw help {command} explains it", topic.usage),
+                None => format!("there is no command {command}; lw help lists them"),
+            })
+        }
     };
     out.flush().map_err(io)?;
     Ok(code)
@@ -869,7 +868,9 @@ fn run() -> Result<i32, String> {
 
 mod account;
 mod change;
+mod help;
 mod marks;
+mod serve;
 mod time;
 mod report;
 mod sampler;
