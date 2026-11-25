@@ -114,6 +114,16 @@ impl Output<'_> {
 }
 
 /// Whether standard input is a file or a pipe, so that with no path it is what is searched.
+#[cfg(unix)]
+fn stdin_readable() -> bool {
+    // As ripgrep judges it: a file, a pipe or a socket.
+    let mut st: libc::stat = unsafe { std::mem::zeroed() };
+    let known = unsafe { libc::fstat(0, &mut st) } == 0;
+    known && matches!(st.st_mode & libc::S_IFMT, libc::S_IFREG | libc::S_IFIFO | libc::S_IFSOCK)
+}
+
+/// Whether standard input is a file or a pipe, so that with no path it is what is searched.
+#[cfg(windows)]
 fn stdin_readable() -> bool {
     use windows_sys::Win32::{
         Storage::FileSystem::{GetFileType, FILE_TYPE_DISK, FILE_TYPE_PIPE},

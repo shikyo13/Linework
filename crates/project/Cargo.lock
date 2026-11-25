@@ -335,6 +335,7 @@ dependencies = [
  "bzip2",
  "encoding_rs",
  "flate2",
+ "libc",
  "lz4_flex",
  "memchr",
  "pcre2",

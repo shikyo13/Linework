@@ -66,7 +66,7 @@ impl ToolConfig {
         if let Some(dir) = path.parent() {
             fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         }
-        let example=ToolConfig{tools:vec![UserTool{name:"Format selected JSON".into(),program:"python".into(),
+        let example=ToolConfig{tools:vec![UserTool{name:"Format selected JSON".into(),program:if cfg!(windows) { "python" } else { "python3" }.into(),
             args: vec!["-X".into(),"utf8".into(),"-c".into(),"import json, sys; sys.stdout.write(json.dumps(json.load(sys.stdin), indent=2, ensure_ascii=False))".into()],
             mode:ToolMode::Filter,shortcut:None}]};
         let mut file = match fs::OpenOptions::new()

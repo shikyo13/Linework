@@ -238,6 +238,7 @@ fn execute(argv: Vec<String>, mut out: &mut dyn Write) -> Result<i32, String> {
                 return Ok(0);
             }
             drop(records);
+            #[cfg(windows)]
             linework_storage::set_save_journal(Some(&profile.join("save-records")));
             // The files are restored on several threads; each is checked before it is touched.
             let undone = change::undo(&changes, rest.first().map(String::as_str), &|_| false)?;
@@ -364,6 +365,7 @@ fn replace(
     let io = |e: io::Error| e.to_string();
     // Records that let a small change be written straight into a large
     // file; one left by a crash is settled here before the file is opened.
+    #[cfg(windows)]
     linework_storage::set_save_journal(Some(&profile.join("save-records")));
     let searched = engine_options(s, old);
     let json = s.json;
@@ -598,6 +600,10 @@ mod help;
 mod marks;
 mod printer;
 mod report;
+#[cfg(windows)]
+mod sampler;
+#[cfg(not(windows))]
+#[path = "sampler_other.rs"]
 mod sampler;
 mod search;
 mod serve;
