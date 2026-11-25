@@ -317,6 +317,7 @@ dependencies = [
  "linework-search",
  "linework-storage",
  "memchr",
+ "regex",
  "serde_json",
  "windows-sys 0.59.0",
 ]

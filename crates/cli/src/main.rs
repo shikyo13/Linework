@@ -25,9 +25,11 @@ const USAGE: &str = "usage:
   lw count   [-i] [-F] [-w] [OUTPUT] [CONDITIONS] PATTERN FILE
   lw find    [-i] [-F] [-w] [-m N] [OUTPUT] [CONDITIONS] PATTERN FILE
   lw lines   FILE FROM [TO]
+  lw lines   --since TIME [--until TIME] FILE   a span of a time-ordered log
   lw info    FILE
   lw replace [-i] [-F] [-w] [--dry-run] [--json] OLD NEW FILE
   lw undo    [--list] [CHANGE]       undo the last replace, or the one named
+  lw changes [--mark NAME] [--json] FOLDER   files added, changed or removed since the last look
   lw files   [--hidden] [--no-ignore] FOLDER
   lw defs    [OUTPUT] NAME FILE    where NAME is defined in code
   lw uses    [OUTPUT] NAME FILE    where NAME is used in code, not in comments or strings
@@ -36,6 +38,13 @@ const USAGE: &str = "usage:
 OUTPUT: --json (one object per line, then a summary), --heading (each file
 once, then its lines), --scope (the function, class or section around each
 line), --budget BYTES (stop printing there), --stats (totals on stderr).
+On a folder, --changed [--mark NAME] searches only the files added or changed
+since lw changes last took that folder's snapshot.
+
+TIME: 2026-11-21 21:40[:15[.250]], 2026-11-21, or 21:40 on the log's first
+date. find and count on a log take --since and --until too. Logs with ISO,
+web-server or syslog timestamps are read; lines without one go with the line
+before.
 
 CONDITIONS, each may repeat: --near PATTERN N (keep a line only if PATTERN is
 within N lines of it), --and PATTERN (only files that also hold PATTERN),
@@ -66,6 +75,10 @@ struct Args {
     stats: bool,
     budget: Option<usize>,
     list: bool,
+    since: Option<String>,
+    until: Option<String>,
+    changed: bool,
+    mark: Option<String>,
     near: Vec<(String, u64)>,
     and: Vec<String>,
     not: Vec<String>,
@@ -107,7 +120,7 @@ impl Args {
 }
 
 fn parse(args: impl Iterator<Item = String>) -> Result<Args, String> {
-    let mut a = Args { ignore_case: false, fixed: false, word: false, dry_run: false, hidden: false, no_ignore: false, account: false, samples: None, most: usize::MAX, threads: None, json: false, heading: false, scope: false, stats: false, budget: None, list: false, near: Vec::new(), and: Vec::new(), not: Vec::new(), rest: Vec::new() };
+    let mut a = Args { ignore_case: false, fixed: false, word: false, dry_run: false, hidden: false, no_ignore: false, account: false, samples: None, most: usize::MAX, threads: None, json: false, heading: false, scope: false, stats: false, budget: None, list: false, since: None, until: None, changed: false, mark: None, near: Vec::new(), and: Vec::new(), not: Vec::new(), rest: Vec::new() };
     let mut args = args.peekable();
     let mut plain = false;
     while let Some(arg) = args.next() {
@@ -126,6 +139,10 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Args, String> {
             "--scope" => a.scope = true,
             "--stats" => a.stats = true,
             "--list" => a.list = true,
+            "--changed" => a.changed = true,
+            "--mark" => a.mark = Some(args.next().ok_or("--mark needs a name")?),
+            "--since" => a.since = Some(args.next().ok_or("--since needs a time")?),
+            "--until" => a.until = Some(args.next().ok_or("--until needs a time")?),
             "--budget" => {
                 let n = args.next().ok_or("--budget needs a number of bytes")?;
                 a.budget = Some(n.parse().map_err(|_| format!("--budget needs a number of bytes, not {n}"))?);
@@ -169,9 +186,23 @@ fn open(path: &str) -> io::Result<Document> {
     Document::open(Path::new(path))
 }
 
-/// The lines of one file that match and pass the conditions, at most `a.most`.
-/// Each --and, --not and --near pattern is searched in the file as well.
-fn file_lines(doc: &Document, a: &Args, pattern: &str, cancel: &AtomicBool) -> io::Result<Vec<linework_storage::FoundLine>> {
+/// The part of a file a search covers: all of it, or with --since and --until
+/// the span of a time-ordered log; and the number of line breaks before it.
+fn span(doc: &Document, a: &Args, cancel: &AtomicBool) -> Result<(std::ops::Range<u64>, u64), String> {
+    if a.since.is_none() && a.until.is_none() {
+        return Ok((0..doc.len(), 0));
+    }
+    let range = time::span(doc, a.since.as_deref(), a.until.as_deref())?;
+    let before = doc.count_breaks(range.start, cancel).map_err(|e| e.to_string())?;
+    Ok((range, before))
+}
+
+/// The lines of one file that match and pass the conditions, at most `a.most`,
+/// in `scope` (a span and the line breaks before it). Each --and, --not and
+/// --near pattern is searched in the whole file.
+fn file_lines(
+    doc: &Document, a: &Args, pattern: &str, scope: &(std::ops::Range<u64>, u64), cancel: &AtomicBool,
+) -> io::Result<Vec<linework_storage::FoundLine>> {
     let mut found = Vec::new();
     if a.most == 0 {
         return Ok(found);
@@ -188,7 +219,7 @@ fn file_lines(doc: &Document, a: &Args, pattern: &str, cancel: &AtomicBool) -> i
             return Ok(found);
         }
     }
-    doc.find_lines(pattern, options(a, pattern), WIDEST as usize, cancel, &mut |line| {
+    doc.find_lines_in(pattern, options(a, pattern), scope.0.clone(), scope.1, WIDEST as usize, cancel, &mut |line| {
         found.push(line.clone());
         Ok(!conditions && found.len() == a.most)
     })?;
@@ -227,6 +258,9 @@ fn run() -> Result<i32, String> {
     let cancel = AtomicBool::new(false);
     let code = match (command.as_str(), a.rest.as_slice()) {
         // A folder: every file under it that the ignore rules leave in.
+        ("count" | "find", [_, _]) if (a.since.is_some() || a.until.is_some()) && Path::new(&a.rest[1]).is_dir() => {
+            return Err("--since and --until search one time-ordered log, not a folder".into());
+        }
         ("count" | "find", [pattern, folder]) if Path::new(folder).is_dir() => {
             use linework_search::sweep::{self, Query, Report};
             // A few files at a time, so a large folder is shared between threads.
@@ -245,7 +279,19 @@ fn run() -> Result<i32, String> {
             let style = a.style();
             let searching = std::time::Instant::now();
             let root = Path::new(folder);
-            let gathered = if !filters.is_empty() || style.json || (command == "find" && style.heading) {
+            // With --changed, only the files added or changed since the folder's
+            // snapshot are read; the snapshot itself is left as it is.
+            let only = if a.changed {
+                let name = a.mark.as_deref().unwrap_or("last");
+                let before = marks::load(&profile, root, name).map_err(io)?
+                    .ok_or(format!("no snapshot named {name} for this folder yet; lw changes takes one"))?;
+                let now = marks::list(root, options).map_err(io)?;
+                let changes = marks::compare(&before, &now);
+                Some(changes.added.into_iter().chain(changes.changed).map(|path| { let size = now[&path].0; (path, size) }).collect::<Vec<_>>())
+            } else {
+                None
+            };
+            let gathered = if !filters.is_empty() || style.json || (command == "find" && style.heading) || only.is_some() {
                 // Every file with a match passes the conditions first; then its kept lines are shown.
                 let format = |path: &str, bytes: &[u8], hits: &[sweep::LineHit], out: &mut Vec<u8>| -> u64 {
                     if !filters.file_passes(bytes) {
@@ -268,7 +314,10 @@ fn run() -> Result<i32, String> {
                     }
                     kept.len() as u64
                 };
-                sweep::tree_with(root, options, &query, &format)
+                match &only {
+                    Some(files) => sweep::listed_with(root, files, options.threads, &query, &format),
+                    None => sweep::tree_with(root, options, &query, &format),
+                }
             } else {
                 sweep::tree(root, shown, options, &query, report)
             }
@@ -307,10 +356,11 @@ fn run() -> Result<i32, String> {
             linework_storage::set_line_indexing(false);
             let doc = open(file).map_err(io)?;
             let sampler = a.samples.as_ref().map(|_| sampler::Sampler::start());
-            // With conditions, the count is of matching lines that pass them.
-            let conditions = !(a.near.is_empty() && a.and.is_empty() && a.not.is_empty());
+            // With conditions or a time span, the count is of matching lines that pass them.
+            let conditions = !(a.near.is_empty() && a.and.is_empty() && a.not.is_empty() && a.since.is_none() && a.until.is_none());
             let (count, lines) = if conditions {
-                let kept = file_lines(&doc, &a, pattern, &cancel).map_err(io)?.len() as u64;
+                let scope = span(&doc, &a, &cancel)?;
+                let kept = file_lines(&doc, &a, pattern, &scope, &cancel).map_err(io)?.len() as u64;
                 (kept, Some(kept))
             } else {
                 (doc.find_all_bounded(pattern, options(&a, pattern), MOST, &cancel).map_err(io)?.len() as u64, None)
@@ -347,9 +397,10 @@ fn run() -> Result<i32, String> {
             let mut budget = report::Budget::new(a.budget);
             let mut printed = 0usize;
             let conditions = !(a.near.is_empty() && a.and.is_empty() && a.not.is_empty());
+            let scope = span(&doc, &a, &cancel)?;
             if !style.json && !style.heading && !conditions {
                 if a.most != 0 {
-                    doc.find_lines(pattern, options(&a, pattern), WIDEST as usize, &cancel, &mut |found| {
+                    doc.find_lines_in(pattern, options(&a, pattern), scope.0.clone(), scope.1, WIDEST as usize, &cancel, &mut |found| {
                         let mut line = format!("{}:", found.line + 1).into_bytes();
                         line.extend_from_slice(&found.text);
                         line.push(b'\n');
@@ -359,7 +410,7 @@ fn run() -> Result<i32, String> {
                     .map_err(io)?;
                 }
             } else if !style.json && !style.heading {
-                let found = file_lines(&doc, &a, pattern, &cancel).map_err(io)?;
+                let found = file_lines(&doc, &a, pattern, &scope, &cancel).map_err(io)?;
                 printed = found.len();
                 for f in &found {
                     let mut line = format!("{}:", f.line + 1).into_bytes();
@@ -371,7 +422,7 @@ fn run() -> Result<i32, String> {
                 }
             } else {
                 let query = a.query(pattern)?;
-                let found = file_lines(&doc, &a, pattern, &cancel).map_err(io)?;
+                let found = file_lines(&doc, &a, pattern, &scope, &cancel).map_err(io)?;
                 printed = found.len();
                 // The definitions around the lines, for a file the outline can read.
                 let whole = if style.scope && doc.len() <= linework_project::MAX_SYMBOL_SOURCE as u64 {
@@ -402,6 +453,27 @@ fn run() -> Result<i32, String> {
             };
             a.finish(&mut out, &totals, &budget).map_err(io)?;
             i32::from(printed == 0)
+        }
+        // The span of a time-ordered log, found by bisecting its timestamps.
+        ("lines", [file]) if a.since.is_some() || a.until.is_some() => {
+            let doc = open(file).map_err(io)?;
+            let range = time::span(&doc, a.since.as_deref(), a.until.as_deref())?;
+            let mut at = range.start;
+            let mut block = vec![0; 1 << 20];
+            let mut budget = report::Budget::new(a.budget);
+            while at < range.end {
+                let n = (range.end - at).min(block.len() as u64) as usize;
+                doc.read_into(at, &mut block[..n]).map_err(io)?;
+                if !budget.write(&mut out, &block[..n]).map_err(io)? {
+                    break;
+                }
+                at += n as u64;
+            }
+            out.flush().map_err(io)?;
+            if a.stats {
+                eprintln!("bytes {} to {} of {} ({:.1} MB) in {:.3} s", range.start, range.end, doc.len(), (range.end - range.start) as f64 / 1e6, began.elapsed().as_secs_f64());
+            }
+            i32::from(range.is_empty())
         }
         ("lines", [file, from, rest @ ..]) if rest.len() <= 1 => {
             let first: u64 = from.parse().map_err(|_| format!("FROM must be a line number, not {from}"))?;
@@ -729,6 +801,46 @@ fn run() -> Result<i32, String> {
             a.finish(&mut out, &totals, &budget).map_err(io)?;
             i32::from(totals.lines == Some(0))
         }
+        // The files added, changed or removed in a folder since the last look, then a new snapshot.
+        ("changes", [folder]) if Path::new(folder).is_dir() => {
+            let options = linework_search::walk::Options { hidden: a.hidden, ignore: !a.no_ignore, ..Default::default() };
+            let root = Path::new(folder);
+            let name = a.mark.as_deref().unwrap_or("last");
+            let shown = folder.trim_end_matches(['/', '\\']);
+            let now = marks::list(root, options).map_err(io)?;
+            let before = marks::load(&profile, root, name).map_err(io)?;
+            let mut budget = report::Budget::new(a.budget);
+            let found = match &before {
+                None => {
+                    eprintln!("lw: {} files noted as snapshot {name}; the next lw changes shows what changed since", now.len());
+                    marks::Changes::default()
+                }
+                Some(before) => marks::compare(before, &now),
+            };
+            let mut text = Vec::new();
+            for (kind, paths) in [("added", &found.added), ("changed", &found.changed), ("removed", &found.removed)] {
+                for path in paths {
+                    if a.json {
+                        text.extend_from_slice(serde_json::json!({"change": kind, "path": format!("{shown}/{path}")}).to_string().as_bytes());
+                        text.push(b'\n');
+                    } else {
+                        text.extend_from_slice(format!("{kind:8}{shown}/{path}\n").as_bytes());
+                    }
+                }
+            }
+            budget.write(&mut out, &text).map_err(io)?;
+            if a.json {
+                let value = serde_json::json!({"summary": {
+                    "snapshot": name, "first": before.is_none(), "files": now.len(),
+                    "added": found.added.len(), "changed": found.changed.len(), "removed": found.removed.len(),
+                    "cut_short": budget.cut, "seconds": (began.elapsed().as_secs_f64() * 1000.0).round() / 1000.0,
+                }});
+                writeln!(out, "{value}").map_err(io)?;
+            }
+            out.flush().map_err(io)?;
+            marks::save(&profile, root, name, &now).map_err(io)?;
+            i32::from(found.added.is_empty() && found.changed.is_empty() && found.removed.is_empty())
+        }
         ("open", targets) if !targets.is_empty() => {
             // Installed, the editor sits next to lw; in a build tree it is
             // linework.exe next to lw.exe, the same name to Windows.
@@ -757,6 +869,8 @@ fn run() -> Result<i32, String> {
 
 mod account;
 mod change;
+mod marks;
+mod time;
 mod report;
 mod sampler;
 
