@@ -72,8 +72,10 @@ packaged build; run any of them with `--help` for its arguments.
 
 ## Packaging
 
+Build the command-line program with
+`cargo build --release --locked --manifest-path crates/cli/Cargo.toml`.
 Stage a release folder holding `Linework.exe` (the release binary renamed),
-the `runtime` folder without `__pycache__` folders, `USER-GUIDE.md`,
+`lw.exe`, the `runtime` folder without `__pycache__` folders, `USER-GUIDE.md`,
 `NOTEPAD-PLUGINS.md` and `LICENSE`. Then:
 
 ```powershell

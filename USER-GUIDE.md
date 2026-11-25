@@ -94,6 +94,24 @@ Polling occurred about every 20 ms. Memory excludes helper processes and the OS 
 
 A dense CSV transformation replaced **45 million Unicode regex matches** in **24.03 seconds** in the 1.0 storage benchmark. Input grew from 855,000,000 bytes to 3,375,000,000 bytes, with an 8.92 MiB peak engine-process working set. Small replacements stay in memory. A plain-text Replace All with up to a million matches is assembled from pieces of the original file around one copy of the replacement, without copying the file. Denser replacements and regular-expression replacements stream through temporary storage. Each commits as one undoable edit. Full-file hashes verified the output, undo, redo and original input. In the Windows app, a separate 220,000-match replacement grew a normal tab into a paged document, saved the result and restored the original bytes with one undo after save.
 
+## Command line: lw
+
+The installer puts `lw.exe` next to `Linework.exe` and adds that folder to your user `PATH`, so `lw` runs in any terminal. It uses the same file engine as the editor and the same profile, so a line index saved by either is used by the other.
+
+| Command | What it does |
+|---|---|
+| `lw find [-i] [-F] [-w] [-m N] PATTERN PATH` | Prints each matching line as `line:text` for a file, or `path:line:text` for a folder |
+| `lw count [-i] [-F] [-w] PATTERN PATH` | Prints the number of matches in a file, or `path:count` per file of a folder |
+| `lw lines FILE FROM [TO]` | Prints lines FROM to TO, counted from 1 |
+| `lw info FILE` | Prints the size, line count, encoding and line ends |
+| `lw replace [-i] [-F] [-w] [--dry-run] OLD NEW FILE` | Replaces every match and saves, or only counts with `--dry-run` |
+| `lw files [--hidden] [--no-ignore] FOLDER` | Lists the files a folder search would read |
+| `lw open [--dry-run] FILE[:LINE[:COLUMN]]...` | Shows files in the Linework window, at a line and column when given |
+
+`-i` ignores case, `-F` treats the pattern as plain text, `-w` matches whole words and `-m N` stops after N lines. A pattern with characters such as `.`, `*` or `(` is a regular expression unless `-F` is given. A folder search reads every file the `.gitignore`, `.ignore` and `.rgignore` files leave in (`.gitignore` only inside a Git work tree), skips names that start with a dot and hidden files unless `--hidden` is given, does not follow links, and leaves out any file that contains a zero byte. Lines are numbered in the same pass as the search, so a large file needs no line index first. The exit code is 0 when something matched, 1 when nothing did and 2 on an error.
+
+Measured on the machine described in "Measured Windows performance" above, both programs excluded from Microsoft Defender scanning, output read through a pipe, median of 7 runs: counting matches in a 10 GB log took 0.49–0.51 s against ripgrep 15.2's 1.57–4.63 s, printing all 84,139 matching lines with numbers took 0.57 s against 1.90 s, and searching a 29,498-file source tree took 0.09–0.13 s against 0.19–0.23 s.
+
 ## Implementation and compatibility
 
 The Windows interface, file engine, workflows, recovery, macro handling and workspace integration are written in Rust. The application embeds Scintilla and Lexilla, which are native C++ components, along with compiled Tree-sitter parsers.

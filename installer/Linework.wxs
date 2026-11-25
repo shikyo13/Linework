@@ -28,7 +28,14 @@
       <ComponentGroupRef Id="FileTypes" />
       <ComponentRef Id="ShellIntegration" />
       <ComponentRef Id="StartMenu" />
+      <ComponentRef Id="CommandLine" />
     </Feature>
+
+    <!-- lw, the command-line side of Linework, runs from any terminal. -->
+    <Component Id="CommandLine" Directory="INSTALLFOLDER" Guid="5D2E8A61-3C47-4B9E-9F0A-7E1C2B6D4A38">
+      <RegistryValue Root="HKCU" Key="Software\Linework\Installer" Name="CommandLine" Type="integer" Value="1" KeyPath="yes" />
+      <Environment Id="UserPath" Name="PATH" Value="[INSTALLFOLDER]" Part="last" Action="set" System="no" Permanent="no" />
+    </Component>
 
     <Component Id="StartMenu" Directory="LineworkMenu" Guid="9E9CF9C3-AB80-41A1-A116-253D937589FE">
       <RegistryValue Root="HKCU" Key="Software\Linework\Installer" Name="StartMenu" Type="integer" Value="1" KeyPath="yes" />

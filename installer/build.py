@@ -57,7 +57,7 @@ def identifier(prefix, path):
 
 
 def payload(app):
-    files = [Path("Linework.exe"), *(Path(name) for name in DOCS)]
+    files = [Path("Linework.exe"), Path("lw.exe"), *(Path(name) for name in DOCS)]
     files += sorted(p.relative_to(app) for p in (app / "runtime").rglob("*")
                     if p.is_file() and "__pycache__" not in p.parts and p.suffix != ".pyc")
     for required in ("runtime/Scintilla.dll", "runtime/Lexilla.dll", "runtime/python/python.exe",
