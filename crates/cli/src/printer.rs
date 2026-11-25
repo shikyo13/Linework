@@ -101,10 +101,11 @@ pub struct Palette {
 }
 
 impl Default for Palette {
-    /// ripgrep's colours on Windows: cyan paths, green line numbers, bold red matches.
+    /// ripgrep's colours: green line numbers, bold red matches, and paths in
+    /// cyan on Windows, magenta elsewhere.
     fn default() -> Self {
         Self {
-            path: Style::fg(6),
+            path: Style::fg(if cfg!(windows) { 6 } else { 5 }),
             line: Style::fg(2),
             column: Style::default(),
             matched: Style { bold: true, ..Style::fg(1) },
@@ -197,7 +198,8 @@ impl Links {
     pub fn new(format: &str, host_program: Option<&str>) -> Result<Option<Self>, String> {
         let format = match format {
             "" | "none" => return Ok(None),
-            "default" => "file://{path}",
+            // As ripgrep: with the machine's name away from Windows.
+            "default" => if cfg!(windows) { "file://{path}" } else { "file://{host}{path}" },
             "file" => "file://{host}{path}",
             "cursor" => "cursor://file{path}:{line}:{column}",
             "grep+" => "grep+://{path}:{line}",
@@ -240,13 +242,23 @@ impl Links {
     }
 }
 
-/// The machine's name for links: what `--hostname-bin` prints, or Windows' computer name.
+/// The machine's name for links: what `--hostname-bin` prints, or the system's own name for it.
 fn hostname(program: Option<&str>) -> Result<String, String> {
     if let Some(program) = program {
         let output = std::process::Command::new(program).output().map_err(|e| format!("--hostname-bin {program}: {e}"))?;
         return Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned());
     }
-    Ok(std::env::var("COMPUTERNAME").unwrap_or_default())
+    #[cfg(windows)]
+    return Ok(std::env::var("COMPUTERNAME").unwrap_or_default());
+    #[cfg(unix)]
+    {
+        let mut name = [0u8; 256];
+        if unsafe { libc::gethostname(name.as_mut_ptr().cast(), name.len()) } != 0 {
+            return Ok(String::new());
+        }
+        let len = name.iter().position(|&b| b == 0).unwrap_or(name.len());
+        Ok(String::from_utf8_lossy(&name[..len]).into_owned())
+    }
 }
 
 /// An absolute path as a URL path: `/` between names, a `/` in front, and
