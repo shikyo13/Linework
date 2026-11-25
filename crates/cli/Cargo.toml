@@ -1,0 +1,21 @@
+[package]
+name = "linework-cli"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "lw: Linework's large-file engine from the command line"
+
+[workspace]
+
+[[bin]]
+name = "lw"
+path = "src/main.rs"
+
+[dependencies]
+linework-storage = { path = "../storage" }
+linework-search = { path = "../search" }
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_System_SystemInformation", "Win32_System_WindowsProgramming", "Win32_System_Diagnostics_Debug", "Win32_System_Kernel", "Win32_System_LibraryLoader", "Win32_System_ProcessStatus", "Win32_System_Diagnostics_ToolHelp"] }
+
+[profile.release]
+lto = "thin"
+strip = "symbols"
