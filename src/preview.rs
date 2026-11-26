@@ -7,7 +7,8 @@ use std::{
     time::{Duration, Instant},
 };
 
-#[path = "preview_web.rs"]
+#[cfg_attr(windows, path = "preview_web.rs")]
+#[cfg_attr(target_os = "macos", path = "mac/preview_web.rs")]
 mod web;
 
 const WINDOW: usize = 128 * 1024;

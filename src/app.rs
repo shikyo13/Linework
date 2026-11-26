@@ -10,12 +10,12 @@ use crate::{
 use linework_editor::{CaretStyle, Editor, Theme, detect_language, sci as sn};
 use linework_project::{ApplyReport, BuildReport, Diagnostic, Index, SearchReport, ToolResult};
 use linework_storage::{Document, SearchOptions};
+use crate::os_windows::fs::OpenOptionsExt;
 use std::{
     collections::{BTreeSet, HashSet, VecDeque},
     fs::{self, File, OpenOptions},
     io,
     ops::Range,
-    os::windows::fs::OpenOptionsExt,
     path::{Path, PathBuf},
     ptr::{null, null_mut},
     sync::{
@@ -362,6 +362,8 @@ impl App {
         linework_storage::set_index_cache(Some(&state::profile().join("line-index")));
         // Records that let a small change be written straight into a large
         // file. One left by a crash is settled here, before any file is opened.
+        // In-place saves and their record exist on Windows only so far.
+        #[cfg(windows)]
         linework_storage::set_save_journal(Some(&state::profile().join("save-records")));
         LIGHT.set(prefs.light);
         dark_chrome(h, !prefs.light);

@@ -523,7 +523,6 @@ impl Document {
         }
         self.commit(edited.root)
     }
-    #[cfg(windows)]
     pub fn history_position(&self, redo: bool) -> Option<u64> {
         let next = if redo {
             self.redo.last()?

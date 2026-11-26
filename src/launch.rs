@@ -1,9 +1,9 @@
 use crate::{events, state, win::wide};
 use serde::{Deserialize, Serialize};
+use crate::os_windows::ffi::{OsStrExt, OsStringExt};
 use std::{
     ffi::{OsStr, OsString},
     hash::{DefaultHasher, Hash, Hasher},
-    os::windows::ffi::{OsStrExt, OsStringExt},
     path::PathBuf,
     ptr::null_mut,
 };

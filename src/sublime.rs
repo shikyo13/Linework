@@ -8,12 +8,12 @@ use crate::{
 use linework_editor::sci::{SCI_ADDSELECTION, SCI_SETSELECTION};
 use serde::Deserialize;
 use serde_json::{Value, json};
+use crate::os_windows::process::CommandExt;
 use std::{
     cell::RefCell,
     collections::HashSet,
     fs,
     io::{BufRead, BufReader, Write},
-    os::windows::process::CommandExt,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{

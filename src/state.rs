@@ -336,7 +336,7 @@ pub fn store<T: Serialize>(path: &Path, value: &T) -> io::Result<()> {
     atomic_move(&tmp, &path)
 }
 pub fn atomic_move(from: &Path, to: &Path) -> io::Result<()> {
-    use std::os::windows::ffi::OsStrExt;
+    use crate::os_windows::ffi::OsStrExt;
     use windows_sys::Win32::Storage::FileSystem::{
         MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
     };
@@ -397,7 +397,7 @@ pub fn save_settings(
     final_save: bool,
     claimed: Option<&std::collections::HashSet<String>>,
 ) -> io::Result<()> {
-    use std::os::windows::fs::OpenOptionsExt;
+    use crate::os_windows::fs::OpenOptionsExt;
     let dir = profile();
     fs::create_dir_all(&dir)?;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);

@@ -1,4 +1,12 @@
 #![cfg_attr(not(test), windows_subsystem = "windows")]
+// One front end for both systems: on macOS the Windows calls below are carried
+// out by linework-win32.
+#[cfg(target_os = "macos")]
+extern crate linework_win32 as windows_sys;
+#[cfg(target_os = "macos")]
+use linework_win32::os as os_windows;
+#[cfg(windows)]
+use std::os::windows as os_windows;
 mod app;
 mod appearance;
 mod chrome;
@@ -17,11 +25,13 @@ mod macro_manager;
 mod macros;
 mod mdsmart;
 mod minimap;
+#[cfg_attr(target_os = "macos", path = "mac/npp.rs")]
 mod npp;
 mod project_ui;
 mod preview;
 mod sci;
 mod selection;
+#[cfg_attr(target_os = "macos", path = "mac/sidebar_grip.rs")]
 mod sidebar_grip;
 mod snippet_ui;
 mod state;

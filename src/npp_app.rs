@@ -2,7 +2,7 @@ use super::*;
 use crate::npp;
 
 fn copy_package(src: &Path, dst: &Path) -> io::Result<()> {
-    use std::os::windows::fs::MetadataExt;
+    use crate::os_windows::fs::MetadataExt;
     for entry in src.read_dir()? {
         let entry = entry?;
         let path = entry.path();
