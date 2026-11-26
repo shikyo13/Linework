@@ -125,7 +125,20 @@ impl View {
     }
 
     pub(crate) unsafe fn call(&self, message: u32, w: usize, l: isize) -> isize {
-        unsafe { (self.direct)(self.backend, message, w, l) }
+        // Text sizes are given in points. On Windows a point is 96/72 of a
+        // pixel; here a point is a pixel, and the rest of the program lays
+        // itself out in Windows pixels. So sizes go in a third larger and come
+        // back as they went in: SCI_STYLESETSIZE, SCI_STYLESETSIZEFRACTIONAL
+        // and SCI_SETZOOM, and the three that read them.
+        let (message, w, l, read) = match message {
+            2055 => (2061, w, l * 400 / 3, false),
+            2061 => (2061, w, l * 4 / 3, false),
+            2373 => (2373, ((w as isize * 4 + 1) / 3) as usize, 0, false),
+            2485 | 2062 | 2374 => (message, w, l, true),
+            _ => (message, w, l, false),
+        };
+        let result = unsafe { (self.direct)(self.backend, message, w, l) };
+        if read { result * 3 / 4 } else { result }
     }
 
     pub(crate) fn listen(&self, handler: Option<Rc<dyn Fn(&Notification)>>) {

@@ -1,0 +1,8 @@
+Cascadia Mono, version 2407.024
+Copyright 2021 Microsoft Corporation, with Reserved Font Name Cascadia Code.
+Licensed under the SIL Open Font License, Version 1.1: https://scripts.sil.org/OFL
+Source: https://github.com/microsoft/cascadia-code (release v2407.24), files
+ttf/CascadiaMono.ttf and ttf/CascadiaMonoItalic.ttf, unchanged.
+
+Windows 11 includes this font, so the Windows program asks the system for it.
+macOS does not, so the macOS program carries these two files.

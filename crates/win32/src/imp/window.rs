@@ -140,7 +140,19 @@ pub(crate) fn forget(view: &NSView) {
 unsafe extern "system" fn foreign_proc(hwnd: HWND, message: u32, w: WPARAM, l: LPARAM) -> LRESULT {
     let Some(window) = find(hwnd) else { return 0 };
     if window.class == "Scintilla" && (2000..5000).contains(&message) {
-        return unsafe { msg_send![&*window.view, message: message, wParam: w, lParam: l] };
+        // Text sizes are in points, and a point is 96/72 of a pixel on Windows
+        // but one pixel here; the editor crate's macOS file does the same for
+        // the messages it sends itself.
+        let (message, l, back) = match message {
+            2055 => (2061, l * 400 / 3, 1),
+            2061 => (2061, l * 4 / 3, 1),
+            2373 => (2373, 0, 1),
+            2485 | 2062 | 2374 => (message, l, 2),
+            _ => (message, l, 0),
+        };
+        let w = if message == 2373 { ((w as isize * 4 + 1) / 3) as usize } else { w };
+        let result: isize = unsafe { msg_send![&*window.view, message: message, wParam: w, lParam: l] };
+        return if back == 2 { result * 3 / 4 } else { result };
     }
     unsafe { DefWindowProcW(hwnd, message, w, l) }
 }

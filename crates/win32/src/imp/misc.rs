@@ -31,8 +31,36 @@ pub unsafe fn GetDpiForWindow(_: HWND) -> u32 {
     96
 }
 
+/// The first thing the front end calls, so the fonts the program carries are
+/// made known here, before any window asks for one.
 pub unsafe fn SetProcessDpiAwarenessContext(_: crate::Win32::UI::HiDpi::DPI_AWARENESS_CONTEXT) -> i32 {
+    fonts();
     1
+}
+
+#[link(name = "CoreText", kind = "framework")]
+unsafe extern "C" {
+    fn CTFontManagerRegisterFontsForURL(url: *const core::ffi::c_void, scope: u32, error: *mut *mut core::ffi::c_void) -> bool;
+}
+
+/// Makes the program's own font files usable by name, for this process only.
+/// In the application bundle they are in Resources/fonts; in a build run from
+/// the source tree they are in assets/mac/fonts.
+fn fonts() {
+    let beside = std::env::current_exe().ok().and_then(|exe| Some(exe.parent()?.parent()?.join("Resources/fonts")));
+    let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/mac/fonts");
+    let Some(folder) = beside.into_iter().chain(Some(source)).find(|folder| folder.is_dir()) else {
+        return eprintln!("linework-win32: the program's fonts were not found");
+    };
+    let Ok(files) = std::fs::read_dir(folder) else { return };
+    for file in files.flatten().map(|file| file.path()).filter(|file| file.extension().is_some_and(|kind| kind == "ttf")) {
+        let url = objc2_foundation::NSURL::fileURLWithPath(&NSString::from_str(&file.to_string_lossy()));
+        // 1: for this process, not installed for the person.
+        let known = unsafe { CTFontManagerRegisterFontsForURL(objc2::rc::Retained::as_ptr(&url).cast(), 1, std::ptr::null_mut()) };
+        if !known {
+            eprintln!("linework-win32: could not make {} known as a font", file.display());
+        }
+    }
 }
 
 pub unsafe fn GetSystemMetricsForDpi(_: SYSTEM_METRICS_INDEX, _: u32) -> i32 {

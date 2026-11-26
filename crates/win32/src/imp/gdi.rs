@@ -182,8 +182,15 @@ fn make_font(height: i32, windows_weight: i32, name: &str) -> HFONT {
     let (font, face) = if name.contains("MDL2") || name.contains("Fluent") || name.contains("Symbol") {
         (NSFont::systemFontOfSize(size), Face::Icons)
     } else if name.contains("Mono") || name.contains("Consolas") || name.contains("Courier") {
-        let menlo = if windows_weight >= 600 { "Menlo-Bold" } else { "Menlo-Regular" };
-        let font = NSFont::fontWithName_size(&NSString::from_str(menlo), size)
+        // Cascadia Mono comes with the program; the system's own fixed-width
+        // font stands in only if its files are missing.
+        let font = NSFont::fontWithName_size(&NSString::from_str("CascadiaMono-Regular"), size)
+            .map(|font| {
+                if windows_weight < 600 {
+                    return font;
+                }
+                objc2_app_kit::NSFontManager::sharedFontManager(crate::imp::window::mtm()).convertFont_toHaveTrait(&font, objc2_app_kit::NSFontTraitMask::BoldFontMask)
+            })
             .unwrap_or_else(|| NSFont::monospacedSystemFontOfSize_weight(size, weight(windows_weight)));
         (font, Face::Mono)
     } else {
