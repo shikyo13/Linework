@@ -41,6 +41,7 @@ pub(crate) fn proc_of(class: &str) -> Option<Proc> {
         "BUTTON" => Some(button_proc),
         "LISTBOX" => Some(list_proc),
         "EDIT" => Some(edit_proc),
+        "LWMENU" => Some(crate::imp::menu::proc()),
         _ => None,
     }
 }
@@ -589,6 +590,12 @@ unsafe extern "system" fn edit_proc(hwnd: HWND, message: u32, w: WPARAM, l: LPAR
                 }
             }
             room as isize
+        }
+        // 0x1501 sets the grey words shown while the field is empty.
+        0x1501 => {
+            let words = unsafe { wide_name(l as *const u16) };
+            state(&window, |edit: &mut Edit| edit.field.setPlaceholderString(Some(&NSString::from_str(&words))));
+            1
         }
         EM_SETSEL => {
             state(&window, |edit: &mut Edit| {

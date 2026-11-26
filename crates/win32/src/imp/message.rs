@@ -179,7 +179,7 @@ fn held(id: u32) -> Option<(Retained<NSEvent>, u32)> {
 }
 
 /// The Windows key for a Mac key's number.
-fn virtual_key(code: u16) -> u16 {
+pub(crate) fn virtual_key(code: u16) -> u16 {
     const LETTERS: [(u16, u8); 36] = [
         (0x00, b'A'), (0x01, b'S'), (0x02, b'D'), (0x03, b'F'), (0x04, b'H'), (0x05, b'G'), (0x06, b'Z'), (0x07, b'X'), (0x08, b'C'),
         (0x09, b'V'), (0x0B, b'B'), (0x0C, b'Q'), (0x0D, b'W'), (0x0E, b'E'), (0x0F, b'R'), (0x10, b'Y'), (0x11, b'T'), (0x12, b'1'),

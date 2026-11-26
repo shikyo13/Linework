@@ -95,10 +95,18 @@ fn target() -> Option<Retained<objc2_app_kit::NSWindow>> {
 
 /// A pointer event at a place counted from the top left of the window's content.
 fn pointer(kind: usize, x: f64, y: f64, clicks: isize) {
-    let Some(frame) = target() else { return };
-    let height = frame.contentView().map_or(0.0, |view| view.frame().size.height);
+    // The place is counted in the main window; a popup of ours lying over it
+    // there takes the event, as it would from the real pointer.
+    let Some(main) = frames().into_iter().find(|(class, _)| class == "LineworkMain").map(|(_, frame)| frame) else { return };
+    let height = main.contentView().map_or(0.0, |view| view.frame().size.height);
+    let on_screen = main.convertPointToScreen(NSPoint::new(x, height - y));
+    let over = frames().into_iter().map(|(_, frame)| frame).find(|frame| {
+        frame.isVisible() && frame.windowNumber() != main.windowNumber() && objc2_foundation::NSPointInRect(on_screen, frame.frame())
+    });
+    let frame = over.unwrap_or(main);
+    let place = frame.convertPointFromScreen(on_screen);
     let event: Option<Retained<NSEvent>> = unsafe {
-        msg_send![class!(NSEvent), mouseEventWithType: kind, location: NSPoint::new(x, height - y), modifierFlags: 0usize, timestamp: 0.0f64,
+        msg_send![class!(NSEvent), mouseEventWithType: kind, location: place, modifierFlags: 0usize, timestamp: 0.0f64,
             windowNumber: frame.windowNumber(), context: std::ptr::null::<AnyObject>(), eventNumber: 0isize, clickCount: clicks, pressure: 1.0f32]
     };
     post(event);

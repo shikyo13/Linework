@@ -782,6 +782,14 @@ pub unsafe fn GdipFillPolygon2(handle: *mut GpGraphics, brush: *mut GpBrush, poi
     0
 }
 
+/// The color of a solid brush.
+pub(crate) fn brush_color(handle: HBRUSH) -> Option<COLORREF> {
+    match object(handle as HGDIOBJ) {
+        Some(Object::Brush(color)) => Some(*color),
+        _ => None,
+    }
+}
+
 /// The text and background colors a context holds.
 pub(crate) fn colors_of(hdc: HDC) -> (COLORREF, COLORREF) {
     dc(hdc).map_or((0, 0xffffff), |context| (context.text, context.back))
