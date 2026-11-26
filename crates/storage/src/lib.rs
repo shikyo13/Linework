@@ -220,6 +220,29 @@ impl Document {
     pub fn open(path: &Path) -> io::Result<Self> {
         Self::open_core(path, None)
     }
+    /// `open`, with the background line count held until `start_indexing`,
+    /// so a program can show the text before the count competes with it.
+    pub fn open_deferred(path: &Path) -> io::Result<Self> {
+        source::DEFER_INDEXING.set(true);
+        let doc = Self::open_core(path, None);
+        source::DEFER_INDEXING.set(false);
+        doc
+    }
+    /// Start the background line count of every part of the text that has
+    /// not started one (after `open_deferred`); does nothing for the rest.
+    pub fn start_indexing(&self) -> io::Result<()> {
+        let mut sources = Vec::new();
+        if let Some(root) = &self.root {
+            root.pieces(&mut |s, _, _| {
+                sources.push(s.clone());
+                Ok(())
+            })?;
+        }
+        for s in sources {
+            s.start_index()?;
+        }
+        Ok(())
+    }
     pub fn open_as(path: &Path, encoding: &str) -> io::Result<Self> {
         Self::open_core(path, Some(Codec::named(encoding)?))
     }

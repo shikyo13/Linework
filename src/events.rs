@@ -23,6 +23,10 @@ struct Projection {
     binding: Binding,
     map: std::sync::Arc<linework_storage::FoldMap>,
 }
+thread_local! {
+    /// Set while an opened file waits for its first paint before its line count starts.
+    pub static AWAIT_PAINT: Cell<bool> = const { Cell::new(false) };
+}
 thread_local! {static PROJECTIONS: RefCell<[Projection;2]>=RefCell::new(Default::default());}
 pub fn install(p: usize, binding: Binding, map: std::sync::Arc<linework_storage::FoldMap>) {
     PROJECTIONS.with_borrow_mut(|v| v[p] = Projection { binding, map });
@@ -89,6 +93,8 @@ fn apply_divider() {
 }
 pub enum Event {
     Activated,
+    /// A text view painted while `AWAIT_PAINT` was set.
+    Painted,
     SideWidth(i32, bool),
     PreviewWidth(i32, bool),
     Size,
@@ -367,6 +373,10 @@ pub unsafe extern "system" fn proc(h: HWND, m: u32, w: usize, l: isize) -> isize
                 let _native_plugins = crate::npp::after_notification(l, b);
                 let mut nt = *(l as *const Notification);
                 let code = nt.nmhdr.code;
+                if code == n::SCN_PAINTED && AWAIT_PAINT.get() {
+                    AWAIT_PAINT.set(false);
+                    push(Event::Painted);
+                }
                 // Styles for a log are made now, before Scintilla paints.
                 if code == n::SCN_STYLENEEDED
                     && linework_editor::style_needed(nt.nmhdr.hwnd_from as isize, nt.position.max(0) as usize)

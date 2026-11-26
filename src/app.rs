@@ -353,6 +353,8 @@ pub struct App {
     /// estimate (`Document::estimate_line_start`) already put the caret.
     indexed_jump: std::collections::HashMap<u64, (u64, u64, Option<u64>)>,
     column_request: Arc<std::sync::atomic::AtomicU64>,
+    /// Opened files whose line count waits for their first paint, and since when.
+    pub(crate) count_after_paint: Vec<(u64, Instant)>,
 }
 impl App {
     pub fn new(h: H) -> Result<Self, String> {
@@ -549,6 +551,7 @@ impl App {
             pending_jump: Default::default(),
             indexed_jump: Default::default(),
             column_request: Default::default(),
+            count_after_paint: Vec::new(),
         };
         if let Some(path) = &a.prefs.dictionary {
             for e in &a.editors {
@@ -714,7 +717,8 @@ impl App {
             path.file_name().unwrap_or_default().to_string_lossy()
         ));
         std::thread::spawn(move || {
-            let result = Document::open(&path).map_err(|e| e.to_string());
+            // The line count starts once the text is shown (`Worker::Open`).
+            let result = Document::open_deferred(&path).map_err(|e| e.to_string());
             let _ = tx.send(Worker::Open(path, result, pane, restore));
         });
     }

@@ -31,6 +31,11 @@ static LINE_INDEXING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicB
 pub fn set_line_indexing(on: bool) {
     LINE_INDEXING.store(on, Ordering::Relaxed);
 }
+thread_local! {
+    /// Set while `Document::open_deferred` opens a file on this thread: its
+    /// line count waits for `Document::start_indexing`.
+    pub(crate) static DEFER_INDEXING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
 
 pub(crate) fn read_at(f: &File, mut pos: u64, mut dst: &mut [u8]) -> io::Result<()> {
     while !dst.is_empty() {
@@ -167,6 +172,8 @@ pub(crate) struct Source {
     error: Mutex<Option<String>>,
     /// What scans with a lead have left mapped in Windows' cache (see `lead.rs`).
     views: Mutex<lead::Views>,
+    /// Whether the background line count has been started.
+    index_started: std::sync::atomic::AtomicBool,
 }
 impl Source {
     pub fn file(file: Arc<File>, origin: u64, len: u64) -> io::Result<Arc<Self>> {
@@ -212,6 +219,7 @@ impl Source {
             cache: Default::default(),
             error: Mutex::new(None),
             views: Default::default(),
+            index_started: Default::default(),
         });
         if len <= PAGE as u64 {
             let mut buf = vec![0; len as usize];
@@ -220,11 +228,8 @@ impl Source {
                 s.counts.write().unwrap().push(count(&buf, None));
             }
             s.prefix.store(len, Ordering::Release);
-        } else if LINE_INDEXING.load(Ordering::Relaxed) {
-            let weak = Arc::downgrade(&s);
-            thread::Builder::new()
-                .name("Linework line index".into())
-                .spawn(move || Self::index(weak))?;
+        } else if LINE_INDEXING.load(Ordering::Relaxed) && !DEFER_INDEXING.get() {
+            s.start_index()?;
         }
         Ok(s)
     }
@@ -254,6 +259,8 @@ impl Source {
             cache: Default::default(),
             error: Mutex::new(None),
             views: Default::default(),
+            // Counted already, as it was made.
+            index_started: std::sync::atomic::AtomicBool::new(true),
         })
     }
     pub(crate) fn disk_at(&self,at:u64)->io::Result<Option<(File,u64)>>{
@@ -533,6 +540,17 @@ impl Source {
     /// A large file is counted by several threads, each with its own handle.
     /// The directory still grows from the start, so the indexed part of the
     /// document is usable while the rest is counted.
+    /// Start counting lines in the background, once.
+    pub(crate) fn start_index(self: &Arc<Self>) -> io::Result<()> {
+        if self.len <= PAGE as u64 || self.index_started.swap(true, Ordering::AcqRel) {
+            return Ok(());
+        }
+        let weak = Arc::downgrade(self);
+        thread::Builder::new()
+            .name("Linework line index".into())
+            .spawn(move || Self::index(weak))?;
+        Ok(())
+    }
     fn index(weak: Weak<Source>) {
         let Some(len) = weak.upgrade().map(|s| s.len) else {
             return;

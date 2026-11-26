@@ -1083,6 +1083,11 @@ impl App {
     }
     pub fn event(&mut self, event: Event) {
         match event {
+            Event::Painted => {
+                for (id, _) in std::mem::take(&mut self.count_after_paint) {
+                    self.start_count(id);
+                }
+            }
             Event::Activated => {
                 let docs: Vec<_> = self
                     .buffers
@@ -1463,7 +1468,28 @@ impl App {
         }
         self.tx.wake.notify();
     }
+    /// Start the background line count of buffer `id`.
+    fn start_count(&mut self, id: u64) {
+        if let Some(i) = self.idx(id) {
+            if let Err(e) = self.buffers[i].doc.start_indexing() {
+                self.notice(e.to_string());
+            }
+        }
+    }
     fn tick(&mut self) {
+        // A file whose view has not painted within a second counts its lines anyway.
+        let late: Vec<u64> = self
+            .count_after_paint
+            .iter()
+            .filter(|(_, at)| at.elapsed() >= Duration::from_secs(1))
+            .map(|(id, _)| *id)
+            .collect();
+        if !late.is_empty() {
+            self.count_after_paint.retain(|(id, _)| !late.contains(id));
+            for id in late {
+                self.start_count(id);
+            }
+        }
         if let Some(i) = self.current() {
             let buf = &self.buffers[i];
             if let Some(&(line, col, guess)) = self.indexed_jump.get(&buf.id) {
@@ -1792,6 +1818,19 @@ impl App {
                                 self.goto_line_col(at, col)
                             } else {
                                 self.go(at, 0)
+                            }
+                        }
+                        // The text first, then the line count beside it: counting a
+                        // large file while the window first paints slows the paint.
+                        // A jump waiting for the count without an estimate starts it at once.
+                        let key = state::key(&path);
+                        if let Some(i) = self.buffers.iter().position(|b| b.path.as_ref().is_some_and(|p| state::key(p) == key)) {
+                            let id = self.buffers[i].id;
+                            if self.indexed_jump.get(&id).is_some_and(|j| j.2.is_none()) {
+                                self.start_count(id);
+                            } else {
+                                self.count_after_paint.push((id, Instant::now()));
+                                events::AWAIT_PAINT.set(true);
                             }
                         }
                     }
