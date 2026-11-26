@@ -24,3 +24,9 @@ windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem", "Win32
 
 [target.'cfg(target_os = "macos")'.dependencies]
 libc = "0.2"
+
+# SHA-256 with the processor's own instructions. On x86 the crate finds them
+# by itself; on Arm it does so only with this feature, and without it a save
+# of a large file spends nearly all its time on the checksum.
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+sha2 = { version = "0.10", features = ["asm"] }
