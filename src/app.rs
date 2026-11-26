@@ -233,6 +233,9 @@ pub enum Worker {
     Report(u64, Result<SearchReport, String>),
     Build(u64, Result<BuildReport, String>),
     Applied(ApplyReport),
+    /// How far a run of zero bytes reaches: the measurement, document, revision, run, and whether it is done.
+    Zeros(u64, u64, u64, Range<u64>, bool),
+    ZerosFailed(u64, String),
     /// A folder replace undone, or why not.
     Undone(Result<linework_project::change::Undone, String>),
     Tool(
@@ -285,6 +288,8 @@ pub struct App {
     pub(crate) search_scope: SearchScope,
     /// The search panel's fields: find, replace, files, skip, types, near, also has, lacks.
     pub panel_fields: [H; 8],
+    /// Long runs of zero bytes in the parts of large files on screen.
+    pub(crate) zeros: zero_runs::Zeros,
     /// What the search panel asks for.
     pub panel: linework_project::ask::Panel,
     /// When the folder search should run again after typing stops.
@@ -472,6 +477,7 @@ impl App {
             job: 0,
             search_scope: SearchScope::File,
             panel_fields,
+            zeros: Default::default(),
             panel: Default::default(),
             search_due: None,
             row_hits: Vec::new(),
@@ -913,6 +919,8 @@ impl App {
         let mut base = 0;
         let mut bound_map = Default::default();
         let mut caret = at as usize;
+        // A long run of zero bytes in the part shown, in the document's own positions.
+        let mut zeros = None;
         quiet(|| {
             if b.large {
                 let projected = self.projection(b.id, b.rev);
@@ -925,6 +933,8 @@ impl App {
                 let (offset, bytes) = window_bytes(view, visible).unwrap_or_else(|_| (0, vec![]));
                 base = map.physical(offset);
                 caret = visible.saturating_sub(offset) as usize;
+                zeros = zero_runs::long_zeros(&bytes, caret)
+                    .map(|r| map.physical(offset + r.start as u64)..map.physical(offset + r.end as u64));
                 bound_map = map;
                 msg(e.hwnd(), SETDOCPOINTER, 0, self.scratch[p]);
                 e.send(SETREADONLY, 0, 0);
@@ -980,6 +990,7 @@ impl App {
         self.paint_global(p);
         self.paint_fold_headers(i, p);
         self.polish_bound(p);
+        self.zeros_in_view(p, i, zeros);
     }
     fn margins(&self, p: usize) {
         let Some(i) = self.assigned[p].and_then(|id| self.idx(id)) else {
@@ -1372,6 +1383,8 @@ mod npp_app;
 mod polish;
 #[path = "search_ui.rs"]
 mod search_ui;
+#[path = "zero_runs.rs"]
+pub(crate) mod zero_runs;
 #[path = "search_panel.rs"]
 mod search_panel;
 pub(crate) use search_panel::SearchScope;

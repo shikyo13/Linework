@@ -125,6 +125,9 @@ fn render(
         shell.header(zoomed);
         shell.side(side, !crate::sidebar_grip::owns_edge());
         shell.tabs(side);
+        if let Some((caption, measured)) = &f.zeros {
+            shell.zeros(side, caption, *measured);
+        }
         if f.tabs.is_empty() {
             shell.home(side);
         }

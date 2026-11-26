@@ -575,7 +575,8 @@ impl App {
         };
         crate::sidebar_grip::layout(self.h, self.prefs.sidebar, sx, self.prefs.light);
         let y = scale(frame::HEAD + frame::TABS);
-        let area = y + scale(8);
+        // The bar about zero bytes, when the part of the file shown holds a long run of them.
+        let area = y + scale(8) + if self.zeros_caption().is_some() { scale(frame::ZERO_BAR) } else { 0 };
         let bottom = ht - scale(frame::FOOT);
         layout.set(
             self.status_left,
@@ -861,6 +862,7 @@ impl App {
                 selection: self.selection_search_active(),
             },
             summary: self.search_summary.clone(),
+            zeros: self.zeros_caption(),
         };
         let (tab_state_changed, frame_changed, preview_changed) = frame::FRAME.with_borrow(|old|
             (old.tabs != f.tabs || old.active != f.active, old != &f, old.document_preview != f.document_preview));
@@ -2001,6 +2003,8 @@ impl App {
                 Err(e) => self.notice(e),
             },
             Worker::Applied(r) => self.project_applied(r),
+            Worker::Zeros(job, id, rev, run, done) => self.zeros_measured(job, id, rev, run, done),
+            Worker::ZerosFailed(job, e) => self.zeros_failed(job, e),
             Worker::Undone(r) => self.project_undone(r),
             Worker::Tool(j, id, rev, a, b, filter, r) if self.current_job("tool", j) => {
                 self.project_tool_result(id, rev, a, b, filter, r)

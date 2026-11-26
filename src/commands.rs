@@ -95,6 +95,8 @@ pub const COMMANDS: &[Command] = cmds![
     ),
     ("applypreview", "Apply checked replacements", "Search", ""),
     ("undofolder", "Undo last folder replace", "Search", ""),
+    ("zeroskip", "Skip past zero bytes", "Go", ""),
+    ("zeroback", "Back before zero bytes", "Go", ""),
     (
         "togglehit",
         "Include or exclude selected match",

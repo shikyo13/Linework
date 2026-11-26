@@ -44,7 +44,12 @@ pub struct Frame {
     pub panel: PanelState,
     /// The last folder search's totals, and the lw command that finds the same lines.
     pub summary: String,
+    /// The bar about a long run of zero bytes in the active pane, and whether its ends are known.
+    pub zeros: Option<(String, bool)>,
 }
+
+/// The height of the bar about a long run of zero bytes.
+pub const ZERO_BAR: i32 = 38;
 
 /// The search panel's switches, as drawn.
 #[derive(Default, Clone, PartialEq)]
@@ -490,6 +495,23 @@ impl Shell<'_> {
         self.button(x, y, 22, 28, "−", lower, false);
         self.s.text(x + 22, y, 26, 28, &value.to_string(), self.p.text, 13, 600, DT_CENTER);
         self.button(x + 48, y, 22, 28, "+", raise, false);
+    }
+    /// The bar about a long run of zero bytes, above the text: what it is, and
+    /// buttons to the text before and after it once its ends are known.
+    fn zeros(&self, side: i32, caption: &str, measured: bool) {
+        let (s, p, w) = (self.s, self.p, self.w);
+        let y = HEAD + TABS;
+        let amber = if self.f.light { hx(0x9A6A1C) } else { hx(0xE0A458) };
+        s.fill(side, y, w - side, ZERO_BAR, p.panel);
+        s.fill(side, y, 3, ZERO_BAR, amber);
+        s.fill(side, y + ZERO_BAR - 1, w - side, 1, p.line);
+        s.glyph(side + 10, y, 24, ZERO_BAR, 0xE7BA, amber, 13);
+        let buttons = if measured { 236 } else { 0 };
+        s.text(side + 38, y, w - side - 50 - buttons, ZERO_BAR, caption, p.text, 13, 500, 0);
+        if measured {
+            self.button(w - 238, y + 6, 106, 26, "Back before", "zeroback", false);
+            self.button(w - 126, y + 6, 114, 26, "Skip past", "zeroskip", true);
+        }
     }
     fn tabs(&self, side: i32) {
         let (s, p, f, w) = (self.s, self.p, self.f, self.w);
