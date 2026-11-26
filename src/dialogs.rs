@@ -1,6 +1,7 @@
+#[cfg(windows)]
+use raw_window_handle::Win32WindowHandle;
 use raw_window_handle::{
-    DisplayHandle, HandleError, HasDisplayHandle, HasWindowHandle, RawWindowHandle,
-    Win32WindowHandle, WindowHandle,
+    DisplayHandle, HandleError, HasDisplayHandle, HasWindowHandle, RawWindowHandle, WindowHandle,
 };
 use std::num::NonZeroIsize;
 
@@ -8,14 +9,24 @@ struct Owner(NonZeroIsize);
 impl HasWindowHandle for Owner {
     fn window_handle(&self) -> Result<WindowHandle<'_>, HandleError> {
         // The editor window remains alive for the entire modal picker.
-        Ok(unsafe {
+        #[cfg(windows)]
+        return Ok(unsafe {
             WindowHandle::borrow_raw(RawWindowHandle::Win32(Win32WindowHandle::new(self.0)))
-        })
+        });
+        // On macOS a window's handle is its view, which is what the picker asks for there.
+        #[cfg(target_os = "macos")]
+        return Ok(unsafe {
+            let view = std::ptr::NonNull::new(self.0.get() as *mut std::ffi::c_void).ok_or(HandleError::Unavailable)?;
+            WindowHandle::borrow_raw(RawWindowHandle::AppKit(raw_window_handle::AppKitWindowHandle::new(view)))
+        });
     }
 }
 impl HasDisplayHandle for Owner {
     fn display_handle(&self) -> Result<DisplayHandle<'_>, HandleError> {
-        Ok(DisplayHandle::windows())
+        #[cfg(windows)]
+        return Ok(DisplayHandle::windows());
+        #[cfg(target_os = "macos")]
+        return Ok(DisplayHandle::appkit());
     }
 }
 pub fn files(hwnd: isize) -> rfd::FileDialog {

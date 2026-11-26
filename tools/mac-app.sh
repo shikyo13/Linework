@@ -21,6 +21,7 @@ for image in mac_cursor_busy mac_cursor_flipped; do
 done
 mkdir -p "$app/Contents/Resources/fonts"
 cp "$here"/assets/mac/fonts/*.ttf "$here"/assets/mac/fonts/NOTICE.txt "$app/Contents/Resources/fonts/"
+cp "$here/assets/mac/Linework.icns" "$app/Contents/Resources/Linework.icns"
 cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -29,6 +30,7 @@ cat > "$app/Contents/Info.plist" <<PLIST
     <key>CFBundleName</key><string>Linework</string>
     <key>CFBundleDisplayName</key><string>Linework</string>
     <key>CFBundleExecutable</key><string>Linework</string>
+    <key>CFBundleIconFile</key><string>Linework</string>
     <key>CFBundleIdentifier</key><string>io.github.shikyo13.Linework</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>$version</string>
