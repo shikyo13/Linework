@@ -168,8 +168,14 @@ impl Editor {
         self.theme.set(theme);
         let p = self.colors.borrow().palette(theme);
         self.send(SCI_STYLERESETDEFAULT, 0, 0);
-        self.put_str(SCI_STYLESETFONT, 32, "Cascadia Mono");
-        self.send(SCI_STYLESETSIZEFRACTIONAL, 32, 1100);
+        // Menlo is the fixed-width font every Mac has; 13 points there reads
+        // about as large as 11 on Windows.
+        #[cfg(target_os = "macos")]
+        let (font, size) = ("Menlo", 1300);
+        #[cfg(not(target_os = "macos"))]
+        let (font, size) = ("Cascadia Mono", 1100);
+        self.put_str(SCI_STYLESETFONT, 32, font);
+        self.send(SCI_STYLESETSIZEFRACTIONAL, 32, size);
         self.send(SCI_STYLESETFORE, 32, bgr(p.fg));
         self.send(SCI_STYLESETBACK, 32, bgr(p.bg));
         self.send(SCI_STYLECLEARALL, 0, 0);
