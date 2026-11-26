@@ -241,7 +241,7 @@ impl App {
         if alt
             && !ctrl
             && !shift
-            && matches!(k, 0x46 | 0x45 | 0x53 | 0x56 | 0x47 | 0x4d | 0x54 | 0x48)
+            && matches!(k, 0x46 | 0x45 | 0x53 | 0x56 | 0x47 | 0x4e | 0x54 | 0x50 | 0x48)
         {
             let group = match k {
                 0x46 => "File",
@@ -249,8 +249,9 @@ impl App {
                 0x53 => "Search",
                 0x56 => "View",
                 0x47 => "Go",
-                0x4d => "Macro",
+                0x4e => "Encoding",
                 0x54 => "Tools",
+                0x50 => "Settings",
                 _ => "Help",
             };
             events::push(Event::Hit(

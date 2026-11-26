@@ -205,14 +205,26 @@ impl Shell<'_> {
         self.hit(x, y, w, h, a);
     }
     fn icon(&self, x: i32, y: i32, w: i32, h: i32, g: u16, a: Hit, on: bool, fs: i32) {
+        self.icon_when(x, y, w, h, g, a, on, fs, true);
+    }
+    /// An icon button; one that has nothing to act on (`usable` false) is drawn
+    /// faint, and a click still explains what it needs.
+    #[allow(clippy::too_many_arguments)]
+    fn icon_when(&self, x: i32, y: i32, w: i32, h: i32, g: u16, a: Hit, on: bool, fs: i32, usable: bool) {
         let p = self.p;
         let hot = self.hot(&a);
-        if on || hot {
+        if on || (hot && usable) {
             self.s
                 .round(x, y, w, h, 6, if on { p.active } else { p.raised }, None);
         }
-        self.s
-            .glyph(x, y, w, h, g, if on { p.accent } else { p.dim }, fs);
+        let ink = if on {
+            p.accent
+        } else if usable {
+            p.dim
+        } else {
+            p.line
+        };
+        self.s.glyph(x, y, w, h, g, ink, fs);
         self.hit(x, y, w, h, a);
     }
     fn header(&self, zoomed: bool) {
@@ -227,10 +239,11 @@ impl Shell<'_> {
             ("Edit", 38),
             ("Selection", 65),
             ("Search", 54),
-            ("Go", 32),
             ("View", 41),
-            ("Macro", 49),
+            ("Go", 32),
+            ("Encoding", 66),
             ("Tools", 43),
+            ("Settings", 61),
             ("Help", 39),
         ] {
             let a = Hit::Menu(name.into());
@@ -304,17 +317,19 @@ impl Shell<'_> {
             if f.light { hx(0xEEEAF4) } else { hx(0x121318) },
         );
         s.fill(RAIL - 1, HEAD, 1, h - HEAD - FOOT, p.line);
-        for (i, (g, a, on)) in [
-            (0xE81E, Hit::Side(0), f.sidebar && f.side == 0),
-            (0xE721, cmd("find"), f.find),
-            (0xE8D4, Hit::Side(1), f.sidebar && f.side == 1),
-            (0xE179, Hit::Side(2), f.sidebar && f.side == 2),
-            (0xE734, cmd("marks"), false),
+        // Find and bookmarks act on an open file.
+        let file = !f.tabs.is_empty();
+        for (i, (g, a, on, usable)) in [
+            (0xE81E, Hit::Side(0), f.sidebar && f.side == 0, true),
+            (0xE721, cmd("find"), f.find, file),
+            (0xE8D4, Hit::Side(1), f.sidebar && f.side == 1, true),
+            (0xE179, Hit::Side(2), f.sidebar && f.side == 2, true),
+            (0xE734, cmd("marks"), false, file),
         ]
         .into_iter()
         .enumerate()
         {
-            self.icon(5, HEAD + 9 + i as i32 * 43, 37, 37, g, a, on, 17);
+            self.icon_when(5, HEAD + 9 + i as i32 * 43, 37, 37, g, a, on, 17, usable);
         }
         self.icon(5, h - FOOT - 45, 37, 37, 0xE765, cmd("help"), false, 18);
         if !f.sidebar {

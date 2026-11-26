@@ -15,21 +15,21 @@ pub const COMMANDS: &[Command] = cmds![
     (
         "comparesaved",
         "Compare changes with saved file",
-        "File",
+        "Tools",
         ""
     ),
-    ("comparefile", "Compare with another file…", "File", ""),
+    ("comparefile", "Compare with another file…", "Tools", ""),
     ("saveall", "Save all", "File", "Ctrl+Shift+F12"),
     ("close", "Close tab", "File", "Ctrl+W"),
     ("reopen", "Reopen closed file", "File", "Ctrl+Shift+T"),
-    ("encoding", "Convert encoding…", "File", ""),
+    ("encoding", "Convert encoding…", "Encoding", ""),
     ("reload", "Reload from disk…", "File", ""),
-    ("recode", "Reopen with encoding…", "File", ""),
-    ("encodingdetect", "Detect encoding of files that are not UTF-8", "File", ""),
-    ("encodingfallback", "Encoding for files that are not UTF-8…", "File", ""),
-    ("encodingnew", "Encoding for new files…", "File", ""),
-    ("eol", "Convert line endings…", "File", ""),
-    ("follow", "Follow growing file", "File", ""),
+    ("recode", "Reopen with encoding…", "Encoding", ""),
+    ("encodingdetect", "Detect encoding of files that are not UTF-8", "Encoding", ""),
+    ("encodingfallback", "Encoding for files that are not UTF-8…", "Encoding", ""),
+    ("encodingnew", "Encoding for new files…", "Encoding", ""),
+    ("eol", "Convert line endings…", "Encoding", ""),
+    ("follow", "Follow growing file", "View", ""),
     ("exit", "Exit Linework", "File", "Alt+F4"),
     ("undo", "Undo", "Edit", "Ctrl+Z"),
     ("redo", "Redo", "Edit", "Ctrl+Y"),
@@ -128,9 +128,9 @@ pub const COMMANDS: &[Command] = cmds![
     ("fold", "Fold or unfold block", "View", "Ctrl+Shift+["),
     ("foldall", "Fold all blocks", "View", ""),
     ("unfold", "Unfold all blocks", "View", ""),
-    ("theme", "Color theme…", "View", ""),
-    ("language", "Syntax language…", "View", ""),
-    ("cursor", "Cursor appearance…", "View", ""),
+    ("theme", "Color theme…", "Settings", ""),
+    ("language", "Syntax language…", "Settings", ""),
+    ("cursor", "Cursor appearance…", "Settings", ""),
     ("whitespace", "Show whitespace", "View", ""),
     ("markmatches", "Highlight selected occurrences", "View", ""),
     ("zoom+", "Increase font size", "View", "Ctrl+="),
@@ -145,17 +145,17 @@ pub const COMMANDS: &[Command] = cmds![
     ),
     ("findselection", "Find in selection…", "Search", "Ctrl+F3"),
     ("findoptions", "Find options…", "Search", ""),
-    ("tokencolors", "Syntax colors…", "View", ""),
-    ("highlights", "Highlighting options…", "View", ""),
+    ("tokencolors", "Syntax colors…", "Settings", ""),
+    ("highlights", "Highlighting options…", "Settings", ""),
     ("markcolor", "Mark phrase with a color…", "Search", ""),
     ("nextcolor", "Go to next colored mark…", "Go", ""),
     ("clearmarks", "Clear colored marks…", "Search", ""),
-    ("managesnippets", "Manage snippets…", "Edit", ""),
+    ("managesnippets", "Manage snippets…", "Settings", ""),
     ("minimap", "Document map", "View", ""),
     ("docpreview", "Show document preview to the right", "View", "Ctrl+Shift+V"),
-    ("previewcue", "Preview effects…", "View", ""),
+    ("previewcue", "Preview effects…", "Settings", ""),
     ("previewfollow", "Preview follows the source caret", "View", ""),
-    ("editoreffects", "Editor effects…", "View", ""),
+    ("editoreffects", "Editor effects…", "Settings", ""),
     ("paragraphfocus", "Paragraph focus", "View", ""),
     ("mdbold", "Markdown: bold", "Edit", ""),
     ("mditalic", "Markdown: italic", "Edit", ""),
@@ -169,8 +169,8 @@ pub const COMMANDS: &[Command] = cmds![
     ),
     ("splitbelow", "Stack editors vertically", "View", ""),
     ("syncscroll", "Link scrolling between panes", "View", ""),
-    ("langrules", "Filename and language rules…", "View", ""),
-    ("managemacros", "Manage macros…", "Macro", ""),
+    ("langrules", "Filename and language rules…", "Settings", ""),
+    ("managemacros", "Manage macros…", "Tools", ""),
     (
         "comment",
         "Toggle comment on selected lines",
@@ -186,11 +186,11 @@ pub const COMMANDS: &[Command] = cmds![
     (
         "importgrammar",
         "Import Sublime syntax grammar…",
-        "View",
+        "Settings",
         ""
     ),
-    ("typing", "Typing and completion preferences…", "Edit", ""),
-    ("dictionary", "Spelling dictionary…", "Edit", ""),
+    ("typing", "Typing and completion preferences…", "Settings", ""),
+    ("dictionary", "Spelling dictionary…", "Settings", ""),
     ("currentline", "Highlight current line", "View", ""),
     (
         "toggleall",
@@ -202,13 +202,13 @@ pub const COMMANDS: &[Command] = cmds![
     (
         "record",
         "Start or stop macro recording",
-        "Macro",
+        "Tools",
         "Ctrl+Shift+M"
     ),
-    ("play", "Replay macro", "Macro", "F9"),
-    ("repeat", "Repeat macro…", "Macro", ""),
-    ("savemacro", "Save named macro…", "Macro", ""),
-    ("loadmacro", "Load named macro…", "Macro", ""),
+    ("play", "Replay macro", "Tools", "F9"),
+    ("repeat", "Repeat macro…", "Tools", ""),
+    ("savemacro", "Save named macro…", "Tools", ""),
+    ("loadmacro", "Load named macro…", "Tools", ""),
     ("build", "Run build", "Tools", "F7"),
     ("buildconfig", "Set build command…", "Tools", ""),
     ("nppinstall", "Install Notepad++ plugin…", "Tools", ""),
@@ -216,12 +216,25 @@ pub const COMMANDS: &[Command] = cmds![
     ("sublimeinstall", "Install Sublime package…", "Tools", ""),
     ("sublimecommands", "Sublime package commands…", "Tools", ""),
     ("sublimepackages", "Manage Sublime packages…", "Tools", ""),
-    ("nextdiag", "Next diagnostic", "Tools", "F4"),
+    ("nextdiag", "Next diagnostic", "Go", "F4"),
     ("tools", "Run external tool…", "Tools", ""),
     ("toolconfig", "Configure external tools…", "Tools", ""),
-    ("bindings", "Change keyboard shortcut…", "Tools", ""),
+    ("bindings", "Change keyboard shortcut…", "Settings", ""),
     ("cancel", "Cancel background operation", "Tools", ""),
     ("help", "Keyboard shortcuts…", "Help", "F1")
+];
+/// The menu bar, left to right: each menu's commands in order, "-" for a separator.
+pub const MENUS: &[(&str, &[&str])] = &[
+    ("File", &["new", "open", "folder", "-", "save", "saveas", "saveall", "-", "reload", "reopen", "-", "close", "-", "exit"]),
+    ("Edit", &["undo", "redo", "-", "cut", "copy", "paste", "-", "dup", "moveup", "movedown", "comment", "indent", "outdent", "-", "upper", "lower", "sortlines", "sortdesc", "dedup", "trimlines", "columnfill", "-", "complete", "snippets", "mdbold", "mditalic", "-", "spell", "correct"]),
+    ("Selection", &["selall", "selnext", "selmatches", "selskipped", "undoselect", "-", "sellines", "caretup", "caretdown", "rectangle"]),
+    ("Search", &["find", "replace", "findnext", "findprev", "findselection", "-", "findproject", "replaceproject", "findopen", "replaceopen", "-", "applypreview", "togglehit", "toggleall", "previewhit", "undofolder", "-", "markcolor", "clearmarks", "-", "findoptions"]),
+    ("View", &["palette", "-", "sidebar", "minimap", "docpreview", "-", "split", "single", "splitbelow", "other", "openother", "syncscroll", "-", "nexttab", "prevtab", "-", "wrap", "whitespace", "currentline", "markmatches", "paragraphfocus", "follow", "-", "fold", "foldall", "unfold", "-", "zoom+", "zoom-", "zoom0", "-", "previewshow", "previewsync", "previewfollow", "previewsource"]),
+    ("Go", &["goto", "quick", "opentabs", "-", "symbols", "wsymbols", "def", "refs", "-", "back", "forward", "-", "bookmark", "nextmark", "marks", "nextcolor", "nextdiag"]),
+    ("Encoding", &["recode", "encoding", "eol", "-", "encodingdetect", "encodingfallback", "encodingnew"]),
+    ("Tools", &["build", "buildconfig", "-", "tools", "toolconfig", "-", "comparesaved", "comparefile", "-", "record", "play", "repeat", "savemacro", "loadmacro", "managemacros", "-", "nppinstall", "nppcommands", "sublimeinstall", "sublimecommands", "sublimepackages", "-", "cancel"]),
+    ("Settings", &["theme", "tokencolors", "highlights", "cursor", "editoreffects", "previewcue", "-", "typing", "language", "langrules", "importgrammar", "-", "managesnippets", "dictionary", "bindings"]),
+    ("Help", &["help"]),
 ];
 pub fn label(id: &str) -> &str {
     COMMANDS
@@ -293,4 +306,23 @@ pub fn normalize_chord(value: &str) -> Option<String> {
     (0..=255)
         .find(|vk| !key.is_empty() && chord(*vk, false, false, false).eq_ignore_ascii_case(key))
         .map(|vk| chord(vk, ctrl, shift, alt))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every command is in exactly one menu, the one named by its group.
+    #[test]
+    fn every_command_is_in_its_menu_once() {
+        for c in COMMANDS {
+            let homes: Vec<_> = MENUS.iter().filter(|(_, ids)| ids.contains(&c.id)).map(|(m, _)| *m).collect();
+            assert_eq!(homes, [c.group], "{}", c.id);
+        }
+        for (menu, ids) in MENUS {
+            for id in ids.iter().filter(|i| **i != "-") {
+                assert!(COMMANDS.iter().any(|c| c.id == *id), "{menu}: {id}");
+            }
+        }
+    }
 }

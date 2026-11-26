@@ -1162,15 +1162,21 @@ impl App {
             Event::Hit(hit, x, y) => match hit {
                 Hit::Cmd(id) => self.command(&id),
                 Hit::Menu(g) => {
-                    let choices: Vec<_> = commands::COMMANDS
+                    // The menu's commands in `commands::MENUS` order; "-" is a separator.
+                    let ids = commands::MENUS.iter().find(|(name, _)| *name == g).map_or(&[][..], |m| m.1);
+                    let choices: Vec<_> = ids
                         .iter()
-                        .enumerate()
-                        .filter(|(_, c)| c.group == g)
-                        .map(|(i, c)| PopupItem {
-                            id: (i + 1) as u16,
-                            label: c.name,
-                            shortcut: self.shortcut(c),
-                            checked: self.is_checked(c.id),
+                        .filter_map(|id| {
+                            if *id == "-" {
+                                return Some(PopupItem { id: 0, label: "", shortcut: String::new(), checked: false });
+                            }
+                            let (i, c) = commands::COMMANDS.iter().enumerate().find(|(_, c)| c.id == *id)?;
+                            Some(PopupItem {
+                                id: (i + 1) as u16,
+                                label: c.name,
+                                shortcut: self.shortcut(c),
+                                checked: self.is_checked(c.id),
+                            })
                         })
                         .collect();
                     let r = menu_at(self.h, &choices, x, y);
@@ -1197,7 +1203,9 @@ impl App {
                     match s {
                         0 => self.rebuild_side(),
                         1 => self.project_symbols(false),
-                        _ => self.project_refresh_rows(),
+                        // The search panel, as Ctrl+Shift+F opens it; without a folder, what it needs.
+                        _ if self.prefs.root.is_some() => self.open_folder_search(false),
+                        _ => self.show_rows(2, "Open a folder to search".into(), Vec::new()),
                     };
                 }
             },
@@ -1810,7 +1818,7 @@ impl App {
                             self.notice(if enc == "Hexadecimal" {
                                 "Showing raw bytes. Saving writes the hex digits back as bytes".to_string()
                             } else {
-                                format!("Read as {enc}: the file is not UTF-8. File, Reopen with encoding changes it")
+                                format!("Read as {enc}: the file is not UTF-8. Encoding, Reopen with encoding changes it")
                             });
                         }
                         if let Some((at,col)) = jump {
