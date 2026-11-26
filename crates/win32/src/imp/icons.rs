@@ -18,6 +18,12 @@ use Part::*;
 
 fn parts(code: u16) -> &'static [Part] {
     match code {
+        // Warning: a triangle with an exclamation mark
+        0xE7BA => &[
+            Shape(&[(8., 1.), (16., 15.), (0., 15.)]),
+            Line(&[(8., 6.), (8., 10.)]),
+            Dot(8., 12.5, 0.8),
+        ],
         // Add
         0xE710 => &[Line(&[(8., 0.), (8., 16.)]), Line(&[(0., 8.), (16., 8.)])],
         // Cancel
