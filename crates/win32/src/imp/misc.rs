@@ -115,9 +115,12 @@ pub unsafe fn AllowSetForegroundWindow(_: u32) -> i32 {
 }
 
 pub unsafe fn MessageBoxW(_: HWND, lptext: *const u16, lpcaption: *const u16, utype: MESSAGEBOX_STYLE) -> MESSAGEBOX_RESULT {
+    let (title, text) = unsafe { (wide_name(lpcaption), wide_name(lptext)) };
+    // Said on the error stream too, so a run with nobody watching leaves a trace of what it asked.
+    eprintln!("linework: {title}: {text}");
     let alert = NSAlert::new(mtm());
-    alert.setMessageText(&NSString::from_str(&unsafe { wide_name(lpcaption) }));
-    alert.setInformativeText(&NSString::from_str(&unsafe { wide_name(lptext) }));
+    alert.setMessageText(&NSString::from_str(&title));
+    alert.setInformativeText(&NSString::from_str(&text));
     let answers: &[(&str, MESSAGEBOX_RESULT)] = match utype & 0xf {
         MB_YESNOCANCEL => &[("Yes", IDYES), ("No", IDNO), ("Cancel", IDCANCEL)],
         MB_YESNO => &[("Yes", IDYES), ("No", IDNO)],
@@ -417,8 +420,12 @@ objc2::define_class!(
     unsafe impl NSApplicationDelegate for Launching {
         #[unsafe(method(application:openFiles:))]
         fn open_files(&self, _: &NSApplication, files: &objc2_foundation::NSArray<NSString>) {
+            // AppKit also reports what was named on the command line, which the
+            // front end reads for itself, positions and all.
+            let named: Vec<String> = std::env::args().skip(1).collect();
+            let files: Vec<String> = files.iter().map(|file| file.to_string()).filter(|file| !named.contains(file)).collect();
             if let Some(main) = crate::imp::window::main_window() {
-                drop_files(main, files.iter().map(|file| file.to_string()).collect());
+                drop_files(main, files);
             }
         }
 
