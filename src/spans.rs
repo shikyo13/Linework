@@ -156,8 +156,15 @@ impl App {
             let tx = self.tx.clone();
             std::thread::spawn(move || {
                 let result = (|| -> io::Result<()> {
+                    #[cfg(windows)]
                     let mut temp =
                         tempfile::NamedTempFile::new_in(dest.parent().unwrap_or(Path::new(".")))?;
+                    // Elsewhere a temporary file is the owner's alone unless asked
+                    // otherwise; this one becomes an ordinary new file.
+                    #[cfg(not(windows))]
+                    let mut temp = tempfile::Builder::new()
+                        .permissions(<std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o666))
+                        .tempfile_in(dest.parent().unwrap_or(Path::new(".")))?;
                     {
                         let mut out = BufWriter::new(temp.as_file_mut());
                         let mut at = range.start;

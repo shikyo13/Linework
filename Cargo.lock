@@ -566,6 +566,7 @@ dependencies = [
  "chardetng",
  "encoding_rs",
  "flate2",
+ "libc",
  "memchr",
  "regex",
  "regex-cursor",

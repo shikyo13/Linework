@@ -544,3 +544,37 @@ fn line_start_is_estimated_only_for_lines_of_one_length() -> io::Result<()> {
     assert_eq!(doc(&uneven)?.estimate_line_start(50_000), None);
     Ok(())
 }
+
+/// A saved file is a new file under the old name. It must still be the file
+/// the person had: runnable if it was, with what was attached to it, and as
+/// old as it was. A file saved for the first time is like any new file.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_saved_file_keeps_its_permissions_attributes_and_creation_date() -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir()?;
+    let script = dir.path().join("run.sh");
+    std::fs::write(&script, "#!/bin/sh\necho one\n")?;
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o750))?;
+    let note = |args: &[&str]| std::process::Command::new("/usr/bin/xattr").args(args).arg(&script).output();
+    assert!(note(&["-w", "com.example.note", "kept"])?.status.success());
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    let created = std::fs::metadata(&script)?.created()?;
+    let mut doc = linework_storage::Document::open(&script)?;
+    doc.replace(15, 3, b"two")?;
+    doc.save(&script)?;
+    assert_eq!(std::fs::read_to_string(&script)?, "#!/bin/sh\necho two\n");
+    let now = std::fs::metadata(&script)?;
+    assert_eq!(now.permissions().mode() & 0o7777, 0o750);
+    assert_eq!(now.created()?, created);
+    assert_eq!(String::from_utf8_lossy(&note(&["-p", "com.example.note"])?.stdout).trim(), "kept");
+    let fresh = dir.path().join("fresh.txt");
+    doc.save(&fresh)?;
+    let plain = dir.path().join("plain.txt");
+    std::fs::write(&plain, "")?;
+    assert_eq!(
+        std::fs::metadata(&fresh)?.permissions().mode(),
+        std::fs::metadata(&plain)?.permissions().mode()
+    );
+    Ok(())
+}

@@ -10,6 +10,8 @@ pub use selection_set::{SelectionSet,SelectionBuilder};
 mod folds;
 pub use folds::{Fold,FoldMap};
 mod eol;
+#[cfg(target_os = "macos")]
+mod mac_save;
 mod recovery;
 mod recovery_blocks;
 #[cfg(windows)]
@@ -47,6 +49,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::UNIX_EPOCH;
+#[cfg(not(target_os = "macos"))]
 use tempfile::NamedTempFile;
 use tree::Root;
 
@@ -696,7 +699,10 @@ impl Document {
         if same_file && self.restore_checkpoint(&dest)? { return Ok(()); }
         #[cfg(windows)]
         if same_file && self.save_small_delta(&dest)? { return Ok(()); }
+        #[cfg(not(target_os = "macos"))]
         let mut tmp = NamedTempFile::new_in(dir)?;
+        #[cfg(target_os = "macos")]
+        let mut tmp = mac_save::staging(dir, &dest, before.is_some())?;
         let head = if self.emit_bom { self.codec.bom().len() as u64 } else { 0 };
         let expected = self.codec.native().then(|| self.len() + head);
         let staged = revision::Staged::new(tmp.as_file(), tmp.path(), expected);
