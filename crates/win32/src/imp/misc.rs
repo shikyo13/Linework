@@ -88,6 +88,10 @@ pub unsafe fn DwmSetWindowAttribute(hwnd: HWND, dwattribute: u32, pvattribute: *
     if dwattribute == 20 && !pvattribute.is_null() {
         let dark = unsafe { *(pvattribute as *const i32) } != 0;
         crate::imp::controls::DARK.set(dark);
+        if let Some(window) = crate::imp::window::find(hwnd) {
+            window.dark.set(dark);
+            crate::imp::window::caption_changed(&window);
+        }
         if let Some(frame) = crate::imp::window::find(hwnd).and_then(|window| window.frame.borrow().clone()) {
             use objc2_app_kit::NSAppearanceCustomization;
             let name = unsafe { if dark { objc2_app_kit::NSAppearanceNameDarkAqua } else { objc2_app_kit::NSAppearanceNameAqua } };

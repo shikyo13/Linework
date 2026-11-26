@@ -443,6 +443,8 @@ pub(crate) fn pictures(name: &str) {
                 let port = context.CGContext();
                 objc2_core_graphics::CGContext::translate_ctm(Some(&port), 0.0, bounds.size.height);
                 objc2_core_graphics::CGContext::scale_ctm(Some(&port), 1.0, -1.0);
+                // A dialog's view counts from under its caption, and so does its layer.
+                objc2_core_graphics::CGContext::translate_ctm(Some(&port), -bounds.origin.x, -bounds.origin.y);
                 let _: () = unsafe { msg_send![&*layer, renderInContext: &*port] };
                 context.flushGraphics();
             }

@@ -77,8 +77,15 @@ define_class!(
         fn sized(&self, size: NSSize) {
             let before = self.frame().size;
             let _: () = unsafe { msg_send![super(self), setFrameSize: size] };
+            // Under a caption drawn here the client area starts that much lower
+            // and is that much less high. A new size puts the view's origin
+            // back at its corner, so it is moved under the caption again.
+            let caption = find(handle(self)).map_or(0.0, |window| window::caption(&window));
+            if caption > 0.0 && self.bounds().origin.y != -caption {
+                self.setBoundsOrigin(objc2_foundation::NSPoint::new(0.0, -caption));
+            }
             if before.width != size.width || before.height != size.height {
-                send(handle(self), WM_SIZE, 0, pack(size.width as i32, size.height as i32));
+                send(handle(self), WM_SIZE, 0, pack(size.width as i32, (size.height - caption).max(0.0) as i32));
             }
         }
 
@@ -159,6 +166,9 @@ define_class!(
         #[unsafe(method(mouseExited:))]
         fn left_view(&self, _: &NSEvent) {
             let hwnd = handle(self);
+            if let Some(window) = find(hwnd) {
+                window::caption_left(&window);
+            }
             if OVER_CAPTION.replace(false) {
                 send(hwnd, WM_NCMOUSELEAVE, 0, 0);
             }
@@ -276,6 +286,18 @@ fn pointer(view: &NSView, event: &NSEvent, what: Pointer) {
     let mut local = screen;
     unsafe { window::ScreenToClient(target, &mut local) };
     let keys = buttons(event);
+    // A dialog's caption is drawn and worked here.
+    if captured.is_null() {
+        let press = match what {
+            Pointer::Down(WM_LBUTTONDOWN | WM_LBUTTONDBLCLK, _) => Some(true),
+            Pointer::Up(WM_LBUTTONUP) => Some(false),
+            _ => None,
+        };
+        let in_caption = window::caption_pointer(&window, local.x as f64, local.y as f64, press, event);
+        if in_caption || local.y < 0 && window::caption(&window) > 0.0 {
+            return;
+        }
+    }
     // A window that draws its own caption says which part the pointer is on.
     if window.own_caption && captured.is_null() {
         let part = send(target, WM_NCHITTEST, 0, pack(screen.x, screen.y)) as u32;
@@ -340,11 +362,13 @@ define_class!(
             if let Some(frame) = frame.and_then(|frame| frame.downcast::<NSWindow>().ok()) {
                 window::activated(&frame);
             }
+            redraw_caption(notice);
             tell(notice, WM_ACTIVATE, WA_ACTIVE as usize);
         }
 
         #[unsafe(method(windowDidResignKey:))]
         fn resigned_key(&self, notice: &NSNotification) {
+            redraw_caption(notice);
             tell(notice, WM_ACTIVATE, WA_INACTIVE as usize);
         }
 
@@ -374,6 +398,15 @@ define_class!(
         }
     }
 );
+
+/// A dialog's caption shows whether its window is the active one.
+fn redraw_caption(notice: &NSNotification) {
+    let frame: Option<Retained<AnyObject>> = unsafe { notice.object() };
+    let view: Option<Retained<NSView>> = frame.and_then(|frame| unsafe { msg_send![&*frame, contentView] });
+    if let Some(window) = view.and_then(|view| find(handle(&view))) {
+        window::caption_changed(&window);
+    }
+}
 
 fn tell(notice: &NSNotification, message: u32, w: usize) {
     let frame: Option<Retained<AnyObject>> = unsafe { notice.object() };

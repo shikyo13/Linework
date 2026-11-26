@@ -8,6 +8,7 @@
 //!   key CHORD        press a key, such as F1, ctrl+shift+p, escape, down
 //!   type TEXT        type the text, a key for each character
 //!   picture NAME     write a picture of every window, files starting NAME
+//!   size W H         make the main window's content that large
 //!   quit             end the program
 //!
 //! Each event is made the way AppKit makes one and goes through the same loop
@@ -76,6 +77,11 @@ pub(crate) fn run() {
                 }
             }
             "picture" => crate::imp::message::pictures(rest),
+            "size" if numbers.len() == 2 => {
+                if let Some((_, main)) = frames().into_iter().find(|(class, _)| class == "LineworkMain") {
+                    main.setContentSize(objc2_foundation::NSSize::new(numbers[0], numbers[1]));
+                }
+            }
             "quit" => std::process::exit(0),
             _ => eprintln!("linework-win32: script step not understood: {step}"),
         }

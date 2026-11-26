@@ -44,6 +44,8 @@ pub(crate) struct Window {
     pub(crate) native_keys: Cell<bool>,
     pub(crate) enabled: Cell<bool>,
     pub(crate) own_caption: bool,
+    /// Asked for a dark title bar, which a dialog's caption is drawn by.
+    pub(crate) dark: Cell<bool>,
     pub(crate) control: RefCell<Option<Box<dyn std::any::Any>>>,
 }
 
@@ -116,6 +118,7 @@ fn register(view: Retained<NSView>, class: &str, proc: Option<Proc>, style: u32,
         native_keys: Cell::new(foreign),
         enabled: Cell::new(true),
         own_caption: class == OWN_CAPTION,
+        dark: Cell::new(crate::imp::controls::DARK.get()),
         control: RefCell::new(None),
         view,
     });
@@ -132,6 +135,7 @@ pub(crate) fn adopt(view: &NSView) {
     let scintilla: bool = unsafe { msg_send![view, respondsToSelector: sel!(message:wParam:lParam:)] };
     if scintilla {
         register(view.retain(), "Scintilla", Some(foreign_proc), WS_CHILD | WS_VISIBLE, 0, 0, true);
+        crate::imp::scintilla::dress(view);
     }
 }
 
@@ -353,7 +357,9 @@ pub unsafe fn CreateWindowExW(dwexstyle: WINDOW_EX_STYLE, lpclassname: *const u1
         } else if window.own_caption {
             NSWindowStyleMask::Titled | NSWindowStyleMask::Closable | NSWindowStyleMask::Miniaturizable | NSWindowStyleMask::Resizable | NSWindowStyleMask::FullSizeContentView
         } else {
-            let mut mask = NSWindowStyleMask::Titled | NSWindowStyleMask::Closable;
+            // A dialog: its caption is drawn here the way Windows draws one,
+            // over the whole of the window, so the Mac's own title bar is unseen.
+            let mut mask = NSWindowStyleMask::Titled | NSWindowStyleMask::Closable | NSWindowStyleMask::FullSizeContentView;
             if dwstyle & WS_THICKFRAME != 0 {
                 mask |= NSWindowStyleMask::Resizable;
             }
@@ -369,7 +375,7 @@ pub unsafe fn CreateWindowExW(dwexstyle: WINDOW_EX_STYLE, lpclassname: *const u1
         unsafe { frame.setReleasedWhenClosed(false) };
         frame.setTitle(&NSString::from_str(&title));
         frame.setAcceptsMouseMovedEvents(true);
-        if window.own_caption {
+        if !popup {
             frame.setTitlebarAppearsTransparent(true);
             frame.setTitleVisibility(objc2_app_kit::NSWindowTitleVisibility::Hidden);
             for button in [objc2_app_kit::NSWindowButton::CloseButton, objc2_app_kit::NSWindowButton::MiniaturizeButton, objc2_app_kit::NSWindowButton::ZoomButton] {
@@ -388,11 +394,18 @@ pub unsafe fn CreateWindowExW(dwexstyle: WINDOW_EX_STYLE, lpclassname: *const u1
             }
         }
         frame.setContentView(Some(&view));
+        if caption(&window) > 0.0 {
+            // The client area starts under the caption: the view counts from there.
+            view.setBoundsOrigin(NSPoint::new(0.0, -CAPTION));
+        }
         view::watch(&frame, mtm);
         if dwexstyle & WS_EX_ACCEPTFILES != 0 {
             view.registerForDraggedTypes(&objc2_foundation::NSArray::from_slice(&[&*NSString::from_str("NSFilenamesPboardType")]));
         }
         if x == CW_USEDEFAULT || popup && nwidth == 0 {
+            if caption(&window) > 0.0 {
+                place_frame(&window, &frame, 0, 0, width, height);
+            }
             frame.center();
         } else {
             place_frame(&window, &frame, x, y, width, height);
@@ -468,14 +481,140 @@ fn screen_height() -> f64 {
 /// left, top, right and bottom. The front end asks for a window's whole size,
 /// so this much is taken off to leave the client area Windows would leave.
 fn edges(window: &Window) -> (i32, i32, i32, i32) {
-    let captioned = window.style.get() & WS_CAPTION == WS_CAPTION && window.style.get() & WS_CHILD == 0;
-    if captioned && !window.own_caption { (8, 31, 8, 8) } else { (0, 0, 0, 0) }
+    if caption(window) > 0.0 { (8, CAPTION as i32, 8, 8) } else { (0, 0, 0, 0) }
+}
+
+/// How high Windows makes a caption at 96 dots to the inch.
+pub(crate) const CAPTION: f64 = 31.0;
+/// How wide its close button is.
+const CLOSE: f64 = 46.0;
+
+/// The height of the caption drawn here at the top of a window: a dialog's.
+/// The main window draws its own inside its client area, and has none.
+pub(crate) fn caption(window: &Window) -> f64 {
+    let style = window.style.get();
+    if style & WS_CAPTION == WS_CAPTION && style & WS_CHILD == 0 && !window.own_caption { CAPTION } else { 0.0 }
+}
+
+/// A window's client area in its view's terms. Under a caption it starts at
+/// nought, with the caption above it.
+pub(crate) fn client(window: &Window) -> NSRect {
+    let mut bounds = window.view.bounds();
+    let caption = caption(window);
+    if caption > 0.0 {
+        bounds.origin.y = 0.0;
+        bounds.size.height = (bounds.size.height - caption).max(0.0);
+    }
+    bounds
+}
+
+thread_local! {
+    /// The dialog whose close button the pointer is over, and the one it was pressed on.
+    static CLOSE_HOT: Cell<usize> = const { Cell::new(0) };
+    static CLOSE_HELD: Cell<usize> = const { Cell::new(0) };
+}
+
+fn caption_rect(window: &Window) -> NSRect {
+    NSRect::new(NSPoint::new(0.0, -CAPTION), NSSize::new(window.view.bounds().size.width, CAPTION))
+}
+
+/// Asks for the caption to be drawn again.
+pub(crate) fn caption_changed(window: &Window) {
+    if caption(window) > 0.0 {
+        window.view.setNeedsDisplayInRect(caption_rect(window));
+    }
+}
+
+/// A dialog's caption as Windows 11 draws it: the program's picture, the
+/// title, and a close button at the right that turns red under the pointer.
+fn draw_caption(window: &Window) {
+    let bar = caption_rect(window);
+    let hwnd = handle(&window.view) as usize;
+    let dark = window.dark.get();
+    let active = window.view.window().is_some_and(|frame| frame.isKeyWindow());
+    gdi::color(if dark { 0x202020 } else { 0xF3F3F3 }).set();
+    objc2_app_kit::NSBezierPath::fillRect(bar);
+    let ink = match (dark, active) {
+        (true, true) => 0xFFFFFF,
+        (true, false) => 0x797979,
+        (false, true) => 0x000000,
+        (false, false) => 0x919191,
+    };
+    let picture = app().applicationIconImage();
+    if let Some(picture) = picture {
+        let place = NSRect::new(NSPoint::new(8.0, -CAPTION + 8.0), NSSize::new(16.0, 16.0));
+        let whole = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0));
+        let _: () = unsafe {
+            msg_send![&*picture, drawInRect: place, fromRect: whole, operation: 2usize, fraction: 1.0f64, respectFlipped: true, hints: std::ptr::null::<objc2::runtime::AnyObject>()]
+        };
+    }
+    let title = NSString::from_str(&window.text.borrow());
+    let font = objc2_app_kit::NSFont::systemFontOfSize(12.0);
+    let color = gdi::color(ink);
+    let keys: [&objc2_foundation::NSString; 2] = unsafe { [objc2_app_kit::NSFontAttributeName, objc2_app_kit::NSForegroundColorAttributeName] };
+    let values: [&objc2::runtime::AnyObject; 2] = [&font, &color];
+    let look = objc2_foundation::NSDictionary::from_slices(&keys, &values);
+    let high: NSSize = unsafe { msg_send![&*title, sizeWithAttributes: &*look] };
+    let at = NSPoint::new(30.0, -CAPTION + ((CAPTION - high.height) / 2.0).floor());
+    let _: () = unsafe { msg_send![&*title, drawAtPoint: at, withAttributes: &*look] };
+    let button = NSRect::new(NSPoint::new(bar.size.width - CLOSE, -CAPTION), NSSize::new(CLOSE, CAPTION - 1.0));
+    let hot = CLOSE_HOT.get() == hwnd;
+    if hot {
+        gdi::color(0x1C2BC4).set();
+        objc2_app_kit::NSBezierPath::fillRect(button);
+    }
+    crate::imp::icons::draw(0xE8BB, button, 10.0, if hot { 0xFFFFFF } else { ink });
+}
+
+/// The pointer in a dialog's caption: a press on the close button followed by
+/// a release there closes the dialog, and a press elsewhere drags the window.
+/// `press` is true for the left button going down and false for it coming up;
+/// neither for a move. True when the caption took the event.
+pub(crate) fn caption_pointer(window: &Window, x: f64, y: f64, press: Option<bool>, event: &NSEvent) -> bool {
+    let hwnd = handle(&window.view) as usize;
+    let inside = caption(window) > 0.0 && y < 0.0;
+    let on_close = inside && x >= window.view.bounds().size.width - CLOSE;
+    let hot = if on_close { hwnd } else { 0 };
+    if CLOSE_HOT.get() != hot && (hot != 0 || CLOSE_HOT.get() == hwnd) {
+        CLOSE_HOT.set(hot);
+        caption_changed(window);
+    }
+    if !inside {
+        if press == Some(false) {
+            CLOSE_HELD.set(0);
+        }
+        return false;
+    }
+    match press {
+        Some(true) if on_close => CLOSE_HELD.set(hwnd),
+        Some(true) => {
+            if let Some(frame) = window.view.window() {
+                frame.performWindowDragWithEvent(event);
+            }
+        }
+        Some(false) => {
+            if on_close && CLOSE_HELD.replace(0) == hwnd {
+                send(hwnd as HWND, WM_CLOSE, 0, 0);
+            }
+        }
+        None => {}
+    }
+    true
+}
+
+/// The pointer left the window: its close button is no longer under it.
+pub(crate) fn caption_left(window: &Window) {
+    if CLOSE_HOT.get() == handle(&window.view) as usize {
+        CLOSE_HOT.set(0);
+        caption_changed(window);
+    }
 }
 
 /// Windows counts a screen position from the top left of the main screen.
 fn place_frame(window: &Window, frame: &NSWindow, x: i32, y: i32, width: f64, height: f64) {
     let (left, top, right, bottom) = edges(window);
-    let (width, height) = ((width - (left + right) as f64).max(1.0), (height - (top + bottom) as f64).max(1.0));
+    // The caption is part of the Mac window, which has no other edge.
+    let (width, height) = ((width - (left + right) as f64).max(1.0), (height - (top + bottom) as f64).max(1.0) + caption(window));
     let content = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(width, height));
     let outer = frame.frameRectForContentRect(content);
     let top = screen_height() - y as f64;
@@ -484,7 +623,7 @@ fn place_frame(window: &Window, frame: &NSWindow, x: i32, y: i32, width: f64, he
 
 /// A window's rectangle on the screen, in Windows' terms.
 fn screen_rect(window: &Window) -> RECT {
-    let bounds = window.view.bounds();
+    let bounds = client(window);
     let in_window = window.view.convertRect_toView(bounds, None);
     let Some(frame) = window.view.window() else {
         return RECT { left: 0, top: 0, right: bounds.size.width as i32, bottom: bounds.size.height as i32 };
@@ -501,7 +640,7 @@ fn screen_rect(window: &Window) -> RECT {
 
 pub unsafe fn GetClientRect(hwnd: HWND, lprect: *mut RECT) -> i32 {
     let (Some(window), Some(out)) = (find(hwnd), unsafe { lprect.as_mut() }) else { return 0 };
-    let size = window.view.bounds().size;
+    let size = client(&window).size;
     *out = RECT { left: 0, top: 0, right: size.width as i32, bottom: size.height as i32 };
     1
 }
@@ -950,7 +1089,18 @@ pub unsafe fn SetCursor(hcursor: HCURSOR) -> HCURSOR {
     hcursor
 }
 
+/// The front end asks for the program's icon when it makes its window class.
+/// Inside the application bundle macOS already has it; a build run from the
+/// source tree takes it from there, for the Dock and for dialog captions.
 pub unsafe fn LoadIconW(_: crate::Win32::Foundation::HINSTANCE, _: *const u16) -> HICON {
+    let bundled = std::env::current_exe().ok().and_then(|exe| Some(exe.parent()?.parent()?.join("Resources/Linework.icns"))).is_some_and(|icon| icon.exists());
+    let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/mac/Linework.icns");
+    if !bundled && source.exists() {
+        let picture = objc2_app_kit::NSImage::initWithContentsOfFile(<objc2_app_kit::NSImage as objc2::AnyThread>::alloc(), &NSString::from_str(&source.to_string_lossy()));
+        if let Some(picture) = picture {
+            unsafe { app().setApplicationIconImage(Some(&picture)) };
+        }
+    }
     std::ptr::null_mut()
 }
 
@@ -976,6 +1126,18 @@ pub(crate) fn paint(view: &NSView, dirty: NSRect) {
     // The part asked for can reach past the view; a window is never asked to
     // paint outside itself.
     let dirty = objc2_foundation::NSIntersectionRect(dirty, view.bounds());
+    let dirty = match find(hwnd).filter(|window| caption(window) > 0.0) {
+        Some(window) => {
+            if dirty.origin.y < 0.0 {
+                draw_caption(&window);
+            }
+            objc2_foundation::NSIntersectionRect(dirty, client(&window))
+        }
+        None => dirty,
+    };
+    if dirty.size.width <= 0.0 || dirty.size.height <= 0.0 {
+        return;
+    }
     let area = RECT {
         left: dirty.origin.x.floor() as i32,
         top: dirty.origin.y.floor() as i32,
@@ -1039,7 +1201,13 @@ pub(crate) fn describe() -> String {
         windows
             .values()
             .map(|window| {
-                let frame = window.view.frame();
+                let mut frame = window.view.frame();
+                // A window of its own is listed where it lies over the main
+                // window, which is how a script's clicks are counted.
+                if let (Some(own), Some(main)) = (window.frame.borrow().clone(), frames().into_iter().find(|(class, _)| class == OWN_CAPTION).map(|(_, frame)| frame)) {
+                    let (own, main) = (own.frame(), main.frame());
+                    frame.origin = NSPoint::new(own.origin.x - main.origin.x, main.origin.y + main.size.height - own.origin.y - own.size.height);
+                }
                 format!(
                     "{:<26} id {:<6} at {:>5},{:<5} size {:>5}x{:<5} {} {:?}",
                     window.class,
