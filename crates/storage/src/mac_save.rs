@@ -18,11 +18,14 @@
 //! or another program's change would be lost. Its dates do not show that: a
 //! program writing through a memory map leaves them alone. Reading all of it
 //! does, at the cost of reading all of it. A clone shows it at no cost. The
-//! document keeps a private clone of the file as saved, so every block of
-//! the file is shared with the clone and no block can be written where it
-//! lies: any change, by any route, puts the changed part in new blocks.
-//! After the file's unwritten changes are pushed to the volume, a file whose
-//! blocks are all still where the clone's are has not changed.
+//! document keeps a private clone of the file made when the two were known
+//! to be equal. Every block of the file is then shared with the clone and
+//! none can be written where it lies: any change, by any route, puts the
+//! changed part in new blocks. After the file's unwritten changes are pushed
+//! to the volume, the parts of the file whose blocks are still where the
+//! clone's are have not changed, and only the parts that moved need
+//! reading. Those are what this document itself wrote into the file since
+//! (`mac_inplace.rs`), which is little, and whatever another program wrote.
 use crate::{conflict, invalid, source::Source, tree, Document, Stamp};
 use std::{
     ffi::CString,
@@ -80,28 +83,87 @@ fn placement(file: &File, size: u64) -> Option<Vec<(u64, u64, u64)>> {
     Some(runs)
 }
 
-/// Whether `file` still has every block where `clone`, made from it, has it.
-fn shares_every_block(file: &File, clone: &File, size: u64) -> bool {
-    // Places are places on one volume: on two they say nothing.
-    let (Ok(here), Ok(there)) = (file.metadata(), clone.metadata()) else {
-        return false;
-    };
-    // Changes another program has made through a memory map are in memory
-    // only, and in no block yet, until they are pushed to the volume.
-    here.dev() == there.dev()
-        && here.len() == size
-        && there.len() == size
-        && unsafe { libc::fsync(file.as_raw_fd()) } == 0
-        && placement(file, size).is_some_and(|runs| Some(runs) == placement(clone, size))
+/// A private clone of a file, made when the file was known to hold what the
+/// document had saved. It has no name and is never written to, and it is
+/// its being there that keeps the file's blocks from being written where
+/// they lie.
+pub(crate) struct Reference {
+    clone: File,
+    size: u64,
+    volume: u64,
 }
+
+impl Reference {
+    pub(crate) fn new(file: File) -> io::Result<Self> {
+        let status = file.metadata()?;
+        Ok(Self { clone: file, size: status.len(), volume: status.dev() })
+    }
+
+    /// The parts of `file`, now `size` long, that are not in the blocks this
+    /// clone has them in: all that can differ from the clone. `None` when
+    /// the volume does not say.
+    fn moved(&self, file: &File, size: u64) -> Option<Vec<(u64, u64)>> {
+        // Places are places on one volume: on two they say nothing.
+        let status = file.metadata().ok()?;
+        if status.dev() != self.volume || status.len() != size {
+            return None;
+        }
+        // Changes another program has made through a memory map are in
+        // memory only, and in no block yet, until they are pushed out.
+        if unsafe { libc::fsync(file.as_raw_fd()) } != 0 {
+            return None;
+        }
+        // The clone's blocks are asked for each time. They are not known to
+        // stay where they are for as long as the clone lives, and a place
+        // remembered wrongly would hide a change.
+        let there = placement(&self.clone, self.size)?;
+        let here = placement(file, size)?;
+        let shared = size.min(self.size);
+        let mut moved: Vec<(u64, u64)> = Vec::new();
+        let mut add = |from: u64, to: u64| match moved.last_mut() {
+            Some(last) if last.0 + last.1 == from => last.1 += to - from,
+            _ => moved.push((from, to - from)),
+        };
+        let (mut a, mut b, mut at) = (0, 0, 0);
+        while at < shared {
+            let (one, other) = (here.get(a)?, there.get(b)?);
+            let to = shared.min(one.0 + one.1).min(other.0 + other.1);
+            if one.2 + (at - one.0) != other.2 + (at - other.0) {
+                add(at, to);
+            }
+            at = to;
+            a += usize::from(at == one.0 + one.1);
+            b += usize::from(at == other.0 + other.1);
+        }
+        if size > shared {
+            add(shared, size);
+        }
+        Some(moved)
+    }
+}
+
+/// What the volume shows of a file a save is about to replace or write to.
+pub(crate) enum Examined {
+    /// It holds what the document last saved. With how much of it had to be
+    /// read to know: what has moved since the clone was made.
+    Untouched(u64),
+    /// It does not.
+    Changed,
+    /// The volume does not say, or too much has moved: read all of it.
+    Unknown,
+}
+
+/// The most that is read part by part before reading the whole file is the
+/// plainer way to the same answer.
+const READ_APART: u64 = 64 * 1024 * 1024;
 
 /// A private clone of a large file just written, kept to show at the next
 /// save that the file has not been changed since.
-pub(crate) fn reference(file: &File, path: &Path) -> Option<Arc<File>> {
+pub(crate) fn reference(file: &File, path: &Path) -> Option<Arc<Reference>> {
     if file.metadata().ok()?.len() <= SMALL {
         return None;
     }
-    private_clone(file, path).map(Arc::new)
+    Reference::new(private_clone(file, path)?).ok().map(Arc::new)
 }
 
 /// Windows refuses to replace a file marked read-only. A rename here would
@@ -320,28 +382,83 @@ impl Document {
         Ok(true)
     }
 
-    /// Whether the volume shows `file`, the destination of a save, to be
-    /// exactly what this document last saved or, not having saved yet, what
-    /// it opened. `false` says only that it could not be shown this way.
-    pub(crate) fn untouched_since_saved(&self, file: &File, expected: &Stamp) -> bool {
-        if let Some(clone) = &self.saved_clone {
-            return shares_every_block(file, clone, expected.size);
-        }
-        // Not saved yet: the clone that protects the opened text is one of
-        // the whole file, when that text is the whole file.
-        let Some(root) = &self.saved else {
-            return false;
-        };
+    /// The clone that protects the opened text, as a reference for a file
+    /// this document has not saved yet: it is a clone of the whole file when
+    /// that text is the whole file.
+    pub(crate) fn opened_reference(&self, expected: &Stamp) -> Option<Reference> {
+        let root = self.saved.as_ref()?;
         let tree::Body::Leaf(source, 0) = &root.body else {
-            return false;
+            return None;
         };
         let head = if self.saved_bom { self.saved_codec.bom().len() as u64 } else { 0 };
-        self.saved_codec.native()
-            && root.len == source.len
-            && head + root.len == expected.size
-            && source
-                .settled()
-                .is_some_and(|(clone, origin)| origin == head && shares_every_block(file, clone, expected.size))
+        let (clone, origin) = source.settled()?;
+        if !self.saved_codec.native() || root.len != source.len || head + root.len != expected.size || origin != head {
+            return None;
+        }
+        Reference::new(clone.try_clone().ok()?).ok().filter(|reference| reference.size == expected.size)
+    }
+
+    /// Whether `file`, the destination of a save, is exactly what this
+    /// document last saved or, not having saved yet, what it opened.
+    pub(crate) fn examine(&self, file: &File, expected: &Stamp) -> Examined {
+        match &self.saved_clone {
+            Some(reference) => self.examine_against(file, expected.size, reference),
+            None => match self.opened_reference(expected) {
+                Some(reference) => self.examine_against(file, expected.size, &reference),
+                None => Examined::Unknown,
+            },
+        }
+    }
+
+    /// A new clone of `file` to take the place of the one kept, once it is
+    /// shown to hold the saved text itself. A clone cannot change, so what is
+    /// shown of it stays true, which it would not of the file it was made
+    /// from: that may be written to in the moment after it was examined.
+    pub(crate) fn renewed_reference(&self, file: &File, dest: &Path, expected: &Stamp) -> Option<Arc<Reference>> {
+        let kept = self.saved_clone.as_ref()?;
+        let renewed = reference(file, dest)?;
+        matches!(self.examine_against(&renewed.clone, expected.size, kept), Examined::Untouched(_)).then_some(renewed)
+    }
+
+    fn examine_against(&self, file: &File, size: u64, reference: &Reference) -> Examined {
+        let Some(moved) = reference.moved(file, size) else {
+            return Examined::Unknown;
+        };
+        let bytes: u64 = moved.iter().map(|part| part.1).sum();
+        if bytes > READ_APART {
+            return Examined::Unknown;
+        }
+        // What has not moved is what the clone holds, and nothing this
+        // document saved since was written there. What has moved is read.
+        let mut saved = self.clone();
+        saved.root = self.saved.clone();
+        let head = if self.saved_bom { self.saved_codec.bom() } else { &[] };
+        if !self.saved_codec.native() || head.len() as u64 + saved.len() != size {
+            return Examined::Unknown;
+        }
+        let mut found = vec![0; BLOCK as usize];
+        for (start, length) in moved {
+            let mut at = start;
+            while at < start + length {
+                let count = (start + length - at).min(BLOCK) as usize;
+                if file.read_exact_at(&mut found[..count], at).is_err() {
+                    return Examined::Unknown;
+                }
+                // The first bytes of the file may be its byte-order mark.
+                let marked = (head.len() as u64).saturating_sub(at).min(count as u64) as usize;
+                if marked != 0 && found[..marked] != head[at as usize..at as usize + marked] {
+                    return Examined::Changed;
+                }
+                let text = at + marked as u64 - head.len() as u64;
+                match saved.read(text, count - marked) {
+                    Ok(wanted) if wanted == found[marked..count] => {}
+                    Ok(_) => return Examined::Changed,
+                    Err(_) => return Examined::Unknown,
+                }
+                at += count as u64;
+            }
+        }
+        Examined::Untouched(bytes)
     }
 }
 

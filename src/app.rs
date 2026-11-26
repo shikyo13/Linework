@@ -360,8 +360,7 @@ impl App {
         linework_storage::set_index_cache(Some(&state::profile().join("line-index")));
         // Records that let a small change be written straight into a large
         // file. One left by a crash is settled here, before any file is opened.
-        // In-place saves and their record exist on Windows only so far.
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "macos"))]
         linework_storage::set_save_journal(Some(&state::profile().join("save-records")));
         LIGHT.set(prefs.light);
         dark_chrome(h, !prefs.light);

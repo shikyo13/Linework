@@ -11,6 +11,10 @@ mod folds;
 pub use folds::{Fold,FoldMap};
 mod eol;
 #[cfg(target_os = "macos")]
+mod mac_inplace;
+#[cfg(target_os = "macos")]
+pub use mac_inplace::set_save_journal;
+#[cfg(target_os = "macos")]
 mod mac_save;
 mod recovery;
 mod recovery_blocks;
@@ -151,9 +155,10 @@ pub struct Document {
     saved_disk_digest: Option<[u8;32]>,
     #[cfg(windows)]
     previous_disk: Option<Arc<checkpoint::DiskCheckpoint>>,
-    /// A private clone of the large file as this document last saved it.
+    /// A private clone of the large file, made when the file held what this
+    /// document had saved, to tell at the next save what has changed since.
     #[cfg(target_os = "macos")]
-    saved_clone: Option<Arc<File>>,
+    saved_clone: Option<Arc<mac_save::Reference>>,
     accepted_appends: Arc<HashMap<(u32, u64), Stamp>>,
     /// Original disk extents which must be isolated before the first edit.
     unprotected: Vec<Arc<Source>>,
@@ -714,6 +719,7 @@ impl Document {
         if same_file && self.save_small_delta(&dest)? { return Ok(()); }
         #[cfg(target_os = "macos")]
         if let Some(stamp) = before.as_ref().filter(|_| same_file) {
+            if self.save_in_place(&dest, stamp)? { return Ok(()); }
             if self.save_by_clone(&dest, stamp)? { return Ok(()); }
         }
         #[cfg(not(target_os = "macos"))]
