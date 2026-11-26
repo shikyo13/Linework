@@ -4,6 +4,7 @@ pub(crate) mod icons;
 pub(crate) mod menu;
 pub(crate) mod message;
 pub(crate) mod misc;
+pub(crate) mod remote;
 pub(crate) mod script;
 pub(crate) mod view;
 pub(crate) mod window;

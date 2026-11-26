@@ -743,6 +743,9 @@ pub unsafe fn SetWindowLongPtrW(hwnd: HWND, nindex: WINDOW_LONG_PTR_INDEX, dwnew
 pub unsafe fn SetPropW(hwnd: HWND, lpstring: *const u16, hdata: crate::Win32::Foundation::HANDLE) -> i32 {
     let Some(window) = find(hwnd) else { return 0 };
     let name = unsafe { wide_name(lpstring) };
+    if window.own_caption {
+        crate::imp::remote::marked(&name, true);
+    }
     let mut props = window.props.borrow_mut();
     props.retain(|entry| entry.0 != name);
     props.push((name, hdata as isize));
@@ -750,14 +753,20 @@ pub unsafe fn SetPropW(hwnd: HWND, lpstring: *const u16, hdata: crate::Win32::Fo
 }
 
 pub unsafe fn GetPropW(hwnd: HWND, lpstring: *const u16) -> crate::Win32::Foundation::HANDLE {
-    let Some(window) = find(hwnd) else { return std::ptr::null_mut() };
     let name = unsafe { wide_name(lpstring) };
+    if let Some(other) = crate::imp::remote::window_of(hwnd) {
+        return crate::imp::remote::has_mark(other, &name) as usize as _;
+    }
+    let Some(window) = find(hwnd) else { return std::ptr::null_mut() };
     window.props.borrow().iter().find(|entry| entry.0 == name).map_or(0, |entry| entry.1) as _
 }
 
 pub unsafe fn RemovePropW(hwnd: HWND, lpstring: *const u16) -> crate::Win32::Foundation::HANDLE {
     let Some(window) = find(hwnd) else { return std::ptr::null_mut() };
     let name = unsafe { wide_name(lpstring) };
+    if window.own_caption {
+        crate::imp::remote::marked(&name, false);
+    }
     let mut props = window.props.borrow_mut();
     let found = props.iter().position(|entry| entry.0 == name).map(|at| props.remove(at).1);
     found.unwrap_or(0) as _
@@ -820,6 +829,14 @@ pub unsafe fn SetActiveWindow(hwnd: HWND) -> HWND {
 }
 
 pub unsafe fn SetForegroundWindow(hwnd: HWND) -> i32 {
+    if let Some(other) = crate::imp::remote::window_of(hwnd) {
+        // Another copy's window: that copy is brought to the front.
+        let copy: Option<Retained<AnyObject>> = unsafe { msg_send![objc2::class!(NSRunningApplication), runningApplicationWithProcessIdentifier: other as i32] };
+        if let Some(copy) = copy {
+            let _: bool = unsafe { msg_send![&*copy, activateWithOptions: 2usize] };
+        }
+        return 1;
+    }
     unsafe { SetActiveWindow(hwnd) };
     app().activate();
     1

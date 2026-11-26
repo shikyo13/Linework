@@ -87,7 +87,7 @@ fn ready() {
 }
 
 /// Makes the loop come round when it is waiting for an event.
-fn wake() {
+pub(crate) fn wake() {
     extern "C" fn post(_: *mut core::ffi::c_void) {
         WAKING.store(false, Ordering::Release);
         let event: Option<Retained<NSEvent>> = unsafe {
@@ -263,6 +263,7 @@ fn next(out: &mut MSG, wait: bool) -> bool {
             pictures("");
         }
         crate::imp::script::run();
+        crate::imp::remote::serve();
         if let Some(posted) = waiting() {
             fill(out, posted);
             return true;

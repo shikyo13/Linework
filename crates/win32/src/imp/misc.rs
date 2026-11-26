@@ -317,22 +317,24 @@ pub unsafe fn SetLayeredWindowAttributes(hwnd: HWND, _: u32, balpha: u8, dwflags
 }
 
 // --- Other programs -----------------------------------------------------
-// A second copy handing its files to the first is not written yet, so no
-// running copy is ever found.
+// Other copies of this program, which `remote` knows how to find and reach.
 
-pub unsafe fn FindWindowExW(_: HWND, _: HWND, _: *const u16, _: *const u16) -> HWND {
-    std::ptr::null_mut()
+pub unsafe fn FindWindowExW(hwndparent: HWND, hwndchildafter: HWND, lpszclass: *const u16, _: *const u16) -> HWND {
+    if !hwndparent.is_null() || unsafe { wide_name(lpszclass) } != "LineworkMain" {
+        return std::ptr::null_mut();
+    }
+    crate::imp::remote::next_window(hwndchildafter)
 }
 
-pub unsafe fn GetWindowThreadProcessId(_: HWND, lpdwprocessid: *mut u32) -> u32 {
+pub unsafe fn GetWindowThreadProcessId(hwnd: HWND, lpdwprocessid: *mut u32) -> u32 {
     if let Some(id) = unsafe { lpdwprocessid.as_mut() } {
-        *id = std::process::id();
+        *id = crate::imp::remote::window_of(hwnd).unwrap_or_else(std::process::id);
     }
     1
 }
 
-pub unsafe fn OpenProcess(_: crate::Win32::System::Threading::PROCESS_ACCESS_RIGHTS, _: i32, _: u32) -> crate::Win32::Foundation::HANDLE {
-    std::ptr::null_mut()
+pub unsafe fn OpenProcess(_: crate::Win32::System::Threading::PROCESS_ACCESS_RIGHTS, _: i32, dwprocessid: u32) -> crate::Win32::Foundation::HANDLE {
+    crate::imp::remote::process_handle(dwprocessid) as _
 }
 
 pub unsafe fn CreateEventW(_: *const crate::Win32::Security::SECURITY_ATTRIBUTES, _: i32, _: i32, _: *const u16) -> crate::Win32::Foundation::HANDLE {
@@ -343,17 +345,27 @@ pub unsafe fn CloseHandle(_: crate::Win32::Foundation::HANDLE) -> i32 {
     1
 }
 
-/// Nothing here is ever signalled, so the wait lasts its time, or a twentieth
-/// of a second when it has none, and reports that the time ran out.
-pub unsafe fn WaitForSingleObject(_: crate::Win32::Foundation::HANDLE, dwmilliseconds: u32) -> crate::Win32::Foundation::WAIT_EVENT {
+/// Another copy's process is waited for until it ends. Anything else is never
+/// signalled here, so that wait lasts its time, or a twentieth of a second when
+/// it has none, and reports that the time ran out.
+pub unsafe fn WaitForSingleObject(hhandle: crate::Win32::Foundation::HANDLE, dwmilliseconds: u32) -> crate::Win32::Foundation::WAIT_EVENT {
+    if let Some(process) = crate::imp::remote::process_of(hhandle as usize) {
+        return if crate::imp::remote::ended(process, dwmilliseconds) { 0 } else { 258 };
+    }
     std::thread::sleep(std::time::Duration::from_millis(dwmilliseconds.min(50) as u64));
     258
 }
 
-pub unsafe fn SendMessageTimeoutW(hwnd: HWND, msg: u32, wparam: usize, lparam: isize, _: SEND_MESSAGE_TIMEOUT_FLAGS, _: u32, lpdwresult: *mut usize) -> isize {
-    let result = crate::imp::window::send(hwnd, msg, wparam, lparam);
+pub unsafe fn SendMessageTimeoutW(hwnd: HWND, msg: u32, wparam: usize, lparam: isize, _: SEND_MESSAGE_TIMEOUT_FLAGS, utimeout: u32, lpdwresult: *mut usize) -> isize {
+    let result = match crate::imp::remote::window_of(hwnd) {
+        Some(other) => match crate::imp::remote::send(other, msg, lparam, std::time::Duration::from_millis(utimeout as u64)) {
+            Some(result) => result,
+            None => return 0,
+        },
+        None => crate::imp::window::send(hwnd, msg, wparam, lparam) as usize,
+    };
     if let Some(out) = unsafe { lpdwresult.as_mut() } {
-        *out = result as usize;
+        *out = result;
     }
     1
 }
