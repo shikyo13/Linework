@@ -33,6 +33,12 @@ impl App {
         self.apply_user_snippets();
     }
     pub(crate) fn npp_manage(&mut self, cmd: &str) {
+        // A Notepad++ plugin is a Windows program; no other system can load one.
+        #[cfg(not(windows))]
+        if cmd == "nppinstall" {
+            alert(self.h, "Install Notepad++ plugin", "Notepad++ plugins are Windows programs and run only in Linework for Windows.");
+            return;
+        }
         if cmd == "nppinstall" {
             let Some(file) = crate::dialogs::files(self.h)
                 .set_title("Install a trusted x64 Notepad++ plugin")

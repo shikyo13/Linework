@@ -9,6 +9,7 @@
 //!   type TEXT        type the text, a key for each character
 //!   picture NAME     write a picture of every window, files starting NAME
 //!   size W H         make the main window's content that large
+//!   say TEXT         write the text to the error stream, to mark the place in a run's output
 //!   quit             end the program
 //!
 //! Each event is made the way AppKit makes one and goes through the same loop
@@ -30,6 +31,11 @@ struct Script {
 
 thread_local! {
     static SCRIPT: RefCell<Option<Script>> = const { RefCell::new(None) };
+}
+
+/// Whether steps are being played, with nobody at the screen to answer a question.
+pub(crate) fn playing() -> bool {
+    SCRIPT.with_borrow(|script| script.is_some())
 }
 
 pub(crate) fn load() {
@@ -82,6 +88,7 @@ pub(crate) fn run() {
                     main.setContentSize(objc2_foundation::NSSize::new(numbers[0], numbers[1]));
                 }
             }
+            "say" => eprintln!("linework-script: {rest}"),
             "quit" => std::process::exit(0),
             _ => eprintln!("linework-win32: script step not understood: {step}"),
         }

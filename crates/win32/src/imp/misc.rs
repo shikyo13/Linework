@@ -126,15 +126,19 @@ pub unsafe fn MessageBoxW(_: HWND, lptext: *const u16, lpcaption: *const u16, ut
     let (title, text) = unsafe { (wide_name(lpcaption), wide_name(lptext)) };
     // Said on the error stream too, so a run with nobody watching leaves a trace of what it asked.
     eprintln!("linework: {title}: {text}");
-    let alert = NSAlert::new(mtm());
-    alert.setMessageText(&NSString::from_str(&title));
-    alert.setInformativeText(&NSString::from_str(&text));
     let answers: &[(&str, MESSAGEBOX_RESULT)] = match utype & 0xf {
         MB_YESNOCANCEL => &[("Yes", IDYES), ("No", IDNO), ("Cancel", IDCANCEL)],
         MB_YESNO => &[("Yes", IDYES), ("No", IDNO)],
         MB_OKCANCEL => &[("OK", IDOK), ("Cancel", IDCANCEL)],
         _ => &[("OK", IDOK)],
     };
+    // A scripted run has nobody to answer: the question is declined, as by its last button.
+    if crate::imp::script::playing() {
+        return answers[answers.len() - 1].1;
+    }
+    let alert = NSAlert::new(mtm());
+    alert.setMessageText(&NSString::from_str(&title));
+    alert.setInformativeText(&NSString::from_str(&text));
     for (title, _) in answers {
         alert.addButtonWithTitle(&NSString::from_str(title));
     }

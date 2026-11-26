@@ -77,7 +77,10 @@ fn ready() {
     crate::imp::misc::install_menu(&app);
     crate::imp::misc::watch_application(&app);
     app.finishLaunching();
-    app.activate();
+    // A scripted run stays behind whatever the person is using.
+    if std::env::var_os("LINEWORK_SCRIPT").is_none() {
+        app.activate();
+    }
     extern "C" fn asked(_: i32) {
         PICTURE.store(true, Ordering::Relaxed);
     }
