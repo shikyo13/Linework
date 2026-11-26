@@ -165,6 +165,11 @@ impl App {
                     let mut temp = tempfile::Builder::new()
                         .permissions(<std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o666))
                         .tempfile_in(dest.parent().unwrap_or(Path::new(".")))?;
+                    // A file it replaces is not opened to more people than it was.
+                    #[cfg(not(windows))]
+                    if let Ok(had) = std::fs::metadata(&dest) {
+                        let _ = temp.as_file().set_permissions(had.permissions());
+                    }
                     {
                         let mut out = BufWriter::new(temp.as_file_mut());
                         let mut at = range.start;

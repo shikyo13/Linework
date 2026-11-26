@@ -752,7 +752,11 @@ impl Document {
             }
             #[cfg(not(windows))]
             {
-                tmp.persist(&dest).map_err(|e| e.error)?;
+                let _saved = tmp.persist(&dest).map_err(|e| e.error)?;
+                #[cfg(target_os = "macos")]
+                if let Some(old) = &target_guard {
+                    mac_save::keep_access_list(old, &_saved);
+                }
             }
         } else {
             tmp.persist_noclobber(&dest).map_err(|e| e.error)?;

@@ -82,11 +82,15 @@ fn placement(file: &File, size: u64) -> Option<Vec<(u64, u64, u64)>> {
 
 /// Whether `file` still has every block where `clone`, made from it, has it.
 fn shares_every_block(file: &File, clone: &File, size: u64) -> bool {
-    let sized = |f: &File| f.metadata().is_ok_and(|m| m.len() == size);
+    // Places are places on one volume: on two they say nothing.
+    let (Ok(here), Ok(there)) = (file.metadata(), clone.metadata()) else {
+        return false;
+    };
     // Changes another program has made through a memory map are in memory
     // only, and in no block yet, until they are pushed to the volume.
-    sized(file)
-        && sized(clone)
+    here.dev() == there.dev()
+        && here.len() == size
+        && there.len() == size
         && unsafe { libc::fsync(file.as_raw_fd()) } == 0
         && placement(file, size).is_some_and(|runs| Some(runs) == placement(clone, size))
 }
@@ -124,6 +128,9 @@ fn clone_into(file: &File, dir: &Path) -> io::Result<PathBuf> {
     if unsafe { libc::fclonefileat(file.as_raw_fd(), libc::AT_FDCWD, path.as_ptr(), 0) } != 0 {
         return Err(io::Error::last_os_error());
     }
+    // A clone carries its origin's flags. One of a locked file would be
+    // locked too: it could not be written, renamed or removed again.
+    unsafe { libc::chflags(path.as_ptr(), 0) };
     Ok(name)
 }
 
@@ -161,19 +168,12 @@ pub(crate) fn staging(dir: &Path, dest: &Path, replaces: bool) -> io::Result<Nam
 fn inherit(old: &File, new: &File) -> io::Result<()> {
     let had = old.metadata()?;
     let fd = new.as_raw_fd();
-    // A write clears set-user-ID and set-group-ID bits, so they are not carried.
-    new.set_permissions(Permissions::from_mode(had.mode() & 0o777))?;
-    // The rest is carried where the volume and our rights allow it. A volume
-    // without access lists or attributes, or a group we are not in, must not
-    // stop the text from being saved.
+    // All of this is carried where the volume and our rights allow it. A
+    // volume without attributes or permissions must not stop the text from
+    // being saved; the file then stays the owner's alone.
     unsafe {
         libc::fchown(fd, u32::MAX, had.gid());
-        libc::fcopyfile(
-            old.as_raw_fd(),
-            fd,
-            std::ptr::null_mut(),
-            libc::COPYFILE_ACL | libc::COPYFILE_XATTR,
-        );
+        libc::fcopyfile(old.as_raw_fd(), fd, std::ptr::null_mut(), libc::COPYFILE_XATTR);
         let mut status: libc::stat = std::mem::zeroed();
         if libc::fstat(old.as_raw_fd(), &mut status) == 0 {
             libc::fchflags(fd, status.st_flags & (libc::UF_HIDDEN | libc::UF_NODUMP));
@@ -193,9 +193,25 @@ fn inherit(old: &File, new: &File) -> io::Result<()> {
             );
         }
     }
-    // Setting the permissions last would be undone by nothing above, but an
-    // access list copied onto the file may have changed the mode bits.
-    new.set_permissions(Permissions::from_mode(had.mode() & 0o777))
+    // A write clears set-user-ID and set-group-ID bits, so they are not
+    // carried. Where the old file's group could not be kept, what its group
+    // was allowed must not pass to another group: that group gets what
+    // everyone had.
+    let mut mode = had.mode() & 0o777;
+    if new.metadata()?.gid() != had.gid() {
+        mode = (mode & 0o707) | ((mode & 0o007) << 3);
+    }
+    let _ = new.set_permissions(Permissions::from_mode(mode));
+    Ok(())
+}
+
+/// The old file's access list, put on the file that has just taken its
+/// name. Not before: an entry that forbids deleting the old file would stop
+/// the rename and then forbid removing the file that was to replace it.
+pub(crate) fn keep_access_list(old: &File, new: &File) {
+    unsafe {
+        libc::fcopyfile(old.as_raw_fd(), new.as_raw_fd(), std::ptr::null_mut(), libc::COPYFILE_ACL);
+    }
 }
 
 impl Document {
@@ -292,6 +308,7 @@ impl Document {
             return Err(conflict());
         }
         staged.persist(dest).map_err(|e| e.error)?;
+        keep_access_list(&guard, &out);
         drop(guard);
         self.stamp = Some(stamp);
         self.path = Some(dest.to_owned());
@@ -445,6 +462,26 @@ mod tests {
         doc.save(&file)?;
         input[3..6].copy_from_slice(b"new");
         assert!(fs::read(&file)? == input);
+
+        // A locked file is not saved over. Once it is unlocked it is, though
+        // the clones made while it was locked were clones of a locked file.
+        let lock = |flags| {
+            let name = CString::new(file.as_os_str().as_bytes()).unwrap();
+            assert_eq!(unsafe { libc::chflags(name.as_ptr(), flags) }, 0);
+        };
+        lock(libc::UF_IMMUTABLE);
+        let mut doc = Document::open(&file)?;
+        doc.replace(3, 3, b"abc")?;
+        assert_eq!(doc.save(&file).unwrap_err().kind(), io::ErrorKind::PermissionDenied);
+        lock(0);
+        doc.save(&file)?;
+        input[3..6].copy_from_slice(b"abc");
+        assert!(fs::read(&file)? == input);
+
+        // Nothing of all this is left beside the person's files.
+        let mut left: Vec<_> = fs::read_dir(dir.path())?.map(|entry| entry.unwrap().file_name()).collect();
+        left.sort();
+        assert_eq!(left, ["copy.log", "large.log"]);
         Ok(())
     }
 }
