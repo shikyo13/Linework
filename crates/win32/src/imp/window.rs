@@ -119,14 +119,16 @@ fn register(view: Retained<NSView>, class: &str, proc: Option<Proc>, style: u32,
     window
 }
 
-/// A view placed in one of our windows by someone else becomes a window.
+/// The editor's view, placed in one of our windows by the editor crate, becomes a window.
 pub(crate) fn adopt(view: &NSView) {
     if find(handle(view)).is_some() {
         return;
     }
+    // Only the editor: the views AppKit puts inside our own controls are not windows.
     let scintilla: bool = unsafe { msg_send![view, respondsToSelector: sel!(message:wParam:lParam:)] };
-    let class = if scintilla { "Scintilla" } else { "Foreign" };
-    register(view.retain(), class, Some(foreign_proc), WS_CHILD | WS_VISIBLE, 0, 0, true);
+    if scintilla {
+        register(view.retain(), "Scintilla", Some(foreign_proc), WS_CHILD | WS_VISIBLE, 0, 0, true);
+    }
 }
 
 pub(crate) fn forget(view: &NSView) {
