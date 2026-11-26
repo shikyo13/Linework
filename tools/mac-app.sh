@@ -3,7 +3,7 @@
 #
 #   tools/mac-app.sh PROGRAM SCINTILLA_SOURCE OUTPUT_FOLDER
 #
-# PROGRAM is the built `Linework` binary of crates/mac. SCINTILLA_SOURCE is the
+# PROGRAM is the `linework` binary built at the repository root. SCINTILLA_SOURCE is the
 # unpacked Scintilla archive, for the two pointer images Scintilla looks for in
 # the bundle. The result is OUTPUT_FOLDER/Linework.app, not yet signed.
 set -eu
@@ -11,7 +11,7 @@ set -eu
 program=$1
 images=$2/cocoa/res
 here=$(cd "$(dirname "$0")/.." && pwd)
-version=$(sed -n 's/^version = "\(.*\)"/\1/p' "$here/crates/mac/Cargo.toml" | head -1)
+version=$(sed -n 's/^version = "\(.*\)"/\1/p' "$here/Cargo.toml" | head -1)
 app=$3/Linework.app
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
