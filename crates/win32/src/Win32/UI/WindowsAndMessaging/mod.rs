@@ -46,7 +46,7 @@ pub const ES_AUTOVSCROLL: i32 = 64i32;
 pub const ES_MULTILINE: i32 = 4i32;
 pub const ES_WANTRETURN: i32 = 4096i32;
 pub unsafe extern "system" fn EndDeferWindowPos(hwinposinfo : HDWP) -> super::super::Foundation:: BOOL { unsafe { crate::imp::EndDeferWindowPos(hwinposinfo) } }
-pub unsafe extern "system" fn FindWindowExW(hwndparent : super::super::Foundation:: HWND, hwndchildafter : super::super::Foundation:: HWND, lpszclass : windows_sys::core::PCWSTR, lpszwindow : windows_sys::core::PCWSTR) -> super::super::Foundation:: HWND { let _ = hwndparent; let _ = hwndchildafter; let _ = lpszclass; let _ = lpszwindow; crate::missing("FindWindowExW"); unsafe { core::mem::zeroed() } }
+pub unsafe extern "system" fn FindWindowExW(hwndparent : super::super::Foundation:: HWND, hwndchildafter : super::super::Foundation:: HWND, lpszclass : windows_sys::core::PCWSTR, lpszwindow : windows_sys::core::PCWSTR) -> super::super::Foundation:: HWND { unsafe { crate::imp::FindWindowExW(hwndparent, hwndchildafter, lpszclass, lpszwindow) } }
 pub const GWLP_ID: WINDOW_LONG_PTR_INDEX = -12i32;
 pub const GWLP_USERDATA: WINDOW_LONG_PTR_INDEX = -21i32;
 pub const GWLP_WNDPROC: WINDOW_LONG_PTR_INDEX = -4i32;
@@ -61,13 +61,13 @@ pub unsafe extern "system" fn GetMenuState(hmenu : HMENU, uid : u32, uflags : ME
 pub unsafe extern "system" fn GetMessageW(lpmsg : *mut MSG, hwnd : super::super::Foundation:: HWND, wmsgfiltermin : u32, wmsgfiltermax : u32) -> super::super::Foundation:: BOOL { unsafe { crate::imp::GetMessageW(lpmsg, hwnd, wmsgfiltermin, wmsgfiltermax) } }
 pub unsafe extern "system" fn GetParent(hwnd : super::super::Foundation:: HWND) -> super::super::Foundation:: HWND { unsafe { crate::imp::GetParent(hwnd) } }
 pub unsafe extern "system" fn GetPropW(hwnd : super::super::Foundation:: HWND, lpstring : windows_sys::core::PCWSTR) -> super::super::Foundation:: HANDLE { unsafe { crate::imp::GetPropW(hwnd, lpstring) } }
-pub unsafe extern "system" fn GetScrollBarInfo(hwnd : super::super::Foundation:: HWND, idobject : OBJECT_IDENTIFIER, psbi : *mut SCROLLBARINFO) -> super::super::Foundation:: BOOL { let _ = hwnd; let _ = idobject; let _ = psbi; crate::missing("GetScrollBarInfo"); unsafe { core::mem::zeroed() } }
+pub unsafe extern "system" fn GetScrollBarInfo(hwnd : super::super::Foundation:: HWND, idobject : OBJECT_IDENTIFIER, psbi : *mut SCROLLBARINFO) -> super::super::Foundation:: BOOL { unsafe { crate::imp::GetScrollBarInfo(hwnd, idobject, psbi) } }
 pub unsafe extern "system" fn GetWindowLongPtrW(hwnd : super::super::Foundation:: HWND, nindex : WINDOW_LONG_PTR_INDEX) -> isize { unsafe { crate::imp::GetWindowLongPtrW(hwnd, nindex) } }
 pub unsafe extern "system" fn GetWindowLongW(hwnd : super::super::Foundation:: HWND, nindex : WINDOW_LONG_PTR_INDEX) -> i32 { unsafe { crate::imp::GetWindowLongW(hwnd, nindex) } }
 pub unsafe extern "system" fn GetWindowRect(hwnd : super::super::Foundation:: HWND, lprect : *mut super::super::Foundation:: RECT) -> super::super::Foundation:: BOOL { unsafe { crate::imp::GetWindowRect(hwnd, lprect) } }
 pub unsafe extern "system" fn GetWindowTextLengthW(hwnd : super::super::Foundation:: HWND) -> i32 { unsafe { crate::imp::GetWindowTextLengthW(hwnd) } }
 pub unsafe extern "system" fn GetWindowTextW(hwnd : super::super::Foundation:: HWND, lpstring : windows_sys::core::PWSTR, nmaxcount : i32) -> i32 { unsafe { crate::imp::GetWindowTextW(hwnd, lpstring, nmaxcount) } }
-pub unsafe extern "system" fn GetWindowThreadProcessId(hwnd : super::super::Foundation:: HWND, lpdwprocessid : *mut u32) -> u32 { let _ = hwnd; let _ = lpdwprocessid; crate::missing("GetWindowThreadProcessId"); unsafe { core::mem::zeroed() } }
+pub unsafe extern "system" fn GetWindowThreadProcessId(hwnd : super::super::Foundation:: HWND, lpdwprocessid : *mut u32) -> u32 { unsafe { crate::imp::GetWindowThreadProcessId(hwnd, lpdwprocessid) } }
 pub type HCURSOR = *mut core::ffi::c_void;
 pub type HDWP = *mut core::ffi::c_void;
 pub type HICON = *mut core::ffi::c_void;
@@ -96,7 +96,7 @@ pub const IDOK: MESSAGEBOX_RESULT = 1i32;
 pub const IDYES: MESSAGEBOX_RESULT = 6i32;
 pub unsafe extern "system" fn InsertMenuItemW(hmenu : HMENU, item : u32, fbyposition : super::super::Foundation:: BOOL, lpmi : *const MENUITEMINFOW) -> super::super::Foundation:: BOOL { unsafe { crate::imp::InsertMenuItemW(hmenu, item, fbyposition, lpmi) } }
 pub unsafe extern "system" fn IsChild(hwndparent : super::super::Foundation:: HWND, hwnd : super::super::Foundation:: HWND) -> super::super::Foundation:: BOOL { unsafe { crate::imp::IsChild(hwndparent, hwnd) } }
-pub unsafe extern "system" fn IsDialogMessageW(hdlg : super::super::Foundation:: HWND, lpmsg : *const MSG) -> super::super::Foundation:: BOOL { let _ = hdlg; let _ = lpmsg; crate::missing("IsDialogMessageW"); unsafe { core::mem::zeroed() } }
+pub unsafe extern "system" fn IsDialogMessageW(hdlg : super::super::Foundation:: HWND, lpmsg : *const MSG) -> super::super::Foundation:: BOOL { unsafe { crate::imp::IsDialogMessageW(hdlg, lpmsg) } }
 pub unsafe extern "system" fn IsIconic(hwnd : super::super::Foundation:: HWND) -> super::super::Foundation:: BOOL { unsafe { crate::imp::IsIconic(hwnd) } }
 pub unsafe extern "system" fn IsWindow(hwnd : super::super::Foundation:: HWND) -> super::super::Foundation:: BOOL { unsafe { crate::imp::IsWindow(hwnd) } }
 pub unsafe extern "system" fn IsWindowVisible(hwnd : super::super::Foundation:: HWND) -> super::super::Foundation:: BOOL { unsafe { crate::imp::IsWindowVisible(hwnd) } }
@@ -270,6 +270,7 @@ pub const SM_CYSIZEFRAME: SYSTEM_METRICS_INDEX = 33i32;
 pub const SPI_GETCLIENTAREAANIMATION: SYSTEM_PARAMETERS_INFO_ACTION = 4162u32;
 pub const SPI_GETHIGHCONTRAST: SYSTEM_PARAMETERS_INFO_ACTION = 66u32;
 pub const SPI_GETNONCLIENTMETRICS: SYSTEM_PARAMETERS_INFO_ACTION = 41u32;
+pub const SPI_GETWHEELSCROLLLINES: SYSTEM_PARAMETERS_INFO_ACTION = 104u32;
 pub const SWP_FRAMECHANGED: SET_WINDOW_POS_FLAGS = 32u32;
 pub const SWP_HIDEWINDOW: SET_WINDOW_POS_FLAGS = 128u32;
 pub const SWP_NOACTIVATE: SET_WINDOW_POS_FLAGS = 16u32;
@@ -290,11 +291,11 @@ pub const SW_SHOWNORMAL: SHOW_WINDOW_CMD = 1i32;
 pub type SYSTEM_METRICS_INDEX = i32;
 pub type SYSTEM_PARAMETERS_INFO_ACTION = u32;
 pub type SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS = u32;
-pub unsafe extern "system" fn SendMessageTimeoutW(hwnd : super::super::Foundation:: HWND, msg : u32, wparam : super::super::Foundation:: WPARAM, lparam : super::super::Foundation:: LPARAM, fuflags : SEND_MESSAGE_TIMEOUT_FLAGS, utimeout : u32, lpdwresult : *mut usize) -> super::super::Foundation:: LRESULT { let _ = hwnd; let _ = msg; let _ = wparam; let _ = lparam; let _ = fuflags; let _ = utimeout; let _ = lpdwresult; crate::missing("SendMessageTimeoutW"); unsafe { core::mem::zeroed() } }
+pub unsafe extern "system" fn SendMessageTimeoutW(hwnd : super::super::Foundation:: HWND, msg : u32, wparam : super::super::Foundation:: WPARAM, lparam : super::super::Foundation:: LPARAM, fuflags : SEND_MESSAGE_TIMEOUT_FLAGS, utimeout : u32, lpdwresult : *mut usize) -> super::super::Foundation:: LRESULT { unsafe { crate::imp::SendMessageTimeoutW(hwnd, msg, wparam, lparam, fuflags, utimeout, lpdwresult) } }
 pub unsafe extern "system" fn SendMessageW(hwnd : super::super::Foundation:: HWND, msg : u32, wparam : super::super::Foundation:: WPARAM, lparam : super::super::Foundation:: LPARAM) -> super::super::Foundation:: LRESULT { unsafe { crate::imp::SendMessageW(hwnd, msg, wparam, lparam) } }
 pub unsafe extern "system" fn SetCursor(hcursor : HCURSOR) -> HCURSOR { unsafe { crate::imp::SetCursor(hcursor) } }
 pub unsafe extern "system" fn SetForegroundWindow(hwnd : super::super::Foundation:: HWND) -> super::super::Foundation:: BOOL { unsafe { crate::imp::SetForegroundWindow(hwnd) } }
-pub unsafe extern "system" fn SetLayeredWindowAttributes(hwnd : super::super::Foundation:: HWND, crkey : super::super::Foundation:: COLORREF, balpha : u8, dwflags : LAYERED_WINDOW_ATTRIBUTES_FLAGS) -> super::super::Foundation:: BOOL { let _ = hwnd; let _ = crkey; let _ = balpha; let _ = dwflags; crate::missing("SetLayeredWindowAttributes"); unsafe { core::mem::zeroed() } }
+pub unsafe extern "system" fn SetLayeredWindowAttributes(hwnd : super::super::Foundation:: HWND, crkey : super::super::Foundation:: COLORREF, balpha : u8, dwflags : LAYERED_WINDOW_ATTRIBUTES_FLAGS) -> super::super::Foundation:: BOOL { unsafe { crate::imp::SetLayeredWindowAttributes(hwnd, crkey, balpha, dwflags) } }
 pub unsafe extern "system" fn SetMenuInfo(param0 : HMENU, param1 : *const MENUINFO) -> super::super::Foundation:: BOOL { unsafe { crate::imp::SetMenuInfo(param0, param1) } }
 pub unsafe extern "system" fn SetPropW(hwnd : super::super::Foundation:: HWND, lpstring : windows_sys::core::PCWSTR, hdata : super::super::Foundation:: HANDLE) -> super::super::Foundation:: BOOL { unsafe { crate::imp::SetPropW(hwnd, lpstring, hdata) } }
 pub unsafe extern "system" fn SetTimer(hwnd : super::super::Foundation:: HWND, nidevent : usize, uelapse : u32, lptimerfunc : TIMERPROC) -> usize { unsafe { crate::imp::SetTimer(hwnd, nidevent, uelapse, lptimerfunc) } }
@@ -303,7 +304,7 @@ pub unsafe extern "system" fn SetWindowPos(hwnd : super::super::Foundation:: HWN
 pub unsafe extern "system" fn SetWindowTextW(hwnd : super::super::Foundation:: HWND, lpstring : windows_sys::core::PCWSTR) -> super::super::Foundation:: BOOL { unsafe { crate::imp::SetWindowTextW(hwnd, lpstring) } }
 pub unsafe extern "system" fn ShowWindow(hwnd : super::super::Foundation:: HWND, ncmdshow : SHOW_WINDOW_CMD) -> super::super::Foundation:: BOOL { unsafe { crate::imp::ShowWindow(hwnd, ncmdshow) } }
 pub unsafe extern "system" fn ShowWindowAsync(hwnd : super::super::Foundation:: HWND, ncmdshow : SHOW_WINDOW_CMD) -> super::super::Foundation:: BOOL { unsafe { crate::imp::ShowWindowAsync(hwnd, ncmdshow) } }
-pub unsafe extern "system" fn SystemParametersInfoW(uiaction : SYSTEM_PARAMETERS_INFO_ACTION, uiparam : u32, pvparam : *mut core::ffi::c_void, fwinini : SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS) -> super::super::Foundation:: BOOL { let _ = uiaction; let _ = uiparam; let _ = pvparam; let _ = fwinini; crate::missing("SystemParametersInfoW"); unsafe { core::mem::zeroed() } }
+pub unsafe extern "system" fn SystemParametersInfoW(uiaction : SYSTEM_PARAMETERS_INFO_ACTION, uiparam : u32, pvparam : *mut core::ffi::c_void, fwinini : SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS) -> super::super::Foundation:: BOOL { unsafe { crate::imp::SystemParametersInfoW(uiaction, uiparam, pvparam, fwinini) } }
 pub type TIMERPROC = Option<unsafe extern "system" fn(param0: super::super::Foundation::HWND, param1: u32, param2: usize, param3: u32)>;
 pub const TPM_RETURNCMD: TRACK_POPUP_MENU_FLAGS = 256u32;
 pub const TPM_RIGHTBUTTON: TRACK_POPUP_MENU_FLAGS = 2u32;

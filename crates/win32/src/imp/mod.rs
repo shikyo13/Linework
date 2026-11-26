@@ -7,6 +7,7 @@ pub(crate) mod misc;
 pub(crate) mod script;
 pub(crate) mod view;
 pub(crate) mod window;
+pub use controls::IsDialogMessageW;
 pub use gdi::*;
 pub use menu::*;
 pub use message::*;

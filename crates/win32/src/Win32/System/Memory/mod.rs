@@ -2,6 +2,6 @@
 #![allow(non_snake_case, non_camel_case_types, non_upper_case_globals, clippy::all)]
 pub type GLOBAL_ALLOC_FLAGS = u32;
 pub const GMEM_MOVEABLE: GLOBAL_ALLOC_FLAGS = 2u32;
-pub unsafe extern "system" fn GlobalAlloc(uflags : GLOBAL_ALLOC_FLAGS, dwbytes : usize) -> super::super::Foundation:: HGLOBAL { let _ = uflags; let _ = dwbytes; crate::missing("GlobalAlloc"); unsafe { core::mem::zeroed() } }
-pub unsafe extern "system" fn GlobalLock(hmem : super::super::Foundation:: HGLOBAL) -> *mut core::ffi::c_void { let _ = hmem; crate::missing("GlobalLock"); unsafe { core::mem::zeroed() } }
-pub unsafe extern "system" fn GlobalUnlock(hmem : super::super::Foundation:: HGLOBAL) -> super::super::Foundation:: BOOL { let _ = hmem; crate::missing("GlobalUnlock"); unsafe { core::mem::zeroed() } }
+pub unsafe extern "system" fn GlobalAlloc(uflags : GLOBAL_ALLOC_FLAGS, dwbytes : usize) -> super::super::Foundation:: HGLOBAL { unsafe { crate::imp::GlobalAlloc(uflags, dwbytes) } }
+pub unsafe extern "system" fn GlobalLock(hmem : super::super::Foundation:: HGLOBAL) -> *mut core::ffi::c_void { unsafe { crate::imp::GlobalLock(hmem) } }
+pub unsafe extern "system" fn GlobalUnlock(hmem : super::super::Foundation:: HGLOBAL) -> super::super::Foundation:: BOOL { unsafe { crate::imp::GlobalUnlock(hmem) } }

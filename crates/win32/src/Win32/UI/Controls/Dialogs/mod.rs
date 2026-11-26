@@ -16,5 +16,5 @@ pub struct CHOOSECOLORW {
     pub lpTemplateName: windows_sys::core::PCWSTR,
 }
 pub type CHOOSECOLOR_FLAGS = u32;
-pub unsafe extern "system" fn ChooseColorW(param0 : *mut CHOOSECOLORW) -> super::super::super::Foundation:: BOOL { let _ = param0; crate::missing("ChooseColorW"); unsafe { core::mem::zeroed() } }
+pub unsafe extern "system" fn ChooseColorW(param0 : *mut CHOOSECOLORW) -> super::super::super::Foundation:: BOOL { unsafe { crate::imp::ChooseColorW(param0) } }
 pub type LPCCHOOKPROC = Option<unsafe extern "system" fn(param0: super::super::super::Foundation::HWND, param1: u32, param2: super::super::super::Foundation::WPARAM, param3: super::super::super::Foundation::LPARAM) -> usize>;

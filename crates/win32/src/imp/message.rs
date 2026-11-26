@@ -75,6 +75,7 @@ fn ready() {
     let app = app();
     app.setActivationPolicy(objc2_app_kit::NSApplicationActivationPolicy::Regular);
     crate::imp::misc::install_menu(&app);
+    crate::imp::misc::watch_application(&app);
     app.finishLaunching();
     app.activate();
     extern "C" fn asked(_: i32) {

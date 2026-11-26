@@ -372,10 +372,13 @@ pub unsafe fn CreateWindowExW(dwexstyle: WINDOW_EX_STYLE, lpclassname: *const u1
         }
         frame.setContentView(Some(&view));
         view::watch(&frame, mtm);
+        if dwexstyle & WS_EX_ACCEPTFILES != 0 {
+            view.registerForDraggedTypes(&objc2_foundation::NSArray::from_slice(&[&*NSString::from_str("NSFilenamesPboardType")]));
+        }
         if x == CW_USEDEFAULT || popup && nwidth == 0 {
             frame.center();
         } else {
-            place_frame(&frame, x, y, width, height);
+            place_frame(&window, &frame, x, y, width, height);
         }
         window.frame.replace(Some(frame));
     }
@@ -442,8 +445,18 @@ fn screen_height() -> f64 {
     NSScreen::screens(mtm()).firstObject().map_or(0.0, |screen| screen.frame().size.height)
 }
 
+/// What Windows adds around the client area of a window with a caption, on the
+/// left, top, right and bottom. The front end asks for a window's whole size,
+/// so this much is taken off to leave the client area Windows would leave.
+fn edges(window: &Window) -> (i32, i32, i32, i32) {
+    let captioned = window.style.get() & WS_CAPTION == WS_CAPTION && window.style.get() & WS_CHILD == 0;
+    if captioned && !window.own_caption { (8, 31, 8, 8) } else { (0, 0, 0, 0) }
+}
+
 /// Windows counts a screen position from the top left of the main screen.
-fn place_frame(frame: &NSWindow, x: i32, y: i32, width: f64, height: f64) {
+fn place_frame(window: &Window, frame: &NSWindow, x: i32, y: i32, width: f64, height: f64) {
+    let (left, top, right, bottom) = edges(window);
+    let (width, height) = ((width - (left + right) as f64).max(1.0), (height - (top + bottom) as f64).max(1.0));
     let content = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(width, height));
     let outer = frame.frameRectForContentRect(content);
     let top = screen_height() - y as f64;
@@ -476,7 +489,9 @@ pub unsafe fn GetClientRect(hwnd: HWND, lprect: *mut RECT) -> i32 {
 
 pub unsafe fn GetWindowRect(hwnd: HWND, lprect: *mut RECT) -> i32 {
     let (Some(window), Some(out)) = (find(hwnd), unsafe { lprect.as_mut() }) else { return 0 };
-    *out = screen_rect(&window);
+    let (left, top, right, bottom) = edges(&window);
+    let inner = screen_rect(&window);
+    *out = RECT { left: inner.left - left, top: inner.top - top, right: inner.right + right, bottom: inner.bottom + bottom };
     1
 }
 
@@ -534,10 +549,11 @@ pub unsafe fn SetWindowPos(hwnd: HWND, _: HWND, x: i32, y: i32, cx: i32, cy: i32
     if moves || sizes {
         match window.frame.borrow().clone() {
             Some(frame) => {
-                let now = screen_rect(&window);
+                let mut now = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+                unsafe { GetWindowRect(hwnd, &mut now) };
                 let (x, y) = if moves { (x, y) } else { (now.left, now.top) };
                 let (cx, cy) = if sizes { (cx, cy) } else { (now.right - now.left, now.bottom - now.top) };
-                place_frame(&frame, x, y, cx.max(1) as f64, cy.max(1) as f64);
+                place_frame(&window, &frame, x, y, cx.max(1) as f64, cy.max(1) as f64);
             }
             None => {
                 let mut bounds = window.view.frame();
@@ -981,6 +997,11 @@ pub(crate) fn describe() -> String {
         }
     }
     lines.join("\n")
+}
+
+/// The program's main window: the one that draws its own caption.
+pub(crate) fn main_window() -> Option<HWND> {
+    WINDOWS.with_borrow(|windows| windows.values().find(|window| window.own_caption && window.frame.borrow().is_some()).map(|window| handle(&window.view)))
 }
 
 /// Every top-level window, for the picture taken when asked (see `message`).

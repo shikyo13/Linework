@@ -15,10 +15,10 @@ pub struct BP_PAINTPARAMS {
     pub pBlendFunction: *const super::super::Graphics::Gdi::BLENDFUNCTION,
 }
 pub type BP_PAINTPARAMS_FLAGS = u32;
-pub unsafe extern "system" fn BeginBufferedPaint(hdctarget : super::super::Graphics::Gdi:: HDC, prctarget : *const super::super::Foundation:: RECT, dwformat : BP_BUFFERFORMAT, ppaintparams : *const BP_PAINTPARAMS, phdc : *mut super::super::Graphics::Gdi:: HDC) -> isize { let _ = hdctarget; let _ = prctarget; let _ = dwformat; let _ = ppaintparams; let _ = phdc; crate::missing("BeginBufferedPaint"); unsafe { core::mem::zeroed() } }
-pub unsafe extern "system" fn BufferedPaintInit() -> windows_sys::core::HRESULT { crate::missing("BufferedPaintInit"); unsafe { core::mem::zeroed() } }
-pub unsafe extern "system" fn BufferedPaintUnInit() -> windows_sys::core::HRESULT { crate::missing("BufferedPaintUnInit"); unsafe { core::mem::zeroed() } }
-pub unsafe extern "system" fn CloseThemeData(htheme : HTHEME) -> windows_sys::core::HRESULT { let _ = htheme; crate::missing("CloseThemeData"); unsafe { core::mem::zeroed() } }
+pub unsafe extern "system" fn BeginBufferedPaint(hdctarget : super::super::Graphics::Gdi:: HDC, prctarget : *const super::super::Foundation:: RECT, dwformat : BP_BUFFERFORMAT, ppaintparams : *const BP_PAINTPARAMS, phdc : *mut super::super::Graphics::Gdi:: HDC) -> isize { unsafe { crate::imp::BeginBufferedPaint(hdctarget, prctarget, dwformat, ppaintparams, phdc) } }
+pub unsafe extern "system" fn BufferedPaintInit() -> windows_sys::core::HRESULT { unsafe { crate::imp::BufferedPaintInit() } }
+pub unsafe extern "system" fn BufferedPaintUnInit() -> windows_sys::core::HRESULT { unsafe { crate::imp::BufferedPaintUnInit() } }
+pub unsafe extern "system" fn CloseThemeData(htheme : HTHEME) -> windows_sys::core::HRESULT { unsafe { crate::imp::CloseThemeData(htheme) } }
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct DRAWITEMSTRUCT {
@@ -33,9 +33,9 @@ pub struct DRAWITEMSTRUCT {
     pub itemData: usize,
 }
 pub type DRAWITEMSTRUCT_CTL_TYPE = u32;
-pub unsafe extern "system" fn DrawThemeBackground(htheme : HTHEME, hdc : super::super::Graphics::Gdi:: HDC, ipartid : i32, istateid : i32, prect : *const super::super::Foundation:: RECT, pcliprect : *const super::super::Foundation:: RECT) -> windows_sys::core::HRESULT { let _ = htheme; let _ = hdc; let _ = ipartid; let _ = istateid; let _ = prect; let _ = pcliprect; crate::missing("DrawThemeBackground"); unsafe { core::mem::zeroed() } }
+pub unsafe extern "system" fn DrawThemeBackground(htheme : HTHEME, hdc : super::super::Graphics::Gdi:: HDC, ipartid : i32, istateid : i32, prect : *const super::super::Foundation:: RECT, pcliprect : *const super::super::Foundation:: RECT) -> windows_sys::core::HRESULT { unsafe { crate::imp::DrawThemeBackground(htheme, hdc, ipartid, istateid, prect, pcliprect) } }
 pub const EM_SETSEL: u32 = 177u32;
-pub unsafe extern "system" fn EndBufferedPaint(hbufferedpaint : isize, fupdatetarget : super::super::Foundation:: BOOL) -> windows_sys::core::HRESULT { let _ = hbufferedpaint; let _ = fupdatetarget; crate::missing("EndBufferedPaint"); unsafe { core::mem::zeroed() } }
+pub unsafe extern "system" fn EndBufferedPaint(hbufferedpaint : isize, fupdatetarget : super::super::Foundation:: BOOL) -> windows_sys::core::HRESULT { unsafe { crate::imp::EndBufferedPaint(hbufferedpaint, fupdatetarget) } }
 pub type HTHEME = isize;
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -60,7 +60,7 @@ pub const ODT_BUTTON: DRAWITEMSTRUCT_CTL_TYPE = 4u32;
 pub const ODT_LISTBOX: DRAWITEMSTRUCT_CTL_TYPE = 2u32;
 pub const ODT_MENU: DRAWITEMSTRUCT_CTL_TYPE = 1u32;
 pub const ODT_STATIC: DRAWITEMSTRUCT_CTL_TYPE = 5u32;
-pub unsafe extern "system" fn OpenThemeData(hwnd : super::super::Foundation:: HWND, pszclasslist : windows_sys::core::PCWSTR) -> HTHEME { let _ = hwnd; let _ = pszclasslist; crate::missing("OpenThemeData"); unsafe { core::mem::zeroed() } }
+pub unsafe extern "system" fn OpenThemeData(hwnd : super::super::Foundation:: HWND, pszclasslist : windows_sys::core::PCWSTR) -> HTHEME { unsafe { crate::imp::OpenThemeData(hwnd, pszclasslist) } }
 pub type PFTASKDIALOGCALLBACK = Option<unsafe extern "system" fn(hwnd: super::super::Foundation::HWND, msg: TASKDIALOG_NOTIFICATIONS, wparam: super::super::Foundation::WPARAM, lparam: super::super::Foundation::LPARAM, lprefdata: isize) -> windows_sys::core::HRESULT>;
 pub const SBP_ARROWBTN: SCROLLBARPARTS = 1i32;
 pub const SBP_LOWERTRACKVERT: SCROLLBARPARTS = 6i32;
@@ -143,5 +143,5 @@ pub struct TTTOOLINFOW {
     pub lParam: super::super::Foundation::LPARAM,
     pub lpReserved: *mut core::ffi::c_void,
 }
-pub unsafe extern "system" fn TaskDialogIndirect(ptaskconfig : *const TASKDIALOGCONFIG, pnbutton : *mut i32, pnradiobutton : *mut i32, pfverificationflagchecked : *mut super::super::Foundation:: BOOL) -> windows_sys::core::HRESULT { let _ = ptaskconfig; let _ = pnbutton; let _ = pnradiobutton; let _ = pfverificationflagchecked; crate::missing("TaskDialogIndirect"); unsafe { core::mem::zeroed() } }
+pub unsafe extern "system" fn TaskDialogIndirect(ptaskconfig : *const TASKDIALOGCONFIG, pnbutton : *mut i32, pnradiobutton : *mut i32, pfverificationflagchecked : *mut super::super::Foundation:: BOOL) -> windows_sys::core::HRESULT { unsafe { crate::imp::TaskDialogIndirect(ptaskconfig, pnbutton, pnradiobutton, pfverificationflagchecked) } }
 pub const WM_MOUSELEAVE: u32 = 675u32;

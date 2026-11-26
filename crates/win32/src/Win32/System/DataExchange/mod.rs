@@ -7,7 +7,7 @@ pub struct COPYDATASTRUCT {
     pub cbData: u32,
     pub lpData: *mut core::ffi::c_void,
 }
-pub unsafe extern "system" fn CloseClipboard() -> super::super::Foundation:: BOOL { crate::missing("CloseClipboard"); unsafe { core::mem::zeroed() } }
-pub unsafe extern "system" fn EmptyClipboard() -> super::super::Foundation:: BOOL { crate::missing("EmptyClipboard"); unsafe { core::mem::zeroed() } }
-pub unsafe extern "system" fn OpenClipboard(hwndnewowner : super::super::Foundation:: HWND) -> super::super::Foundation:: BOOL { let _ = hwndnewowner; crate::missing("OpenClipboard"); unsafe { core::mem::zeroed() } }
-pub unsafe extern "system" fn SetClipboardData(uformat : u32, hmem : super::super::Foundation:: HANDLE) -> super::super::Foundation:: HANDLE { let _ = uformat; let _ = hmem; crate::missing("SetClipboardData"); unsafe { core::mem::zeroed() } }
+pub unsafe extern "system" fn CloseClipboard() -> super::super::Foundation:: BOOL { unsafe { crate::imp::CloseClipboard() } }
+pub unsafe extern "system" fn EmptyClipboard() -> super::super::Foundation:: BOOL { unsafe { crate::imp::EmptyClipboard() } }
+pub unsafe extern "system" fn OpenClipboard(hwndnewowner : super::super::Foundation:: HWND) -> super::super::Foundation:: BOOL { unsafe { crate::imp::OpenClipboard(hwndnewowner) } }
+pub unsafe extern "system" fn SetClipboardData(uformat : u32, hmem : super::super::Foundation:: HANDLE) -> super::super::Foundation:: HANDLE { unsafe { crate::imp::SetClipboardData(uformat, hmem) } }

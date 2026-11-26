@@ -295,7 +295,7 @@ fn paint_list(window: &Rc<Window>, hwnd: HWND, dc: HDC) {
     };
     let drawn = window.style.get() & LBS_OWNERDRAWFIXED as u32 != 0;
     let keys = focused(hwnd);
-    let (_, _, line, _, accent) = palette();
+    let (_, _, line, _, _) = palette();
     unsafe { FillRect(dc, &area, brush) };
     for index in top..count.min(top + (area.bottom / row) as usize + 1) {
         let place = RECT { left: 0, top: (index - top) as i32 * row, right: area.right, bottom: (index - top + 1) as i32 * row };
@@ -321,7 +321,9 @@ fn paint_list(window: &Rc<Window>, hwnd: HWND, dc: HDC) {
         let length = (area.bottom as usize * shown / count).max(18) as i32;
         let travel = area.bottom - length;
         let offset = travel * top as i32 / (count - shown).max(1) as i32;
-        gdi::rounded(dc, RECT { left: area.right - 7, top: offset + 2, right: area.right - 2, bottom: offset + length - 2 }, 2.5, accent & 0x7f7f7f | line, line);
+        // Thin and grey, as Windows 11 shows a scroll bar that is not being used.
+        let mark = if DARK.get() { 0x9A8F92 } else { 0x8A8286 };
+        gdi::rounded(dc, RECT { left: area.right - 5, top: offset + 2, right: area.right - 2, bottom: offset + length - 2 }, 1.5, mark, mark);
     }
 }
 
@@ -612,5 +614,64 @@ unsafe extern "system" fn edit_proc(hwnd: HWND, message: u32, w: WPARAM, l: LPAR
             0
         }
         _ => unsafe { DefWindowProcW(hwnd, message, w, l) },
+    }
+}
+
+// --- Keys in a dialog ---------------------------------------------------
+
+/// The children of a dialog that Tab stops at, in the order they were made.
+fn stops(dialog: &Window) -> Vec<Rc<Window>> {
+    window::children(dialog)
+        .into_iter()
+        .filter(|child| child.style.get() & WS_TABSTOP != 0 && !child.view.isHidden() && child.enabled.get())
+        .collect()
+}
+
+/// What Windows does with a key in a dialog before the dialog's own controls
+/// see it: Tab moves between controls, Enter presses the default button, Esc
+/// cancels. True when the key was used up.
+pub unsafe fn IsDialogMessageW(hdlg: HWND, lpmsg: *const MSG) -> i32 {
+    let (Some(dialog), Some(message)) = (find(hdlg), unsafe { lpmsg.as_ref() }) else { return 0 };
+    if message.message != WM_KEYDOWN || !(message.hwnd == hdlg || unsafe { window::IsChild(hdlg, message.hwnd) } != 0) {
+        return 0;
+    }
+    let focus = unsafe { window::GetFocus() };
+    let command = |id: isize, from: HWND| send(hdlg, WM_COMMAND, ((BN_CLICKED as usize) << 16) | (id as usize & 0xffff), from as isize);
+    match message.wParam as u16 {
+        VK_TAB => {
+            let stops = stops(&dialog);
+            if stops.is_empty() {
+                return 0;
+            }
+            let at = stops.iter().position(|stop| handle(&stop.view) == focus);
+            let back = unsafe { crate::imp::message::GetKeyState(VK_SHIFT as i32) } < 0;
+            let next = match (at, back) {
+                (Some(at), false) => (at + 1) % stops.len(),
+                (Some(at), true) => (at + stops.len() - 1) % stops.len(),
+                (None, false) => 0,
+                (None, true) => stops.len() - 1,
+            };
+            unsafe { window::SetFocus(handle(&stops[next].view)) };
+            1
+        }
+        VK_RETURN => {
+            let focused = find(focus);
+            // A field of several lines keeps Enter for itself.
+            if focused.as_ref().is_some_and(|window| window.class.eq_ignore_ascii_case("EDIT") && window.style.get() & ES_WANTRETURN as u32 != 0) {
+                return 0;
+            }
+            let pressed = focused.filter(|window| window.class.eq_ignore_ascii_case("BUTTON") && window.style.get() & 0xf <= BS_DEFPUSHBUTTON as u32);
+            let default = window::children(&dialog).into_iter().find(|child| child.class.eq_ignore_ascii_case("BUTTON") && child.style.get() & 0xf == BS_DEFPUSHBUTTON as u32 && child.enabled.get());
+            match pressed.or(default) {
+                Some(button) => command(control_id(&button), handle(&button.view)),
+                None => command(IDOK as isize, std::ptr::null_mut()),
+            };
+            1
+        }
+        VK_ESCAPE => {
+            command(IDCANCEL as isize, std::ptr::null_mut());
+            1
+        }
+        _ => 0,
     }
 }

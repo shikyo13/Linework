@@ -2,10 +2,10 @@
 #![allow(non_snake_case, non_camel_case_types, non_upper_case_globals, clippy::all)]
 pub type BOOL = i32;
 pub type COLORREF = u32;
-pub unsafe extern "system" fn CloseHandle(hobject : HANDLE) -> BOOL { let _ = hobject; crate::missing("CloseHandle"); unsafe { core::mem::zeroed() } }
+pub unsafe extern "system" fn CloseHandle(hobject : HANDLE) -> BOOL { unsafe { crate::imp::CloseHandle(hobject) } }
 pub const ERROR_CLASS_ALREADY_EXISTS: WIN32_ERROR = 1410u32;
 pub unsafe extern "system" fn GetLastError() -> WIN32_ERROR { unsafe { crate::imp::GetLastError() } }
-pub unsafe extern "system" fn GlobalFree(hmem : HGLOBAL) -> HGLOBAL { let _ = hmem; crate::missing("GlobalFree"); unsafe { core::mem::zeroed() } }
+pub unsafe extern "system" fn GlobalFree(hmem : HGLOBAL) -> HGLOBAL { unsafe { crate::imp::GlobalFree(hmem) } }
 pub type HANDLE = *mut core::ffi::c_void;
 pub type HGLOBAL = *mut core::ffi::c_void;
 pub type HINSTANCE = *mut core::ffi::c_void;

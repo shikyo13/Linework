@@ -183,6 +183,18 @@ define_class!(
             crate::imp::message::key_to(handle(self), event);
         }
 
+        // Files dragged from the Finder onto a window that takes them.
+        #[unsafe(method(draggingEntered:))]
+        fn drag_entered(&self, _: &objc2::runtime::AnyObject) -> usize {
+            // 1: the files will be opened, not moved.
+            1
+        }
+
+        #[unsafe(method(performDragOperation:))]
+        fn dropped(&self, drag: &objc2::runtime::AnyObject) -> bool {
+            take_drop(self, drag)
+        }
+
         // The editor tells the window around it what happened in it.
         #[unsafe(method(linework_notify:))]
         fn editor_says(&self, notification: *const core::ffi::c_void) {
@@ -204,6 +216,17 @@ impl LwView {
         }
         view
     }
+}
+
+fn take_drop(view: &NSView, drag: &AnyObject) -> bool {
+    let board: Option<Retained<objc2_app_kit::NSPasteboard>> = unsafe { msg_send![drag, draggingPasteboard] };
+    let Some(board) = board else { return false };
+    let names = objc2_foundation::NSString::from_str("NSFilenamesPboardType");
+    let Some(list) = board.propertyListForType(&names) else { return false };
+    let Ok(list) = list.downcast::<objc2_foundation::NSArray>() else { return false };
+    let paths: Vec<String> = list.iter().filter_map(|path| path.downcast::<objc2_foundation::NSString>().ok()).map(|path| path.to_string()).collect();
+    crate::imp::misc::drop_files(handle(view), paths);
+    true
 }
 
 /// Where an event happened, on the screen in Windows' terms.

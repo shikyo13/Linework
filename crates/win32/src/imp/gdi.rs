@@ -868,3 +868,58 @@ pub fn save_picture(hdc: HDC, path: &std::path::Path) -> bool {
 
 #[allow(dead_code)]
 pub(crate) fn unused(_: *mut c_void, _: POINT) {}
+
+// --- Pictures given as rows of pixels -----------------------------------
+
+pub unsafe fn SetStretchBltMode(_: HDC, mode: STRETCH_BLT_MODE) -> i32 {
+    mode
+}
+
+pub unsafe fn CreateBitmap(nwidth: i32, nheight: i32, _: u32, _: u32, _: *const c_void) -> HBITMAP {
+    unsafe { CreateCompatibleBitmap(std::ptr::null_mut(), nwidth, nheight) }
+}
+
+/// Asked for by tests of the Windows drawing only.
+pub unsafe fn GetPixel(_: HDC, _: i32, _: i32) -> COLORREF {
+    u32::MAX
+}
+
+/// Draws part of a picture held as 32-bit pixels, blue first, stretched into a
+/// rectangle with no smoothing: the document map is drawn this way.
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn StretchDIBits(hdc: HDC, xdest: i32, ydest: i32, destwidth: i32, destheight: i32, xsrc: i32, ysrc: i32, srcwidth: i32, srcheight: i32, lpbits: *const c_void, lpbmi: *const BITMAPINFO, _: DIB_USAGE, _: ROP_CODE) -> i32 {
+    let Some(info) = (unsafe { lpbmi.as_ref() }) else { return 0 };
+    let (width, rows) = (info.bmiHeader.biWidth, info.bmiHeader.biHeight);
+    if lpbits.is_null() || info.bmiHeader.biBitCount != 32 || width <= 0 || rows == 0 || srcwidth <= 0 || srcheight <= 0 {
+        return 0;
+    }
+    let (down, height) = (rows < 0, rows.abs());
+    let (left, top) = (xsrc.clamp(0, width - 1), ysrc.clamp(0, height - 1));
+    let (wide, high) = (srcwidth.min(width - left), srcheight.min(height - top));
+    let part = unsafe {
+        NSBitmapImageRep::initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bytesPerRow_bitsPerPixel(
+            NSBitmapImageRep::alloc(), std::ptr::null_mut(), wide as isize, high as isize, 8, 4, true, false, NSDeviceRGBColorSpace, wide as isize * 4, 32,
+        )
+    };
+    let Some(part) = part else { return 0 };
+    let source = unsafe { std::slice::from_raw_parts(lpbits as *const u32, (width * height) as usize) };
+    let target = unsafe { std::slice::from_raw_parts_mut(part.bitmapData(), (wide * high * 4) as usize) };
+    for row in 0..high {
+        // A picture stored upwards has its first row last.
+        let from = if down { top + row } else { height - 1 - top - row };
+        for column in 0..wide {
+            let pixel = source[(from * width + left + column) as usize];
+            let at = ((row * wide + column) * 4) as usize;
+            target[at..at + 4].copy_from_slice(&[(pixel >> 16) as u8, (pixel >> 8) as u8, pixel as u8, 255]);
+        }
+    }
+    let to = NSRect::new(NSPoint::new(xdest as f64, ydest as f64), NSSize::new(destwidth as f64, destheight as f64));
+    let whole = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0));
+    on(hdc, |context| unsafe {
+        if let Some(target) = &context.target {
+            target.setImageInterpolation(objc2_app_kit::NSImageInterpolation::None);
+        }
+        part.drawInRect_fromRect_operation_fraction_respectFlipped_hints(to, whole, objc2_app_kit::NSCompositingOperation::Copy, 1.0, true, None);
+    });
+    high
+}
