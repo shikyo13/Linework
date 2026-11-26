@@ -1,13 +1,15 @@
 #!/bin/sh
 # Puts the macOS program into an application bundle.
 #
-#   tools/mac-app.sh PROGRAM SCINTILLA_SOURCE OUTPUT_FOLDER
+#   tools/mac-app.sh PROGRAM SCINTILLA_SOURCE OUTPUT_FOLDER [IDENTITY]
 #
 # PROGRAM is the `linework` binary built at the repository root. SCINTILLA_SOURCE is the
 # unpacked Scintilla archive, for the two pointer images Scintilla looks for in
-# the bundle. The result is OUTPUT_FOLDER/Linework.app, not yet signed.
+# the bundle. The result is OUTPUT_FOLDER/Linework.app. With IDENTITY, a Developer ID
+# Application certificate's name or hash, the bundle is signed with it, with the
+# hardened runtime and Apple's timestamp, ready to be notarized.
 set -eu
-[ $# -eq 3 ] || { echo "usage: $0 PROGRAM SCINTILLA_SOURCE OUTPUT_FOLDER" >&2; exit 2; }
+[ $# -eq 3 ] || [ $# -eq 4 ] || { echo "usage: $0 PROGRAM SCINTILLA_SOURCE OUTPUT_FOLDER [IDENTITY]" >&2; exit 2; }
 program=$1
 images=$2/cocoa/res
 here=$(cd "$(dirname "$0")/.." && pwd)
@@ -52,4 +54,7 @@ cat > "$app/Contents/Info.plist" <<PLIST
 </dict>
 </plist>
 PLIST
+if [ $# -eq 4 ]; then
+    codesign --force --options runtime --timestamp --sign "$4" "$app"
+fi
 echo "$app"
