@@ -76,6 +76,32 @@ fn binary_files_open_as_hex_and_save_back() -> io::Result<()> {
 }
 
 #[test]
+fn text_with_control_lines_first_opens_as_text() -> io::Result<()> {
+    let dir = tempfile::tempdir()?;
+    // A password list sorted by its bytes: lines of zero bytes and control
+    // characters come first, then ordinary text.
+    let mut bytes = Vec::new();
+    for i in 0..4000u32 {
+        bytes.extend_from_slice(&[0, (i % 31) as u8, 0, 1]);
+        bytes.push(b'\n');
+    }
+    while bytes.len() < 600_000 {
+        bytes.extend_from_slice(format!("password{}\n", bytes.len()).as_bytes());
+    }
+    let path = dir.path().join("sorted.txt");
+    fs::write(&path, &bytes)?;
+    let d = Document::open(&path)?;
+    assert_eq!(d.encoding_name(), "UTF-8");
+    assert_eq!(d.read(0, bytes.len())?, bytes);
+    // Binary inside as well: still refused as text.
+    let blob: Vec<u8> = (0..=255u8).cycle().take(600_000).collect();
+    let path = dir.path().join("blob.bin");
+    fs::write(&path, &blob)?;
+    assert!(Document::open(&path).err().unwrap().to_string().contains("binary data"));
+    Ok(())
+}
+
+#[test]
 fn new_files_start_clean_in_their_encoding() -> io::Result<()> {
     let dir = tempfile::tempdir()?;
     let path = dir.path().join("new.txt");

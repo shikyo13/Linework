@@ -274,11 +274,26 @@ impl Codec {
             }
             return Err(invalid("This file appears to contain binary data"));
         }
+        Ok(Self::detect_text(sample, final_chunk))
+    }
+    /// The encoding of a sample known to be text: UTF-8 when it is, else a guess.
+    pub fn detect_text(sample: &[u8], final_chunk: bool) -> Self {
         match std::str::from_utf8(sample) {
-            Ok(_) => Ok(Self::Utf8),
-            Err(e) if !final_chunk && e.error_len().is_none() => Ok(Self::Utf8),
-            Err(_) => Ok(guess(sample, final_chunk)),
+            Ok(_) => Self::Utf8,
+            Err(e) if !final_chunk && e.error_len().is_none() => Self::Utf8,
+            Err(_) => guess(sample, final_chunk),
         }
+    }
+    /// Whether a file whose start holds zero bytes is text inside: every sample
+    /// taken from within it has no zero byte and almost no other control
+    /// characters. A file sorted by its bytes, such as a password list, puts its
+    /// lines of control characters first; a binary file is binary throughout.
+    pub fn text_inside(samples: &[Vec<u8>]) -> bool {
+        !samples.is_empty()
+            && samples.iter().all(|s| {
+                let controls = s.iter().filter(|&&c| c < 32 && !matches!(c, 9..=13 | 27)).count();
+                !s.is_empty() && !s.contains(&0) && controls * 100 <= s.len()
+            })
     }
     pub fn native(self) -> bool {
         matches!(self, Self::Utf8 | Self::Bom)

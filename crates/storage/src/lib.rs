@@ -256,7 +256,23 @@ impl Document {
         read_at(&file, 0, &mut first)?;
         let mut codec = match forced {
             Some(x) => x,
-            None => Codec::detect(&first, size == first.len() as u64)?,
+            None => match Codec::detect(&first, size == first.len() as u64) {
+                // Zero bytes at the start of a large file: judged by three
+                // samples from within it, a quarter, half and three quarters in.
+                Err(e) if first.contains(&0) && size >= 4 * first.len() as u64 => {
+                    let mut samples = Vec::with_capacity(3);
+                    for k in 1..=3 {
+                        let mut s = vec![0; first.len()];
+                        read_at(&file, size / 4 * k, &mut s)?;
+                        samples.push(s);
+                    }
+                    if !Codec::text_inside(&samples) {
+                        return Err(e);
+                    }
+                    Codec::detect_text(&first, false)
+                }
+                r => r?,
+            },
         };
         // The regular editing surface transfers the entire document to a UTF-8
         // control. Confirm the encoding before that transfer so an isolated
