@@ -796,6 +796,7 @@ pub unsafe fn SetFocus(hwnd: HWND) -> HWND {
         FOCUSING.set(true);
         frame.makeFirstResponder(Some(&key_view(&window)));
         FOCUSING.set(false);
+        crate::imp::controls::took_keys(&window);
     }
     previous
 }

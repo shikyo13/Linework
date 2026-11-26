@@ -42,6 +42,9 @@ pub(crate) fn proc_of(class: &str) -> Option<Proc> {
         "LISTBOX" => Some(list_proc),
         "EDIT" => Some(edit_proc),
         "LWMENU" => Some(crate::imp::menu::proc()),
+        "SCROLLBAR" => Some(scroll_proc),
+        "COMBOBOX" => Some(combo_proc),
+        "TOOLTIPS_CLASS32" => Some(tip_proc),
         _ => None,
     }
 }
@@ -51,6 +54,17 @@ pub(crate) fn key_view(window: &Window) -> Option<Retained<NSView>> {
     let state = window.control.borrow();
     let edit = state.as_ref()?.downcast_ref::<Edit>()?;
     Some(Retained::into_super(Retained::into_super(edit.field.clone())))
+}
+
+/// After a text field has taken the keys: its caret is the colour of its text,
+/// as on Windows, and not the Mac's accent colour.
+pub(crate) fn took_keys(window: &Window) {
+    state(window, |edit: &mut Edit| {
+        if let Some(editor) = edit.field.currentEditor() {
+            let ink = gdi::color(if edit.colors.0 == u32::MAX { palette().3 } else { edit.colors.0 });
+            let _: () = unsafe { msg_send![&*editor, setInsertionPointColor: &*ink] };
+        }
+    });
 }
 
 fn state<T: 'static, R>(window: &Window, run: impl FnOnce(&mut T) -> R) -> Option<R> {
@@ -517,7 +531,7 @@ unsafe extern "system" fn edit_proc(hwnd: HWND, message: u32, w: WPARAM, l: LPAR
             let many = window.style.get() & ES_MULTILINE as u32 != 0;
             field.setBezeled(false);
             field.setBordered(false);
-            field.setDrawsBackground(true);
+            field.setDrawsBackground(false);
             field.setFocusRingType(objc2_app_kit::NSFocusRingType::None);
             field.setUsesSingleLineMode(!many);
             if let Some(cell) = field.cell() {
@@ -554,7 +568,6 @@ unsafe extern "system" fn edit_proc(hwnd: HWND, message: u32, w: WPARAM, l: LPAR
                 if edit.colors != (text, back) {
                     edit.colors = (text, back);
                     edit.field.setTextColor(Some(&gdi::color(text)));
-                    edit.field.setBackgroundColor(Some(&gdi::color(back)));
                 }
             });
             if window.style.get() & WS_BORDER != 0 {
@@ -673,5 +686,230 @@ pub unsafe fn IsDialogMessageW(hdlg: HWND, lpmsg: *const MSG) -> i32 {
             1
         }
         _ => 0,
+    }
+}
+
+// --- Scroll bars --------------------------------------------------------
+// A bar on its own, as the large-file view uses: its owner sets a range and a
+// place, and is told where the person drags or clicks.
+
+#[derive(Default)]
+struct Scroll {
+    least: i32,
+    most: i32,
+    at: i32,
+    /// While the mark is dragged: how far below the mark's top it was taken.
+    held: Option<i32>,
+}
+
+impl Scroll {
+    /// The mark's top and length within a bar this long.
+    fn mark(&self, length: i32) -> (i32, i32) {
+        let size = (length / 8).clamp(24.min(length), length);
+        let span = (self.most - self.least).max(1);
+        ((length - size) * (self.at - self.least).clamp(0, span) / span, size)
+    }
+}
+
+fn scrolled(window: &Window, hwnd: HWND, code: u32, at: i32) {
+    let _ = window;
+    send(parent(hwnd), WM_VSCROLL, (code as usize) | ((at as u16 as usize) << 16), hwnd as isize);
+}
+
+unsafe extern "system" fn scroll_proc(hwnd: HWND, message: u32, w: WPARAM, l: LPARAM) -> LRESULT {
+    let Some(window) = find(hwnd) else { return 0 };
+    let area = client(hwnd);
+    let y = (l >> 16) as i16 as i32;
+    match message {
+        WM_CREATE => {
+            window.control.replace(Some(Box::new(Scroll { most: 100, ..Scroll::default() })));
+            0
+        }
+        // 0xE2 sets the range, 0xE0 the place, 0xE1 reads the place.
+        0xE2 => {
+            state(&window, |bar: &mut Scroll| (bar.least, bar.most) = (w as i32, l as i32));
+            window.view.setNeedsDisplay(true);
+            0
+        }
+        0xE0 => {
+            let before = state(&window, |bar: &mut Scroll| std::mem::replace(&mut bar.at, w as i32)).unwrap_or(0);
+            if before != w as i32 {
+                window.view.setNeedsDisplay(true);
+            }
+            before as isize
+        }
+        0xE1 => state(&window, |bar: &mut Scroll| bar.at as isize).unwrap_or(0),
+        WM_PAINT => unsafe {
+            let mut paint: PAINTSTRUCT = std::mem::zeroed();
+            let dc = window::BeginPaint(hwnd, &mut paint);
+            let (top, size) = state(&window, |bar: &mut Scroll| bar.mark(area.bottom)).unwrap_or((0, 0));
+            let (back, _, _, _, _) = palette();
+            SetDCBrushColor(dc, back);
+            FillRect(dc, &area, GetStockObject(DC_BRUSH) as HBRUSH);
+            let mark = if DARK.get() { 0x6A6063 } else { 0xB5ADB0 };
+            let inset = ((area.right - 6) / 2).max(1);
+            gdi::rounded(dc, RECT { left: inset, top: top + 2, right: area.right - inset, bottom: top + size - 2 }, 3.0, mark, mark);
+            window::EndPaint(hwnd, &paint);
+            0
+        },
+        WM_LBUTTONDOWN => unsafe {
+            let (top, size) = state(&window, |bar: &mut Scroll| bar.mark(area.bottom)).unwrap_or((0, 0));
+            if y < top {
+                scrolled(&window, hwnd, SB_PAGEUP as u32, 0);
+            } else if y >= top + size {
+                scrolled(&window, hwnd, SB_PAGEDOWN as u32, 0);
+            } else {
+                state(&window, |bar: &mut Scroll| bar.held = Some(y - top));
+                window::SetCapture(hwnd);
+            }
+            0
+        },
+        WM_MOUSEMOVE | WM_LBUTTONUP => {
+            let moved = state(&window, |bar: &mut Scroll| {
+                let grip = bar.held?;
+                let (_, size) = bar.mark(area.bottom);
+                let travel = (area.bottom - size).max(1);
+                let place = bar.least + (bar.most - bar.least) * (y - grip).clamp(0, travel) / travel;
+                bar.at = place;
+                if message == WM_LBUTTONUP {
+                    bar.held = None;
+                }
+                Some(place)
+            })
+            .flatten();
+            if let Some(place) = moved {
+                window.view.setNeedsDisplay(true);
+                if message == WM_LBUTTONUP {
+                    unsafe { window::ReleaseCapture() };
+                    scrolled(&window, hwnd, SB_THUMBPOSITION as u32, place);
+                } else {
+                    scrolled(&window, hwnd, SB_THUMBTRACK as u32, place);
+                }
+            }
+            0
+        }
+        WM_MOUSEWHEEL => {
+            let up = (w >> 16) as i16 > 0;
+            scrolled(&window, hwnd, if up { SB_LINEUP } else { SB_LINEDOWN } as u32, 0);
+            0
+        }
+        _ => unsafe { DefWindowProcW(hwnd, message, w, l) },
+    }
+}
+
+// --- Choice boxes -------------------------------------------------------
+
+struct Combo {
+    button: Retained<objc2_app_kit::NSPopUpButton>,
+}
+
+define_class!(
+    // SAFETY: NSObject has no subclassing requirements, and `Picking` has no `Drop`.
+    #[unsafe(super(NSObject))]
+    #[thread_kind = MainThreadOnly]
+    struct Picking;
+
+    unsafe impl NSObjectProtocol for Picking {}
+
+    impl Picking {
+        #[unsafe(method(picked:))]
+        fn picked(&self, button: &NSView) {
+            let Some(owner) = (unsafe { button.superview() }) else { return };
+            let hwnd = handle(&owner);
+            if let Some(window) = find(hwnd) {
+                // 1: the choice changed.
+                notify(&window, hwnd, 1);
+            }
+        }
+    }
+);
+
+thread_local! {
+    static PICKING: std::cell::OnceCell<Retained<Picking>> = const { std::cell::OnceCell::new() };
+}
+
+unsafe extern "system" fn combo_proc(hwnd: HWND, message: u32, w: WPARAM, l: LPARAM) -> LRESULT {
+    let Some(window) = find(hwnd) else { return 0 };
+    match message {
+        WM_CREATE => {
+            let mtm = window::mtm();
+            let button = unsafe { objc2_app_kit::NSPopUpButton::initWithFrame_pullsDown(objc2_app_kit::NSPopUpButton::alloc(mtm), window.view.bounds(), false) };
+            button.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewHeightSizable);
+            PICKING.with(|cell| {
+                let picking = cell.get_or_init(|| unsafe { msg_send![Picking::alloc(mtm), init] });
+                unsafe {
+                    button.setTarget(Some(&**picking));
+                    button.setAction(Some(objc2::sel!(picked:)));
+                }
+            });
+            unsafe { window.view.addSubview(&button) };
+            window.control.replace(Some(Box::new(Combo { button })));
+            0
+        }
+        CB_ADDSTRING => {
+            let text = unsafe { wide_name(l as *const u16) };
+            state(&window, |combo: &mut Combo| {
+                combo.button.addItemWithTitle(&NSString::from_str(&text));
+                combo.button.numberOfItems() - 1
+            })
+            .unwrap_or(-1)
+        }
+        CB_SETCURSEL => {
+            state(&window, |combo: &mut Combo| combo.button.selectItemAtIndex(w as isize));
+            w as isize
+        }
+        CB_GETCURSEL => state(&window, |combo: &mut Combo| combo.button.indexOfSelectedItem()).unwrap_or(-1),
+        WM_ENABLE => {
+            state(&window, |combo: &mut Combo| combo.button.setEnabled(w != 0));
+            0
+        }
+        _ => unsafe { DefWindowProcW(hwnd, message, w, l) },
+    }
+}
+
+// --- Tooltips -----------------------------------------------------------
+// The words shown when the pointer rests on part of a window. The Mac shows
+// them in its own tooltip; the window only has to say which part says what.
+
+#[derive(Default)]
+struct Tips {
+    /// For each tool: the window it is on, its number there, the tag AppKit
+    /// gave, and its words, which AppKit does not keep alive itself.
+    tools: Vec<(usize, usize, isize, Retained<NSString>)>,
+}
+
+unsafe extern "system" fn tip_proc(hwnd: HWND, message: u32, w: WPARAM, l: LPARAM) -> LRESULT {
+    let Some(window) = find(hwnd) else { return 0 };
+    match message {
+        WM_CREATE => {
+            window.control.replace(Some(Box::new(Tips::default())));
+            0
+        }
+        TTM_ADDTOOLW | TTM_NEWTOOLRECTW => {
+            let Some(tool) = (unsafe { (l as *const TTTOOLINFOW).as_ref() }) else { return 0 };
+            let Some(host) = find(tool.hwnd) else { return 0 };
+            let key = (tool.hwnd as usize, tool.uId);
+            let place = gdi::ns_rect(&tool.rect);
+            state(&window, |tips: &mut Tips| {
+                let known = tips.tools.iter().position(|entry| (entry.0, entry.1) == key);
+                // The words themselves are the tooltip's owner: AppKit shows an owner's description.
+                let words = match (known, message) {
+                    (None, TTM_ADDTOOLW) if !tool.lpszText.is_null() => NSString::from_str(&unsafe { wide_name(tool.lpszText) }),
+                    // A new rectangle: AppKit has no call for that, so the tool
+                    // is taken away and put back with the words it had.
+                    (Some(at), TTM_NEWTOOLRECTW) => {
+                        let (_, _, tag, words) = tips.tools.remove(at);
+                        host.view.removeToolTip(tag);
+                        words
+                    }
+                    _ => return 0,
+                };
+                let tag = unsafe { host.view.addToolTipRect_owner_userData(place, &words, std::ptr::null_mut()) };
+                tips.tools.push((key.0, key.1, tag, words));
+                1
+            })
+            .unwrap_or(0)
+        }
+        _ => unsafe { DefWindowProcW(hwnd, message, w, l) },
     }
 }
