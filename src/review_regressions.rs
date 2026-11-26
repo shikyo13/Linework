@@ -23,10 +23,14 @@ struct Desktop {
 impl Desktop {
     fn create() -> Self {
         unsafe {
+            // One desktop per test: tests run at once, and a shared name lets one
+            // test close the desktop while another is opening it.
+            static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+            let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let before =
                 GetThreadDesktop(windows_sys::Win32::System::Threading::GetCurrentThreadId());
             let handle = CreateDesktopW(
-                wide(&format!("LineworkReview{}", std::process::id())).as_ptr(),
+                wide(&format!("LineworkReview{}-{n}", std::process::id())).as_ptr(),
                 null(),
                 null(),
                 0,
