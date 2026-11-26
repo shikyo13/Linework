@@ -1,0 +1,132 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+		AA0000000000000000000001 /* Linework.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Linework.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		AA0000000000000000000002 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		AA0000000000000000000003 /* Linework.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Linework.xcconfig; sourceTree = "<group>"; };
+		AA0000000000000000000004 /* build-app.sh */ = {isa = PBXFileReference; lastKnownFileType = text.script.sh; path = "build-app.sh"; sourceTree = "<group>"; };
+		AA0000000000000000000010 = {
+			isa = PBXGroup;
+			children = (
+				AA0000000000000000000002 /* Info.plist */,
+				AA0000000000000000000003 /* Linework.xcconfig */,
+				AA0000000000000000000004 /* build-app.sh */,
+				AA0000000000000000000011 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		AA0000000000000000000011 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				AA0000000000000000000001 /* Linework.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		AA0000000000000000000020 /* Linework */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AA0000000000000000000041 /* Build configuration list for PBXNativeTarget "Linework" */;
+			buildPhases = (
+				AA0000000000000000000030 /* Build with cargo */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = Linework;
+			productName = Linework;
+			productReference = AA0000000000000000000001 /* Linework.app */;
+			productType = "com.apple.product-type.application";
+		};
+		AA0000000000000000000030 /* Build with cargo */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+			);
+			name = "Build with cargo";
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "exec \"$SRCROOT/build-app.sh\"\n";
+		};
+		AA0000000000000000000050 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastUpgradeCheck = 1600;
+			};
+			buildConfigurationList = AA0000000000000000000040 /* Build configuration list for PBXProject "Linework" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = AA0000000000000000000010;
+			productRefGroup = AA0000000000000000000011 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				AA0000000000000000000020 /* Linework */,
+			);
+		};
+		AA0000000000000000000060 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = AA0000000000000000000003 /* Linework.xcconfig */;
+			buildSettings = {
+				SDKROOT = macosx;
+			};
+			name = Debug;
+		};
+		AA0000000000000000000061 /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = AA0000000000000000000003 /* Linework.xcconfig */;
+			buildSettings = {
+				SDKROOT = macosx;
+			};
+			name = Release;
+		};
+		AA0000000000000000000062 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = AA0000000000000000000003 /* Linework.xcconfig */;
+			buildSettings = {
+			};
+			name = Debug;
+		};
+		AA0000000000000000000063 /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = AA0000000000000000000003 /* Linework.xcconfig */;
+			buildSettings = {
+			};
+			name = Release;
+		};
+		AA0000000000000000000040 /* Build configuration list for PBXProject "Linework" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AA0000000000000000000060 /* Debug */,
+				AA0000000000000000000061 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		AA0000000000000000000041 /* Build configuration list for PBXNativeTarget "Linework" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AA0000000000000000000062 /* Debug */,
+				AA0000000000000000000063 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+	};
+	rootObject = AA0000000000000000000050 /* Project object */;
+}

@@ -1,0 +1,21 @@
+// Settings for the macOS app. What differs from one Mac to the next goes in
+// Local.xcconfig beside this file, which Git ignores:
+//
+//   LINEWORK_MAC_LIBS  = folder holding libscintilla.a and liblexilla.a (tools/mac-libs.sh)
+//   LINEWORK_SCINTILLA = the unpacked Scintilla source, for its pointer images
+//   CARGO_TARGET_DIR   = where cargo builds, when not the repository's target folder
+//   DEVELOPMENT_TEAM   = the Apple team that signs the app
+PRODUCT_NAME = Linework
+PRODUCT_BUNDLE_IDENTIFIER = com.zerosecurity.linework
+MARKETING_VERSION = 1.8.0
+MACOSX_DEPLOYMENT_TARGET = 12.0
+ALWAYS_SEARCH_USER_PATHS = NO
+ARCHS = arm64
+INFOPLIST_FILE = Info.plist
+GENERATE_INFOPLIST_FILE = NO
+ENABLE_HARDENED_RUNTIME = YES
+ENABLE_USER_SCRIPT_SANDBOXING = NO
+CODE_SIGN_STYLE = Manual
+CODE_SIGN_IDENTITY = Developer ID Application
+OTHER_CODE_SIGN_FLAGS = --timestamp
+#include? "Local.xcconfig"

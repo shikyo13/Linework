@@ -11,3 +11,7 @@ Thumbs.db
 
 # Local notes, not part of the project
 /docs/reference/
+/mac/Local.xcconfig
+/mac/build/
+/mac/Linework.xcodeproj/xcuserdata/
+/mac/Linework.xcodeproj/project.xcworkspace/xcuserdata/

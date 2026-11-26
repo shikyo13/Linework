@@ -1,15 +1,14 @@
 #!/bin/sh
 # Puts the macOS program into an application bundle.
 #
-#   tools/mac-app.sh PROGRAM SCINTILLA_SOURCE OUTPUT_FOLDER [IDENTITY]
+#   tools/mac-app.sh PROGRAM SCINTILLA_SOURCE OUTPUT_FOLDER
 #
 # PROGRAM is the `linework` binary built at the repository root. SCINTILLA_SOURCE is the
 # unpacked Scintilla archive, for the two pointer images Scintilla looks for in
-# the bundle. The result is OUTPUT_FOLDER/Linework.app. With IDENTITY, a Developer ID
-# Application certificate's name or hash, the bundle is signed with it, with the
-# hardened runtime and Apple's timestamp, ready to be notarized.
+# the bundle. The result is OUTPUT_FOLDER/Linework.app, unsigned. For a signed app,
+# build mac/Linework.xcodeproj, which calls this and lets Xcode do the signing.
 set -eu
-[ $# -eq 3 ] || [ $# -eq 4 ] || { echo "usage: $0 PROGRAM SCINTILLA_SOURCE OUTPUT_FOLDER [IDENTITY]" >&2; exit 2; }
+[ $# -eq 3 ] || { echo "usage: $0 PROGRAM SCINTILLA_SOURCE OUTPUT_FOLDER" >&2; exit 2; }
 program=$1
 images=$2/cocoa/res
 here=$(cd "$(dirname "$0")/.." && pwd)
@@ -24,37 +23,8 @@ done
 mkdir -p "$app/Contents/Resources/fonts"
 cp "$here"/assets/mac/fonts/*.ttf "$here"/assets/mac/fonts/NOTICE.txt "$app/Contents/Resources/fonts/"
 cp "$here/assets/mac/Linework.icns" "$app/Contents/Resources/Linework.icns"
-cat > "$app/Contents/Info.plist" <<PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>CFBundleName</key><string>Linework</string>
-    <key>CFBundleDisplayName</key><string>Linework</string>
-    <key>CFBundleExecutable</key><string>Linework</string>
-    <key>CFBundleIconFile</key><string>Linework</string>
-    <key>CFBundleIdentifier</key><string>com.zerosecurity.linework</string>
-    <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>$version</string>
-    <key>CFBundleVersion</key><string>$version</string>
-    <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
-    <key>LSMinimumSystemVersion</key><string>11.0</string>
-    <key>NSHighResolutionCapable</key><true/>
-    <key>NSPrincipalClass</key><string>NSApplication</string>
-    <key>CFBundleDocumentTypes</key>
-    <array>
-        <dict>
-            <key>CFBundleTypeName</key><string>Text</string>
-            <key>CFBundleTypeRole</key><string>Editor</string>
-            <key>LSHandlerRank</key><string>Alternate</string>
-            <key>LSItemContentTypes</key>
-            <array><string>public.text</string><string>public.data</string></array>
-        </dict>
-    </array>
-</dict>
-</plist>
-PLIST
-if [ $# -eq 4 ]; then
-    codesign --force --options runtime --timestamp --sign "$4" "$app"
-fi
+# The same Info.plist the Xcode project uses, with its settings filled in.
+sed -e 's/$(EXECUTABLE_NAME)/Linework/' -e 's/$(PRODUCT_BUNDLE_IDENTIFIER)/com.zerosecurity.linework/' \
+    -e "s/\$(MARKETING_VERSION)/$version/" -e 's/$(MACOSX_DEPLOYMENT_TARGET)/12.0/' \
+    "$here/mac/Info.plist" > "$app/Contents/Info.plist"
 echo "$app"
