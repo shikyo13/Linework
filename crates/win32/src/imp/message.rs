@@ -55,6 +55,9 @@ thread_local! {
     static NEXT: Cell<u32> = const { Cell::new(1) };
     static DOWN: RefCell<Vec<u16>> = const { RefCell::new(Vec::new()) };
     static READY: Cell<bool> = const { Cell::new(false) };
+    /// The modifier keys held when the event now being handled was made: what
+    /// Windows' key state means, and true of an event posted by a script too.
+    static FLAGS: Cell<NSEventModifierFlags> = const { Cell::new(NSEventModifierFlags::empty()) };
 }
 
 unsafe extern "C" {
@@ -79,6 +82,7 @@ fn ready() {
     }
     // 30 is SIGUSR1.
     unsafe { signal(30, asked) };
+    crate::imp::script::load();
 }
 
 /// Makes the loop come round when it is waiting for an event.
@@ -227,7 +231,7 @@ fn next_event(out: &mut MSG, wait: bool) -> bool {
     let until = if !wait {
         NSDate::distantPast()
     } else {
-        match TIMERS.with_borrow(|timers| timers.iter().map(|timer| timer.due).min()) {
+        match TIMERS.with_borrow(|timers| timers.iter().map(|timer| timer.due).min()).into_iter().chain(crate::imp::script::due()).min() {
             Some(due) => NSDate::dateWithTimeIntervalSinceNow(due.saturating_duration_since(Instant::now()).as_secs_f64()),
             None => NSDate::distantFuture(),
         }
@@ -238,6 +242,7 @@ fn next_event(out: &mut MSG, wait: bool) -> bool {
     if kind == NSEventType::ApplicationDefined {
         return false;
     }
+    FLAGS.set(event.modifierFlags());
     let keys = kind == NSEventType::KeyDown || kind == NSEventType::KeyUp;
     // Command chords belong to the Mac: the menu bar and the editor's own keys.
     let ours = keys && !event.modifierFlags().contains(NSEventModifierFlags::Command);
@@ -254,8 +259,9 @@ fn next(out: &mut MSG, wait: bool) -> bool {
     ready();
     loop {
         if PICTURE.swap(false, Ordering::Relaxed) {
-            pictures();
+            pictures("");
         }
+        crate::imp::script::run();
         if let Some(posted) = waiting() {
             fill(out, posted);
             return true;
@@ -366,7 +372,7 @@ pub(crate) fn key_to(hwnd: HWND, event: &NSEvent) {
 }
 
 fn pressed(key: i32) -> bool {
-    let flags = NSEvent::modifierFlags_class();
+    let flags = FLAGS.get();
     match key as u16 {
         VK_SHIFT | VK_LSHIFT | VK_RSHIFT => flags.contains(NSEventModifierFlags::Shift),
         VK_CONTROL | VK_LCONTROL | VK_RCONTROL => flags.contains(NSEventModifierFlags::Control),
@@ -409,7 +415,7 @@ pub unsafe fn ToUnicodeEx(_: u32, _: u32, _: *const u8, _: *mut u16, _: i32, _: 
 /// Writes a picture of every window into the folder LINEWORK_PICTURES names:
 /// what the window would show, drawn again into an image. Asked for with
 /// `kill -USR1`, so the program can be looked at without the screen.
-fn pictures() {
+pub(crate) fn pictures(name: &str) {
     let Some(folder) = std::env::var_os("LINEWORK_PICTURES").map(std::path::PathBuf::from) else { return };
     let _ = std::fs::create_dir_all(&folder);
     for (number, (class, frame)) in crate::imp::window::frames().iter().enumerate() {
@@ -437,10 +443,10 @@ fn pictures() {
         }
         let empty = NSDictionary::new();
         let Some(data) = (unsafe { image.representationUsingType_properties(NSBitmapImageFileType::PNG, &empty) }) else { continue };
-        let path = folder.join(format!("{class}-{number}.png"));
+        let path = folder.join(format!("{name}{class}-{number}.png"));
         let _: bool = unsafe { msg_send![&*data, writeToFile: &*NSString::from_str(&path.to_string_lossy()), atomically: true] };
     }
-    let _ = std::fs::write(folder.join("windows.txt"), crate::imp::window::describe());
+    let _ = std::fs::write(folder.join(format!("{name}windows.txt")), crate::imp::window::describe());
     crate::imp::gdi::save_picture(crate::imp::gdi::LAST_SOURCE.get() as _, &folder.join("source.png"));
     let _ = std::fs::write(folder.join("done"), b"");
 }

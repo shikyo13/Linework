@@ -402,6 +402,13 @@ pub unsafe fn SelectObject(hdc: HDC, h: HGDIOBJ) -> HGDIOBJ {
     }
 }
 
+/// The image as it is now. The bitmap object keeps the first picture it is
+/// asked for, so the picture is taken from its drawing context each time.
+fn snapshot(bitmap: &Bitmap) -> Option<objc2_core_foundation::CFRetained<objc2_core_graphics::CGImage>> {
+    let raw = NSGraphicsContext::graphicsContextWithBitmapImageRep(&bitmap.pixels)?;
+    objc2_core_graphics::CGBitmapContextCreateImage(Some(&raw.CGContext()))
+}
+
 /// A drawing context on an image, turned so that its origin is at the top left
 /// and one unit is one point.
 fn bitmap_context(bitmap: &Bitmap) -> Option<Retained<NSGraphicsContext>> {
@@ -471,7 +478,10 @@ pub unsafe fn BitBlt(hdc: HDC, x: i32, y: i32, cx: i32, cy: i32, hdcsrc: HDC, x1
         NSPoint::new((x1 as isize * DENSITY) as f64, (y1 as isize * DENSITY) as f64),
         NSSize::new((cx as isize * DENSITY) as f64, (cy as isize * DENSITY) as f64),
     );
-    let Some(whole) = bitmap.pixels.CGImage() else { return 0 };
+    if std::env::var_os("LINEWORK_TRACE").is_some() {
+        eprintln!("BitBlt to {x},{y} {cx}x{cy} from {x1},{y1} target memory={}", dc(hdc).is_some_and(|context| context.memory));
+    }
+    let Some(whole) = snapshot(bitmap) else { return 0 };
     let Some(image) = objc2_core_graphics::CGImage::with_image_in_rect(Some(&whole), part) else { return 0 };
     on(hdc, |context| {
         let Some(target) = &context.target else { return };
@@ -835,7 +845,9 @@ pub fn save_picture(hdc: HDC, path: &std::path::Path) -> bool {
         target.flushGraphics();
     }
     let empty = NSDictionary::new();
-    let Some(data) = (unsafe { bitmap.pixels.representationUsingType_properties(objc2_app_kit::NSBitmapImageFileType::PNG, &empty) }) else { return false };
+    let Some(image) = snapshot(bitmap) else { return false };
+    let copy = NSBitmapImageRep::initWithCGImage(NSBitmapImageRep::alloc(), &image);
+    let Some(data) = (unsafe { copy.representationUsingType_properties(objc2_app_kit::NSBitmapImageFileType::PNG, &empty) }) else { return false };
     unsafe { msg_send![&*data, writeToFile: &*NSString::from_str(&path.to_string_lossy()), atomically: true] }
 }
 

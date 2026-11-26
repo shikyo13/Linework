@@ -28,12 +28,28 @@ fn main() {
         let text = wide("File  Edit  Selection");
         DrawTextW(memory, text.as_ptr(), -1, &mut area, DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
         SelectObject(memory, old);
+        // A clipped pass, as the frame makes when part of it changes: what is
+        // drawn inside the clip shows, what is outside does not, and drawing
+        // after the pass is not held to the old clip.
+        use linework_win32::Win32::Graphics::GdiPlus::*;
+        let saved = SaveDC(memory);
+        IntersectClipRect(memory, 100, 60, 200, 100);
+        let mut graphics = std::ptr::null_mut();
+        GdipCreateFromHDC(memory, &mut graphics);
+        GdipSetClipRectI(graphics, 100, 60, 100, 40, CombineModeReplace);
+        fill(RECT { left: 90, top: 50, right: 150, bottom: 110 }, 0x00FF00);
+        GdipDeleteGraphics(graphics);
+        RestoreDC(memory, saved);
+        fill(RECT { left: 210, top: 60, right: 250, bottom: 100 }, 0x00FFFF);
         // Copy the left half onto a second image, shifted, as the frame is copied to its window.
         let second = CreateCompatibleDC(std::ptr::null_mut());
         let copy = CreateCompatibleBitmap(std::ptr::null_mut(), 320, 128);
         SelectObject(second, copy);
         BitBlt(second, 0, 0, 320, 128, memory, 0, 0, SRCCOPY);
         BitBlt(second, 160, 64, 100, 40, memory, 0, 0, SRCCOPY);
+        // What is drawn after a copy must be in the next copy.
+        fill(RECT { left: 0, top: 108, right: 20, bottom: 128 }, 0xFF00FF);
+        BitBlt(second, 0, 108, 20, 20, memory, 0, 108, SRCCOPY);
         assert!(linework_win32::save_picture(second, &path));
         SelectObject(memory, original);
         println!("{}", path.display());

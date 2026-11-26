@@ -206,9 +206,20 @@ impl LwView {
     }
 }
 
-fn screen_point(_: &NSEvent) -> POINT {
+/// Where an event happened, on the screen in Windows' terms.
+fn screen_point(event: &NSEvent) -> POINT {
     let mut at = POINT { x: 0, y: 0 };
-    unsafe { window::GetCursorPos(&mut at) };
+    match event.window(window::mtm()) {
+        Some(frame) => {
+            let Some(content) = frame.contentView() else { return at };
+            let inside = content.convertPoint_fromView(event.locationInWindow(), None);
+            at = POINT { x: inside.x.round() as i32, y: inside.y.round() as i32 };
+            unsafe { window::ClientToScreen(handle(&content), &mut at) };
+        }
+        None => unsafe {
+            window::GetCursorPos(&mut at);
+        },
+    }
     at
 }
 
