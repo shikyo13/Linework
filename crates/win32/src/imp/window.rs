@@ -861,6 +861,31 @@ pub unsafe fn GetFocus() -> HWND {
     owner_of(view).map_or(std::ptr::null_mut(), |window| handle(&window.view))
 }
 
+/// The window the front end is working in: the one with the keys, or when
+/// this program is not in front (macOS then has no key window) the one it last
+/// made active.
+pub unsafe fn GetActiveWindow() -> HWND {
+    let ours = ACTIVE.with_borrow(|active| active.clone().filter(|frame| frame.isVisible()));
+    let Some(frame) = app().keyWindow().or(ours) else { return std::ptr::null_mut() };
+    frame.contentView().filter(|view| find(handle(view)).is_some()).map_or(std::ptr::null_mut(), |view| handle(&view))
+}
+
+pub unsafe fn GetAncestor(hwnd: HWND, gaflags: GET_ANCESTOR_FLAGS) -> HWND {
+    let Some(window) = find(hwnd) else { return std::ptr::null_mut() };
+    if gaflags == GA_PARENT {
+        return if window.frame.borrow().is_some() { std::ptr::null_mut() } else { unsafe { GetParent(hwnd) } };
+    }
+    let Some(root) = window.view.window().and_then(|frame| frame.contentView()) else { return std::ptr::null_mut() };
+    if gaflags == GA_ROOTOWNER {
+        let mut top = handle(&root);
+        while let Some(owner) = find(top).map(|window| window.owner.get() as HWND).filter(|owner| !owner.is_null()) {
+            top = unsafe { GetAncestor(owner, GA_ROOT) };
+        }
+        return top;
+    }
+    handle(&root)
+}
+
 pub unsafe fn SetActiveWindow(hwnd: HWND) -> HWND {
     if let Some(frame) = find(hwnd).and_then(|window| window.frame.borrow().clone()) {
         frame.makeKeyAndOrderFront(None);

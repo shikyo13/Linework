@@ -69,6 +69,15 @@ unsafe fn send_frame(receiver: Id, name: &CStr, frame: Rect) -> Id {
     unsafe { call(receiver, selector(name), frame) }
 }
 
+/// Sends a Scintilla message to a view known only by its address, as a
+/// Windows host does with a window handle. Text sizes are not converted here;
+/// use `View::call` for those.
+pub(crate) unsafe fn message(view: isize, message: u32, w: usize, l: isize) -> isize {
+    let call: unsafe extern "C" fn(Id, Selector, u32, usize, isize) -> isize =
+        unsafe { std::mem::transmute(objc_msgSend as unsafe extern "C" fn()) };
+    unsafe { call(view as Id, selector(c"message:wParam:lParam:"), message, w, l) }
+}
+
 /// One ScintillaView with the object that hears its notifications.
 pub(crate) struct View {
     view: Id,

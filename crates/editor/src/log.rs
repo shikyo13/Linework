@@ -192,6 +192,14 @@ thread_local! {
     static VIEWS: std::cell::RefCell<std::collections::HashSet<isize>> = Default::default();
 }
 
+/// A Scintilla message to a view known by its window handle.
+#[cfg(windows)]
+unsafe fn message(hwnd: isize, m: u32, w: usize, l: isize) -> isize {
+    unsafe { windows_sys::Win32::UI::WindowsAndMessaging::SendMessageW(hwnd as _, m, w, l) }
+}
+#[cfg(target_os = "macos")]
+use super::mac::message;
+
 impl Editor {
     pub(super) fn is_log(&self) -> bool {
         self.language.get().lexer == "log" && self.grammar.borrow().is_none()
@@ -210,9 +218,7 @@ pub fn style_needed(hwnd: isize, upto: usize) -> bool {
     if !VIEWS.with_borrow(|v| v.contains(&hwnd)) {
         return false;
     }
-    let send = |m: u32, w: usize, l: isize| unsafe {
-        windows_sys::Win32::UI::WindowsAndMessaging::SendMessageW(hwnd as _, m, w, l)
-    };
+    let send = |m: u32, w: usize, l: isize| unsafe { message(hwnd, m, w, l) };
     let from_line = send(SCI_LINEFROMPOSITION, send(SCI_GETENDSTYLED, 0, 0).max(0) as usize, 0).max(0) as usize;
     let last = send(SCI_LINEFROMPOSITION, upto, 0).max(0) as usize;
     style_lines(hwnd, from_line, last);
@@ -227,9 +233,7 @@ pub fn style_visible(hwnd: isize) -> bool {
     if !VIEWS.with_borrow(|v| v.contains(&hwnd)) {
         return false;
     }
-    let send = |m: u32, w: usize, l: isize| unsafe {
-        windows_sys::Win32::UI::WindowsAndMessaging::SendMessageW(hwnd as _, m, w, l)
-    };
+    let send = |m: u32, w: usize, l: isize| unsafe { message(hwnd, m, w, l) };
     let top = send(SCI_DOCLINEFROMVISIBLE, send(SCI_GETFIRSTVISIBLELINE, 0, 0).max(0) as usize, 0).max(0) as usize;
     let shown = send(SCI_LINESONSCREEN, 0, 0).clamp(1, 1000) as usize;
     style_lines(hwnd, top, top + shown + 2);
@@ -238,9 +242,7 @@ pub fn style_visible(hwnd: isize) -> bool {
 
 /// Style lines `first..=last` (clamped to the document).
 fn style_lines(hwnd: isize, first: usize, last: usize) {
-    let send = |m: u32, w: usize, l: isize| unsafe {
-        windows_sys::Win32::UI::WindowsAndMessaging::SendMessageW(hwnd as _, m, w, l)
-    };
+    let send = |m: u32, w: usize, l: isize| unsafe { message(hwnd, m, w, l) };
     let count = send(SCI_GETLINECOUNT, 0, 0).max(1) as usize;
     let last = last.min(count - 1);
     if first > last {

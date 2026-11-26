@@ -47,11 +47,16 @@ pub const ES_MULTILINE: i32 = 4i32;
 pub const ES_WANTRETURN: i32 = 4096i32;
 pub unsafe extern "system" fn EndDeferWindowPos(hwinposinfo : HDWP) -> super::super::Foundation:: BOOL { unsafe { crate::imp::EndDeferWindowPos(hwinposinfo) } }
 pub unsafe extern "system" fn FindWindowExW(hwndparent : super::super::Foundation:: HWND, hwndchildafter : super::super::Foundation:: HWND, lpszclass : windows_sys::core::PCWSTR, lpszwindow : windows_sys::core::PCWSTR) -> super::super::Foundation:: HWND { unsafe { crate::imp::FindWindowExW(hwndparent, hwndchildafter, lpszclass, lpszwindow) } }
+pub const GA_PARENT: GET_ANCESTOR_FLAGS = 1u32;
+pub const GA_ROOT: GET_ANCESTOR_FLAGS = 2u32;
+pub const GA_ROOTOWNER: GET_ANCESTOR_FLAGS = 3u32;
+pub type GET_ANCESTOR_FLAGS = u32;
 pub const GWLP_ID: WINDOW_LONG_PTR_INDEX = -12i32;
 pub const GWLP_USERDATA: WINDOW_LONG_PTR_INDEX = -21i32;
 pub const GWLP_WNDPROC: WINDOW_LONG_PTR_INDEX = -4i32;
 pub const GWL_EXSTYLE: WINDOW_LONG_PTR_INDEX = -20i32;
 pub const GWL_STYLE: WINDOW_LONG_PTR_INDEX = -16i32;
+pub unsafe extern "system" fn GetAncestor(hwnd : super::super::Foundation:: HWND, gaflags : GET_ANCESTOR_FLAGS) -> super::super::Foundation:: HWND { unsafe { crate::imp::GetAncestor(hwnd, gaflags) } }
 pub unsafe extern "system" fn GetClientRect(hwnd : super::super::Foundation:: HWND, lprect : *mut super::super::Foundation:: RECT) -> super::super::Foundation:: BOOL { unsafe { crate::imp::GetClientRect(hwnd, lprect) } }
 pub unsafe extern "system" fn GetCursorPos(lppoint : *mut super::super::Foundation:: POINT) -> super::super::Foundation:: BOOL { unsafe { crate::imp::GetCursorPos(lppoint) } }
 pub unsafe extern "system" fn GetDlgCtrlID(hwnd : super::super::Foundation:: HWND) -> i32 { unsafe { crate::imp::GetDlgCtrlID(hwnd) } }
@@ -284,10 +289,10 @@ pub const SW_MAXIMIZE: SHOW_WINDOW_CMD = 3i32;
 pub const SW_MINIMIZE: SHOW_WINDOW_CMD = 6i32;
 pub const SW_RESTORE: SHOW_WINDOW_CMD = 9i32;
 pub const SW_SHOW: SHOW_WINDOW_CMD = 5i32;
+pub const SW_SHOWDEFAULT: SHOW_WINDOW_CMD = 10i32;
 pub const SW_SHOWMINIMIZED: SHOW_WINDOW_CMD = 2i32;
 pub const SW_SHOWNA: SHOW_WINDOW_CMD = 8i32;
 pub const SW_SHOWNOACTIVATE: SHOW_WINDOW_CMD = 4i32;
-pub const SW_SHOWNORMAL: SHOW_WINDOW_CMD = 1i32;
 pub type SYSTEM_METRICS_INDEX = i32;
 pub type SYSTEM_PARAMETERS_INFO_ACTION = u32;
 pub type SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS = u32;
