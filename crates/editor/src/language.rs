@@ -128,6 +128,9 @@ pub fn detect_language(path: Option<&Path>, sample: &str) -> String {
     if let Some(grammar) = super::grammar::detect_first(sample) {
         return grammar;
     }
+    if super::log::looks_like_log(sample) {
+        return "Log".into();
+    }
     let text = sample.trim_start();
     let lower = text.to_ascii_lowercase();
     if lower.starts_with("<!doctype html") || lower.starts_with("<html") {

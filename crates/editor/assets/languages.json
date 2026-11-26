@@ -4,7 +4,15 @@
     "lexer": "null",
     "extensions": [
       "txt",
-      "text",
+      "text"
+    ],
+    "filenames": [],
+    "keywords": []
+  },
+  {
+    "name": "Log",
+    "lexer": "log",
+    "extensions": [
       "log"
     ],
     "filenames": [],

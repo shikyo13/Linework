@@ -4,6 +4,7 @@ mod grammar;
 mod sublime_v2;
 pub use grammar::{import_user_grammar, load_user_grammars};
 mod language;
+mod log;
 pub mod sci;
 mod spelling;
 mod style;
@@ -11,6 +12,7 @@ mod user_snippet;
 pub use user_snippet::UserSnippet;
 
 pub use language::{detect_language, languages};
+pub use log::{style_needed, style_visible};
 pub use memchr::memmem::find_iter as literal_matches;
 use sci::*;
 use std::cell::{Cell, RefCell};
@@ -348,6 +350,20 @@ impl Editor {
         let Some(lang) = language::lookup(name) else {
             return self.use_grammar(name);
         };
+        if lang.lexer == "log" {
+            // Styled here, line by line, as Scintilla asks (`log.rs`).
+            unsafe {
+                self.send_ptr(SCI_SETILEXER, 0, 0);
+            }
+            self.grammar.replace(None);
+            self.language.set(lang);
+            self.note_log();
+            self.apply_lexer_styles();
+            self.send(SCI_CLEARDOCUMENTSTYLE, 0, 0);
+            self.occurrence_key.set((usize::MAX, 0, 0, 0));
+            self.spelling.borrow_mut().invalidate();
+            return true;
+        }
         let c = CString::new(lang.lexer.as_str()).unwrap();
         let lexer = unsafe { (self.native.create_lexer)(c.as_ptr()) };
         if lexer.is_null() {
@@ -358,6 +374,7 @@ impl Editor {
         }
         self.grammar.replace(None);
         self.language.set(lang);
+        self.note_log();
         for (k, v) in [
             ("fold", "1"),
             ("fold.compact", "0"),

@@ -327,6 +327,10 @@ impl Editor {
             if std::mem::replace(&mut used[n], true) {
                 continue;
             }
+            if self.is_log() {
+                names[n] = super::log::NAMES.get(n).unwrap_or(&"").to_string();
+                continue;
+            }
             if self.is_custom_grammar() {
                 names[n] = [
                     "",
@@ -380,6 +384,34 @@ impl Editor {
         (runs, names)
     }
     pub(super) fn apply_lexer_styles(&self) {
+        if self.is_log() {
+            let p = self.colors.borrow().palette(self.theme.get());
+            let syntax = self.highlights.get().syntax;
+            use super::log::*;
+            for (id, color) in [
+                (DEFAULT, p.fg),
+                (TIME, p.comment),
+                (ERROR, p.warning),
+                (WARN, p.number),
+                (INFO, p.symbol),
+                (DEBUG, p.subtle),
+                (STRING, p.string),
+                (NUMBER, p.keyword),
+                (LINK, p.accent),
+            ] {
+                let id = id as usize;
+                self.send(SCI_STYLESETFORE, id, bgr(if syntax { color } else { p.fg }));
+                self.send(SCI_STYLESETBACK, id, bgr(p.bg));
+                self.send(SCI_STYLESETBOLD, id, (syntax && id == ERROR as usize) as isize);
+                self.send(SCI_STYLESETITALIC, id, 0);
+                self.send(SCI_STYLESETUNDERLINE, id, (syntax && id == LINK as usize) as isize);
+            }
+            let mut prose = [false; 256];
+            prose[DEFAULT as usize] = true;
+            prose[STRING as usize] = true;
+            self.prose_styles.set(prose);
+            return;
+        }
         if self.is_custom_grammar() {
             let p = self.colors.borrow().palette(self.theme.get());
             let syntax = self.highlights.get().syntax;
