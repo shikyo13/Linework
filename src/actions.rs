@@ -451,6 +451,7 @@ impl App {
             "findproject" | "replaceproject" => self.project_search(id == "replaceproject"),
             "applypreview" => self.project_apply(),
             "undofolder" => self.project_undo(),
+            "zeroskip" | "zeroback" => self.zeros_jump(id == "zeroskip"),
             "toggleall" => self.project_toggle_all(),
             "togglehit" => {
                 if let Some(row) = selected(self.list) {
