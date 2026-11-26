@@ -772,6 +772,60 @@ pub unsafe fn GdipFillPolygon2(handle: *mut GpGraphics, brush: *mut GpBrush, poi
     0
 }
 
+/// The text and background colors a context holds.
+pub(crate) fn colors_of(hdc: HDC) -> (COLORREF, COLORREF) {
+    dc(hdc).map_or((0, 0xffffff), |context| (context.text, context.back))
+}
+
+/// The AppKit font behind a font handle.
+pub(crate) fn font_of(handle: HFONT) -> Option<Retained<NSFont>> {
+    match object(handle as HGDIOBJ) {
+        Some(Object::Font(font)) => Some(font.font.clone()),
+        _ => None,
+    }
+}
+
+fn rounded_path(area: RECT, radius: f64) -> Retained<NSBezierPath> {
+    let mut bounds = ns_rect(&area);
+    (bounds.origin.x, bounds.origin.y) = (bounds.origin.x + 0.5, bounds.origin.y + 0.5);
+    (bounds.size.width, bounds.size.height) = ((bounds.size.width - 1.0).max(0.0), (bounds.size.height - 1.0).max(0.0));
+    NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(bounds, radius, radius)
+}
+
+/// A rectangle with rounded corners, filled and edged, for controls drawn here.
+pub(crate) fn rounded(hdc: HDC, area: RECT, radius: f64, inside: COLORREF, edge: COLORREF) {
+    on(hdc, |_| {
+        let path = rounded_path(area, radius);
+        color(inside).set();
+        path.fill();
+        color(edge).set();
+        path.stroke();
+    });
+}
+
+pub(crate) fn outline(hdc: HDC, area: RECT, radius: f64, edge: COLORREF) {
+    on(hdc, |_| {
+        color(edge).set();
+        rounded_path(area, radius).stroke();
+    });
+}
+
+/// The tick inside a checked box.
+pub(crate) fn check_mark(hdc: HDC, area: RECT, ink: COLORREF) {
+    on(hdc, |_| {
+        let (x, y, side) = (area.left as f64, area.top as f64, (area.right - area.left) as f64);
+        let path = NSBezierPath::bezierPath();
+        path.moveToPoint(NSPoint::new(x + side * 0.25, y + side * 0.52));
+        path.lineToPoint(NSPoint::new(x + side * 0.43, y + side * 0.70));
+        path.lineToPoint(NSPoint::new(x + side * 0.76, y + side * 0.32));
+        path.setLineWidth(1.6);
+        path.setLineCapStyle(NSLineCapStyle::Round);
+        path.setLineJoinStyle(NSLineJoinStyle::Round);
+        color(ink).set();
+        path.stroke();
+    });
+}
+
 /// Writes the image a memory context draws on to a PNG file, for looking at
 /// what was drawn without a screen.
 pub fn save_picture(hdc: HDC, path: &std::path::Path) -> bool {

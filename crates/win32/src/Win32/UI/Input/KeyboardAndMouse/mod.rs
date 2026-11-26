@@ -24,7 +24,7 @@ pub struct TRACKMOUSEEVENT {
 }
 pub type TRACKMOUSEEVENT_FLAGS = u32;
 pub unsafe extern "system" fn ToUnicodeEx(wvirtkey : u32, wscancode : u32, lpkeystate : *const u8, pwszbuff : windows_sys::core::PWSTR, cchbuff : i32, wflags : u32, dwhkl : HKL) -> i32 { unsafe { crate::imp::ToUnicodeEx(wvirtkey, wscancode, lpkeystate, pwszbuff, cchbuff, wflags, dwhkl) } }
-pub unsafe extern "system" fn TrackMouseEvent(lpeventtrack : *mut TRACKMOUSEEVENT) -> super::super::super::Foundation:: BOOL { let _ = lpeventtrack; crate::missing("TrackMouseEvent"); unsafe { core::mem::zeroed() } }
+pub unsafe extern "system" fn TrackMouseEvent(lpeventtrack : *mut TRACKMOUSEEVENT) -> super::super::super::Foundation:: BOOL { unsafe { crate::imp::TrackMouseEvent(lpeventtrack) } }
 pub type VIRTUAL_KEY = u16;
 pub const VK_ADD: VIRTUAL_KEY = 107u16;
 pub const VK_BACK: VIRTUAL_KEY = 8u16;

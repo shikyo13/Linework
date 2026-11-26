@@ -53,8 +53,24 @@ pub unsafe fn GetLastError() -> crate::Win32::Foundation::WIN32_ERROR {
     0
 }
 
-pub unsafe fn DwmSetWindowAttribute(_: HWND, _: u32, _: *const core::ffi::c_void, _: u32) -> crate::core::HRESULT {
+pub unsafe fn DwmSetWindowAttribute(hwnd: HWND, dwattribute: u32, pvattribute: *const core::ffi::c_void, _: u32) -> crate::core::HRESULT {
+    // 20 asks for a dark title bar: here, the dark look for the window and for
+    // the controls drawn in it.
+    if dwattribute == 20 && !pvattribute.is_null() {
+        let dark = unsafe { *(pvattribute as *const i32) } != 0;
+        crate::imp::controls::DARK.set(dark);
+        if let Some(frame) = crate::imp::window::find(hwnd).and_then(|window| window.frame.borrow().clone()) {
+            use objc2_app_kit::NSAppearanceCustomization;
+            let name = unsafe { if dark { objc2_app_kit::NSAppearanceNameDarkAqua } else { objc2_app_kit::NSAppearanceNameAqua } };
+            frame.setAppearance(objc2_app_kit::NSAppearance::appearanceNamed(name).as_deref());
+        }
+    }
     0
+}
+
+/// Asked so that leaving a control can be told; every window of ours is told anyway.
+pub unsafe fn TrackMouseEvent(_: *mut crate::Win32::UI::Input::KeyboardAndMouse::TRACKMOUSEEVENT) -> i32 {
+    1
 }
 
 pub unsafe fn DwmFlush() -> crate::core::HRESULT {

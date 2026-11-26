@@ -2,6 +2,7 @@
 #![allow(non_snake_case, non_camel_case_types, non_upper_case_globals, clippy::all)]
 pub unsafe extern "system" fn AllowSetForegroundWindow(dwprocessid : u32) -> super::super::Foundation:: BOOL { unsafe { crate::imp::AllowSetForegroundWindow(dwprocessid) } }
 pub unsafe extern "system" fn AppendMenuW(hmenu : HMENU, uflags : MENU_ITEM_FLAGS, uidnewitem : usize, lpnewitem : windows_sys::core::PCWSTR) -> super::super::Foundation:: BOOL { let _ = hmenu; let _ = uflags; let _ = uidnewitem; let _ = lpnewitem; crate::missing("AppendMenuW"); unsafe { core::mem::zeroed() } }
+pub const BM_CLICK: u32 = 245u32;
 pub const BM_GETCHECK: u32 = 240u32;
 pub const BM_SETCHECK: u32 = 241u32;
 pub const BN_CLICKED: u32 = 0u32;

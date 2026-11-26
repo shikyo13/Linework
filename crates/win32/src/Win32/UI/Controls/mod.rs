@@ -34,6 +34,7 @@ pub struct DRAWITEMSTRUCT {
 }
 pub type DRAWITEMSTRUCT_CTL_TYPE = u32;
 pub unsafe extern "system" fn DrawThemeBackground(htheme : HTHEME, hdc : super::super::Graphics::Gdi:: HDC, ipartid : i32, istateid : i32, prect : *const super::super::Foundation:: RECT, pcliprect : *const super::super::Foundation:: RECT) -> windows_sys::core::HRESULT { let _ = htheme; let _ = hdc; let _ = ipartid; let _ = istateid; let _ = prect; let _ = pcliprect; crate::missing("DrawThemeBackground"); unsafe { core::mem::zeroed() } }
+pub const EM_SETSEL: u32 = 177u32;
 pub unsafe extern "system" fn EndBufferedPaint(hbufferedpaint : isize, fupdatetarget : super::super::Foundation:: BOOL) -> windows_sys::core::HRESULT { let _ = hbufferedpaint; let _ = fupdatetarget; crate::missing("EndBufferedPaint"); unsafe { core::mem::zeroed() } }
 pub type HTHEME = isize;
 #[repr(C)]
@@ -46,6 +47,7 @@ pub struct MEASUREITEMSTRUCT {
     pub itemHeight: u32,
     pub itemData: usize,
 }
+pub const ODA_DRAWENTIRE: ODA_FLAGS = 1u32;
 pub type ODA_FLAGS = u32;
 pub const ODS_CHECKED: ODS_FLAGS = 8u32;
 pub const ODS_DISABLED: ODS_FLAGS = 4u32;
@@ -54,7 +56,10 @@ pub const ODS_FOCUS: ODS_FLAGS = 16u32;
 pub const ODS_GRAYED: ODS_FLAGS = 2u32;
 pub const ODS_NOFOCUSRECT: ODS_FLAGS = 512u32;
 pub const ODS_SELECTED: ODS_FLAGS = 1u32;
+pub const ODT_BUTTON: DRAWITEMSTRUCT_CTL_TYPE = 4u32;
+pub const ODT_LISTBOX: DRAWITEMSTRUCT_CTL_TYPE = 2u32;
 pub const ODT_MENU: DRAWITEMSTRUCT_CTL_TYPE = 1u32;
+pub const ODT_STATIC: DRAWITEMSTRUCT_CTL_TYPE = 5u32;
 pub unsafe extern "system" fn OpenThemeData(hwnd : super::super::Foundation:: HWND, pszclasslist : windows_sys::core::PCWSTR) -> HTHEME { let _ = hwnd; let _ = pszclasslist; crate::missing("OpenThemeData"); unsafe { core::mem::zeroed() } }
 pub type PFTASKDIALOGCALLBACK = Option<unsafe extern "system" fn(hwnd: super::super::Foundation::HWND, msg: TASKDIALOG_NOTIFICATIONS, wparam: super::super::Foundation::WPARAM, lparam: super::super::Foundation::LPARAM, lprefdata: isize) -> windows_sys::core::HRESULT>;
 pub const SBP_ARROWBTN: SCROLLBARPARTS = 1i32;
