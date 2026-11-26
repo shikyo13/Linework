@@ -33,7 +33,7 @@ cat > "$app/Contents/Info.plist" <<PLIST
     <key>CFBundleDisplayName</key><string>Linework</string>
     <key>CFBundleExecutable</key><string>Linework</string>
     <key>CFBundleIconFile</key><string>Linework</string>
-    <key>CFBundleIdentifier</key><string>io.github.shikyo13.Linework</string>
+    <key>CFBundleIdentifier</key><string>com.zerosecurity.linework</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>$version</string>
     <key>CFBundleVersion</key><string>$version</string>
