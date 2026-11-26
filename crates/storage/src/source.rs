@@ -148,6 +148,9 @@ struct Page {
 struct External {
     path: PathBuf,
     snapshot: std::sync::OnceLock<File>,
+    /// Where this source's first byte is in `snapshot`: 0 in a copy of just
+    /// this text, the original's own offset in a clone of the whole file.
+    snapshot_origin: AtomicU64,
     copy_lock: Mutex<()>,
     #[cfg(windows)]
     lease: Mutex<Option<crate::write_lease::Lease>>,
@@ -183,6 +186,7 @@ impl Source {
         let external = External {
             path: path.into(),
             snapshot: Default::default(),
+            snapshot_origin: Default::default(),
             copy_lock: Default::default(),
             #[cfg(windows)]
             lease: Default::default(),
@@ -264,7 +268,7 @@ impl Source {
         })
     }
     pub(crate) fn disk_at(&self,at:u64)->io::Result<Option<(File,u64)>>{
-        if let Some(file) = self.private_file() {return Ok(Some((file.try_clone()?,at)));}
+        if let Some(file) = self.private_file() {return Ok(Some((file.try_clone()?,self.private_origin()+at)));}
         if let (Some(slot), Backing::Memory(bytes)) = (&self.ordinary_mapping,&self.backing) {
             let mut slot = slot.lock().unwrap();
             if slot.is_none() {
@@ -313,6 +317,15 @@ impl Source {
     }
     fn private_file(&self) -> Option<&File> {
         self.external.as_ref().and_then(|e| e.snapshot.get())
+    }
+    fn private_origin(&self) -> u64 {
+        self.external.as_ref().map_or(0, |e| e.snapshot_origin.load(Ordering::Acquire))
+    }
+    /// A file holding this source's bytes that no other program can change,
+    /// and where the source starts in it: what a save can clone.
+    #[cfg(target_os = "macos")]
+    pub(crate) fn settled(&self) -> Option<(&File, u64)> {
+        self.private_file().map(|file| (file, self.private_origin()))
     }
     #[cfg(windows)]
     pub(crate) fn holds_unchanged_file(&self, stamp: &super::Stamp) -> bool {
@@ -443,6 +456,17 @@ impl Source {
         let pinned = false;
         if !pinned && &super::Stamp::from(original)? != expected {
             return Err(super::conflict());
+        }
+        // On APFS a clone is that copy without the reading and writing: it
+        // shares the file's blocks until one of the two is written to.
+        #[cfg(target_os = "macos")]
+        if let Some(clone) = crate::mac_save::private_clone(original, &external.path) {
+            if &super::Stamp::from(original)? != expected {
+                return Err(super::conflict());
+            }
+            external.snapshot_origin.store(*origin, Ordering::Release);
+            let _ = external.snapshot.set(clone);
+            return Ok(());
         }
         // When another writer already has a handle, no deny-write lease can be
         // granted. A shared range lock keeps ordinary overlapped writes out of
@@ -634,7 +658,7 @@ impl Source {
     fn raw(&self, pos: u64, dst: &mut [u8]) -> io::Result<()> {
         match &self.backing {
             Backing::Disk(f, origin) => {
-                if let Some(copy) = self.private_file() {return read_at(copy,pos,dst);}
+                if let Some(copy) = self.private_file() {return read_at(copy,self.private_origin()+pos,dst);}
                 #[cfg(windows)]
                 let result = match &self.external {
                     Some(external) => external.delta.read().unwrap().read(f, *origin, pos, dst),
@@ -643,7 +667,7 @@ impl Source {
                 #[cfg(not(windows))]
                 let result = read_at(f, origin + pos, dst);
                 // A conflicting open may have been released during this read.
-                if let Some(copy) = self.private_file() {return read_at(copy,pos,dst);}
+                if let Some(copy) = self.private_file() {return read_at(copy,self.private_origin()+pos,dst);}
                 result
             }
             Backing::Recovery(archive) => archive.read(pos, dst),
@@ -663,7 +687,7 @@ impl Source {
             return self.raw(pos, dst);
         };
         if let Some(copy) = self.private_file() {
-            return read_at(own(&mut lane.copy, copy), pos, dst);
+            return read_at(own(&mut lane.copy, copy), self.private_origin() + pos, dst);
         }
         let file = own(&mut lane.original, shared);
         #[cfg(windows)]
@@ -675,7 +699,7 @@ impl Source {
         let result = read_at(file, origin + pos, dst);
         // A conflicting open may have been released during this read.
         if let Some(copy) = self.private_file() {
-            return read_at(own(&mut lane.copy, copy), pos, dst);
+            return read_at(own(&mut lane.copy, copy), self.private_origin() + pos, dst);
         }
         result
     }

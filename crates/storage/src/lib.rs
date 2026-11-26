@@ -151,6 +151,9 @@ pub struct Document {
     saved_disk_digest: Option<[u8;32]>,
     #[cfg(windows)]
     previous_disk: Option<Arc<checkpoint::DiskCheckpoint>>,
+    /// A private clone of the large file as this document last saved it.
+    #[cfg(target_os = "macos")]
+    saved_clone: Option<Arc<File>>,
     accepted_appends: Arc<HashMap<(u32, u64), Stamp>>,
     /// Original disk extents which must be isolated before the first edit.
     unprotected: Vec<Arc<Source>>,
@@ -175,6 +178,8 @@ impl Clone for Document {
             saved_disk_digest: self.saved_disk_digest,
             #[cfg(windows)]
             previous_disk: self.previous_disk.clone(),
+            #[cfg(target_os = "macos")]
+            saved_clone: self.saved_clone.clone(),
             accepted_appends: self.accepted_appends.clone(),
             unprotected: self.unprotected.clone(),
             codec: self.codec,
@@ -200,6 +205,8 @@ impl Document {
             saved_disk_digest: None,
             #[cfg(windows)]
             previous_disk: None,
+            #[cfg(target_os = "macos")]
+            saved_clone: None,
             accepted_appends: Arc::default(),
             unprotected: Vec::new(),
             codec: Codec::Utf8,
@@ -345,6 +352,8 @@ impl Document {
             saved_disk_digest,
             #[cfg(windows)]
             previous_disk: None,
+            #[cfg(target_os = "macos")]
+            saved_clone: None,
             accepted_appends: Arc::default(),
             unprotected,
             codec,
@@ -392,6 +401,10 @@ impl Document {
         #[cfg(windows)]
         {
             self.previous_disk = None;
+        }
+        #[cfg(target_os = "macos")]
+        {
+            self.saved_clone = None;
         }
     }
     pub fn version(&self) -> u64 {
@@ -699,6 +712,10 @@ impl Document {
         if same_file && self.restore_checkpoint(&dest)? { return Ok(()); }
         #[cfg(windows)]
         if same_file && self.save_small_delta(&dest)? { return Ok(()); }
+        #[cfg(target_os = "macos")]
+        if let Some(stamp) = before.as_ref().filter(|_| same_file) {
+            if self.save_by_clone(&dest, stamp)? { return Ok(()); }
+        }
         #[cfg(not(target_os = "macos"))]
         let mut tmp = NamedTempFile::new_in(dir)?;
         #[cfg(target_os = "macos")]
@@ -712,6 +729,8 @@ impl Document {
         tmp.flush()?;
         tmp.as_file().sync_all()?;
         let checkpoint_stamp = Stamp::from(tmp.as_file())?;
+        #[cfg(target_os = "macos")]
+        let saved_clone = mac_save::reference(tmp.as_file(), tmp.path());
         self.check_original()?;
         if let Some(stamp) = before.as_ref().filter(|_| same_file) {
             target_guard = Some(self.verify_disk_revision(&dest, stamp)?);
@@ -742,6 +761,10 @@ impl Document {
         drop(target_guard);
         self.path = Some(dest);
         self.saved_disk_digest = Some(checkpoint);
+        #[cfg(target_os = "macos")]
+        {
+            self.saved_clone = saved_clone;
+        }
         self.saved = self.root.clone();
         self.saved_codec = self.codec;
         self.saved_bom = self.emit_bom;
@@ -755,6 +778,8 @@ impl Document {
         self.saved_disk_digest = saved.saved_disk_digest;
         #[cfg(windows)]
         { self.previous_disk = saved.previous_disk; }
+        #[cfg(target_os = "macos")]
+        { self.saved_clone = saved.saved_clone; }
         self.saved = saved.saved;
         self.saved_codec = saved.saved_codec;
         self.saved_bom = saved.saved_bom;
@@ -843,6 +868,8 @@ impl Document {
             Arc::make_mut(&mut self.accepted_appends).insert((now.volume, now.id), now.clone());
             self.stamp = Some(now);
             self.saved_disk_digest = None;
+            #[cfg(target_os = "macos")]
+            { self.saved_clone = None; }
             self.version += 1;
         } else {
             let mut fresh = Self::open(&path)?;

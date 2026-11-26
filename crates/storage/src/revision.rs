@@ -25,6 +25,12 @@ impl Document {
                 return Ok(file);
             }
         }
+        // Where the volume shows that not one block of the file has been
+        // replaced since this document saved it, there is nothing to read.
+        #[cfg(target_os = "macos")]
+        if self.untouched_since_saved(&file, expected) {
+            return Ok(file);
+        }
         let mut buffer = vec![0; 1024 * 1024];
         if let Some(expected) = self.saved_disk_digest {
             let mut digest = Sha256::new();
