@@ -1,8 +1,8 @@
 # Linework user guide
 
-This guide covers Linework 1.10.0 in full. For a quick tour with pictures, see the README in the project repository.
+This guide covers Linework 1.11.0 in full. For a quick tour with pictures, see the README in the project repository.
 
-Linework is a Windows x64 text editor for code, notes and multi-gigabyte text files. Run **Linework-Setup-1.10.0-x64.msi** to install it for your Windows account. The installer adds Linework to Start, Windows Default Apps and Explorer’s **Edit with Linework** menu. To change file associations, choose **Choose Linework file defaults** in Start. Files opened from Explorer join your existing Linework window. Use **Settings → Apps → Installed apps** to remove the installation. Your documents and editor preferences are stored separately.
+Linework is a Windows x64 text editor for code, notes and multi-gigabyte text files. Run **Linework-Setup-1.11.0-x64.msi** to install it for your Windows account. The installer adds Linework to Start, Windows Default Apps and Explorer’s **Edit with Linework** menu. To change file associations, choose **Choose Linework file defaults** in Start. Files opened from Explorer join your existing Linework window. Use **Settings → Apps → Installed apps** to remove the installation. Your documents and editor preferences are stored separately.
 
 For a portable copy, keep **Linework.exe** beside its **runtime** folder and launch it from there. Both editions accept files and folders dropped onto the window or passed on the command line.
 
@@ -28,7 +28,7 @@ Click rendered Markdown text to place the source caret there. Double-click selec
 
 The source editor has six effects of its own, under **Settings**, **Editor effects…**. **Gliding cursor** slides the caret to its new place in 90 to 150 milliseconds, and **Active line glide** slides the current-line highlight between lines. **Edit heat** puts an amber mark in the gutter beside each edited line, which cools away over ten seconds and stays with its line. **Pair glow** lights both ends of the Markdown bold, italic, strikethrough, code span or link the caret is in. **Paragraph focus** dims everything outside the caret's paragraph; it also has its own switch in **View**. **Smart Markdown typing** wraps selected text when you type `*`, `_`, `~` or a backtick, makes it a link when you type `[`, continues lists, numbered lists, task lists and quotes on **Enter**, nests a list item with **Tab** at its start, and makes **Ctrl+B** and **Ctrl+I** bold and italic. In a Markdown document Ctrl+B is bold; everywhere else it still shows or hides the sidebar. In ordinary Markdown text the completion list no longer opens by itself with words from the page; it still offers your own snippets there, still completes inside code, and **Ctrl+Space** lists everything. Edit heat and Paragraph focus start switched off. The two glides stop when **Reduce motion** is on or Windows animations are off.
 
-Encodings. Linework reads a byte order mark first, then UTF-16 without one, then UTF-8. A file that is none of these has its encoding guessed from its bytes, as Notepad++ and Firefox do, and the status line says which encoding was used. **Encoding → Reopen with encoding…** and **Save with encoding…** list the encodings Notepad++ and Sublime Text offer, grouped by language and filtered as you type: Unicode, the Windows and ISO code pages, KOI8, the DOS code pages such as 437 and 850, the Mac code pages, Shift JIS, EUC-JP, GB18030, Big5 and EUC-KR. A binary file opens as **Hexadecimal**, sixteen bytes to a line, and saving writes the edited digits back as bytes. **Encoding → Detect encoding of files that are not UTF-8** turns guessing off, **Encoding for files that are not UTF-8…** sets what is used then (Windows 1252 to start), and **Encoding for new files…** sets the encoding of new files (UTF-8 to start).
+Encodings. Linework reads a byte order mark first, then UTF-16 without one, then UTF-8. A file that is none of these has its encoding guessed from its bytes, as Notepad++ and Firefox do, and the status line says which encoding was used. **Encoding → Reopen with encoding…** and **Save with encoding…** list the encodings Notepad++ and Sublime Text offer, grouped by language and filtered as you type: Unicode, the Windows and ISO code pages, KOI8, the DOS code pages such as 437 and 850, the Mac code pages, Shift JIS, EUC-JP, GB18030, Big5 and EUC-KR. A binary file opens as **Hexadecimal**, sixteen bytes to a line, and saving writes the edited digits back as bytes. A large file whose start holds zero bytes is still text when three samples from inside it are text, as in a password list sorted by its bytes, whose lines of control characters come first. Such a file opens as text in the editor and in `lw`. **Encoding → Detect encoding of files that are not UTF-8** turns guessing off, **Encoding for files that are not UTF-8…** sets what is used then (Windows 1252 to start), and **Encoding for new files…** sets the encoding of new files (UTF-8 to start).
 
 | To do this | Use |
 |---|---|
@@ -117,6 +117,12 @@ The installer puts `lw.exe` next to `Linework.exe` and adds that folder to your 
 | `lw defs [output options] NAME PATH` | Prints where NAME is defined in code |
 | `lw uses [output options] NAME PATH` | Prints where NAME is used in code, leaving out comments and strings |
 | `lw open [--dry-run] FILE[:LINE[:COLUMN]]...` | Shows files in the Linework window, at a line and column when given |
+| `lw split [OPTIONS] [FILE [PREFIX]]` | Cuts a file into pieces by lines (`-l`), bytes (`-b`, `-C`) or number (`-n`), with GNU split's options and file names |
+| `lw cut -f LIST [-d DELIM] [-o FILE] [FILE...]` | Prints chosen fields (`-f`) or bytes (`-b`, `-c`) of each line, with GNU cut's options; `-o` writes straight to a file |
+| `lw sort [OPTIONS] [FILE...]` | Sorts files of any size (larger than memory through temporary files), removes repeats (`-u`), merges sorted files (`-m`) or checks the order (`-c`), with GNU sort's options in byte order |
+| `lw look [-df] [-t CHAR] STRING FILE` | Prints the lines of a sorted file that begin with STRING, in a few small reads; `--keys FILE` looks up many strings at once |
+
+`split`, `cut` and `sort` take GNU's options, and `look` util-linux's, rather than ripgrep's, so that scripts written for those tools work unchanged; their output was checked byte for byte against GNU coreutils 9.4 and util-linux 2.39. They work on every processor; `-j N` sets the number of threads.
 
 ### Options from ripgrep and grep
 

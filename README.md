@@ -8,7 +8,7 @@
 Code, notes and multi-gigabyte logs in one window, with a live Markdown preview that keeps up as you type.
 
 [![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-8b6fd6)](LICENSE)
-![Version 1.10.0](https://img.shields.io/badge/version-1.10.0-8b6fd6)
+![Version 1.11.0](https://img.shields.io/badge/version-1.11.0-8b6fd6)
 ![Windows x64](https://img.shields.io/badge/platform-Windows%20x64-2b2d3a)
 ![Built with Rust](https://img.shields.io/badge/built%20with-Rust-b7410e)
 
@@ -106,7 +106,7 @@ Every command is in the palette, **Ctrl+Shift+P**, with its shortcut beside it, 
 
 ## Install
 
-Run **Linework-Setup-1.10.0-x64.msi**. It installs for your Windows account only, without administrator rights, and adds Linework to Start, Default Apps and Explorer's **Edit with Linework** menu. Uninstall it from **Settings → Apps → Installed apps**; your documents and preferences stay where they are.
+Run **Linework-Setup-1.11.0-x64.msi**. It installs for your Windows account only, without administrator rights, and adds Linework to Start, Default Apps and Explorer's **Edit with Linework** menu. Uninstall it from **Settings → Apps → Installed apps**; your documents and preferences stay where they are.
 
 To build it yourself, see [CONTRIBUTING.md](CONTRIBUTING.md).
 

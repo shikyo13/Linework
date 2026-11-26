@@ -9,8 +9,10 @@ lw is the command-line side of Linework, a text editor for Windows. It
 searches the way grep and ripgrep do and takes their options, so what you
 know from them works here; it reads files of many gigabytes in parallel with
 the editor's own engine, and adds what they lack: code structure, conditions,
-time spans in logs, and replacing with a preview and undo. It is built for
-people and for programs (scripts and AI agents) alike.
+time spans in logs, and replacing with a preview and undo. Its split, cut and
+sort take GNU's options and look util-linux's, and work on every thread on
+files larger than memory. It is built for people and for programs (scripts and
+AI agents) alike.
 
 FIRST STEPS
 
@@ -27,6 +29,10 @@ FIRST STEPS
   lw replace old new src           do it, then: lw undo
   lw changes src                   what changed in a folder since last time
   lw open src/main.rs:120          show a place in the Linework editor
+  lw sort -u big.txt -o big.txt    sort a file of any size, without repeats
+  lw look HASH sorted.txt          lines starting with HASH in a sorted file
+  lw cut -d: -f1 pot.txt           the first field of each line
+  lw split -l 1000000 -d big.txt part_   pieces of a million lines
 
 lw PATTERN [PATH...] is lw find PATTERN [PATH...]. With no PATH, lw searches
 what is piped to it, or else the current folder.
@@ -43,6 +49,10 @@ COMMANDS
   defs       Find where a name is defined in code
   uses       Find where a name is used in code, not in comments or strings
   open       Show a file in the Linework editor, at a line and column
+  split      Cut a file into pieces by lines, bytes or number, as GNU split does
+  cut        Print chosen fields, bytes or characters of each line, as GNU cut does
+  sort       Sort lines of any size, remove repeats or merge sorted files, as GNU sort does
+  look       Print the lines of a sorted file that begin with a string, in a few small reads
   serve      Answer AI agents as a Model Context Protocol tool server
 
 TOPICS
@@ -416,6 +426,196 @@ instead of run.
 EXAMPLES
   lw open src/main.rs:120
   lw open notes.md app.log:80000000:5
+```
+
+## split
+
+Cut a file into pieces by lines, bytes or number, as GNU split does
+
+```text
+lw split [OPTIONS] [FILE [PREFIX]]
+```
+
+```text
+Writes FILE in pieces named PREFIX followed by a suffix: xaa, xab, ... by
+default. The options, the pieces and their names are GNU split's (checked
+byte for byte against GNU split 9.4), so a script written for split works
+here. FILE - or no FILE reads what is piped in.
+
+A file on disk is cut on every thread: its line ends are counted in
+parallel, the pieces are worked out, then copied several at once.
+
+HOW TO CUT (the last one given counts; -l 1000 when none is)
+  -l N          N lines a piece
+  -b SIZE       SIZE bytes a piece (SIZE: 10K, 5M, 2G are powers of 1024;
+                KB, MB, GB powers of 1000)
+  -C SIZE       at most SIZE bytes of whole lines a piece; a longer line is cut
+  -n N          N pieces of about equal size
+  -n l/N        N pieces without cutting lines
+  -n r/N        lines dealt to N pieces in turn
+  -n K/N, -n l/K/N, -n r/K/N   only piece K, written to the output
+
+NAMES
+  -d, --numeric-suffixes[=FROM]   suffixes 00, 01, ... (from FROM)
+  -x, --hex-suffixes[=FROM]       suffixes 00 ... 0f, 10, ...
+  -a N                            suffixes of N characters
+  --additional-suffix=SUF         SUF after each suffix, such as .txt
+  Without -a, suffixes grow as GNU split's do: ... yz, zaaa, ... zyzz,
+  zzaaaa (digits: ... 89, 9000 ...). With -a or -n, they have a fixed length;
+  if they would run out, lw says so before writing anything.
+
+OTHER
+  -e            no empty pieces with -n
+  -t SEP        lines end with SEP instead of a line feed (-t '\0')
+  --verbose     name each piece on the error stream as it is made
+  -j N          threads (default: every processor)
+
+EXAMPLES
+  lw split -l 1000000 -d -a 4 hashes.txt chunk_
+  lw split -n l/16 --additional-suffix=.txt wordlist.txt part_
+  lw split -C 2G dump.txt dump_
+  lw cut -d: -f1 pot.txt | lw split -l 5000000 - hashes_
+```
+
+## cut
+
+Print chosen fields, bytes or characters of each line, as GNU cut does
+
+```text
+lw cut -f LIST [-d DELIM] [OPTIONS] [FILE...]
+       lw cut -b LIST | -c LIST [OPTIONS] [FILE...]
+```
+
+```text
+Prints part of each line. The options and the output are GNU cut's
+(checked byte for byte against GNU cut 9.4). A file is cut in pieces on every
+thread and written in order.
+
+  -f LIST       fields, separated by DELIM (a tab unless -d is given). A line
+                without DELIM is printed whole, unless -s is given.
+  -d DELIM      the field separator, one byte (-d: , -d '\t')
+  -s            leave out lines without DELIM
+  -b LIST, -c LIST   bytes (-c counts bytes too, as GNU cut does)
+  --complement  everything but the LIST
+  --output-delimiter=TEXT   between the fields (or byte ranges) printed
+  -z            lines end with a zero byte
+  -o FILE       write to FILE instead of the output (faster than a
+                redirection for many gigabytes; a failed run leaves no FILE)
+  -j N          threads (default: every processor)
+
+LIST is positions and ranges from 1, separated by commas: 3, 1-4, 7-
+(to the end), -2 (from the start). They are printed in the line's order.
+
+The line's own end stays with the last field: in a file with Windows line
+ends (CRLF), a field that ends a line ends with its CR, as in GNU cut.
+
+EXAMPLES
+  lw cut -d: -f1 pwned.txt -o hashes.txt     everything before the first colon
+  lw cut -d: -f2- hashcat.potfile            the plain texts after the hash
+  lw cut -c1-8 hashes.txt
+```
+
+## sort
+
+Sort lines of any size, remove repeats or merge sorted files, as GNU sort does
+
+```text
+lw sort [OPTIONS] [FILE...]
+```
+
+```text
+Sorts the lines of the FILEs (or what is piped in) together. The options and
+the order are GNU sort's in the C locale, where lines compare byte by byte
+(checked against GNU sort 9.4 run with LC_ALL=C).
+
+Files larger than memory are sorted in parts: each part is sorted on every
+thread, parts wait in memory up to the buffer size (-S), are then merged into
+a temporary file, and at the end everything is merged to the output on every
+thread. Temporary files are deleted by Windows when lw closes them, even if
+lw is stopped.
+
+ORDER
+  -b            ignore blanks at the start of each key
+  -d            only letters, digits and blanks count
+  -f            letter case does not count
+  -g, -n        numbers: -g as C's strtod reads them (1e3, 0x10, inf),
+                -n plain decimals (quicker)
+  -h            sizes such as 2K and 1G
+  -M            months: JAN < FEB < ... < DEC
+  -V            version numbers within text: file2 < file10
+  -R            a random order that keeps equal keys together
+  -r            reverse
+  -k KEY        sort by a key: F[.C][OPTS][,F[.C][OPTS]], fields F and
+                characters C from 1, OPTS any of bdfghiMnRrV; repeat -k for
+                ties. -k2,2 is the second field alone; -k2 runs to the end.
+  -t SEP        fields are separated by SEP (default: blanks begin a field)
+  -s            stable: lines with equal keys keep their order
+
+WHAT IS DONE
+  -u            only the first of lines that are equal (by their keys)
+  -m            merge files that are each sorted already
+  -c, -C        check that a file is sorted; -c names the first line out of
+                order, -C only sets the exit code (1 if not sorted)
+
+WHERE AND HOW MUCH
+  -o FILE       write to FILE; FILE may be one of the inputs. It is written
+                beside FILE and replaces it at the end, so a failed sort leaves
+                the old FILE as it was.
+  -S SIZE       memory to use: a number of KiB, or with b, K, M, G, T or %
+                (of the computer's memory). Default: half of the memory
+                available when the sort starts, at least 256 MiB.
+  -T FOLDER     folder for temporary files (default: TMPDIR, else the
+                Windows temporary folder); repeat to spread them out. lw checks
+                the free space before writing each one.
+  --parallel N, -j N   threads (default: every processor)
+  -z            lines end with a zero byte
+  --files0-from=F   the input names, separated by zero bytes, from F
+  --random-source=F   the seed for -R from F
+
+Not provided: --debug and --compress-program.
+
+EXAMPLES
+  lw sort -u wordlist.txt -o wordlist.txt
+  lw sort -u -S 24G -T E:\tmp master_*.txt -o master_wordlist.txt
+  lw sort -t: -k1,1 -u hashcat.potfile -o pot_sorted.txt
+  lw sort -m part1.txt part2.txt -o all.txt
+  lw sort -C hashes.txt && echo sorted
+```
+
+## look
+
+Print the lines of a sorted file that begin with a string, in a few small reads
+
+```text
+lw look [-df] [-t CHAR] STRING FILE
+       lw look [-df] [-t CHAR] --keys KEYS FILE
+```
+
+```text
+Prints the lines of FILE that begin with STRING. FILE must be sorted (lw sort,
+or sort -df when -d and -f are given); the lines are found by bisection, a few
+dozen small reads, so a 50 GB file answers in milliseconds. The options and
+the output are util-linux look's (checked byte for byte against look from
+util-linux 2.39, also on files that are not sorted).
+
+  -d            only letters, digits and blanks count, in STRING and the lines
+  -f            letter case does not count
+  -t CHAR       compare STRING only up to and including its first CHAR
+
+lw's own:
+  --keys KEYS   look up every line of the file KEYS (- for what is piped in)
+                instead of one STRING. Each line of FILE that begins with any
+                key is printed once, in FILE's order. With few keys each is
+                found by bisection on every thread; with many, FILE is read
+                once on every thread instead, and need not be sorted.
+  -j N          threads (default: every processor)
+
+Exit code: 0 when a line was found, 1 when none was, 2 on an error.
+
+EXAMPLES
+  lw look 8846F7EAEE8FB117AD06BDD830B7586C pwnedpasswords.txt
+  lw look -t: 5F4DCC3B5AA765D61D8327DEB882CF99: hashcat.potfile
+  lw look --keys my_hashes.txt pwnedpasswords.txt
 ```
 
 ## serve

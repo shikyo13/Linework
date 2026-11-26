@@ -14,7 +14,10 @@ use std::{
 };
 
 /// The commands lw has; any other first word is a pattern for `lw find`.
-const COMMANDS: &[&str] = &["find", "count", "lines", "info", "replace", "undo", "changes", "files", "defs", "uses", "open", "serve", "help"];
+const COMMANDS: &[&str] = &["find", "count", "lines", "info", "replace", "undo", "changes", "files", "defs", "uses", "open", "serve", "help", "split", "cut", "sort", "look"];
+
+/// The commands that take the options of GNU's file tools (and BSD's look), not ripgrep's.
+const FILE_TOOLS: &[&str] = &["split", "cut", "sort", "look"];
 
 /// Messages for whoever runs lw (an output cut short, a file that could not be
 /// read): on the error stream, or while `lw serve` runs a tool, kept to go
@@ -96,7 +99,9 @@ fn execute(argv: Vec<String>, mut out: &mut dyn Write) -> Result<i32, String> {
     let io = |e: io::Error| e.to_string();
     // Help: lw, lw help [NAME | --markdown], lw COMMAND --help, lw -h.
     let first = argv.first().map(String::as_str).unwrap_or("help");
-    let asks = argv.iter().take_while(|w| *w != "--").any(|w| w == "--help" || w == "-h");
+    // -h is sort's human-numeric order, so the GNU-style commands take only --help.
+    let gnu_style = FILE_TOOLS.contains(&first);
+    let asks = argv.iter().take_while(|w| *w != "--").any(|w| w == "--help" || (w == "-h" && !gnu_style));
     if matches!(first, "help" | "--help" | "-h") || asks {
         let name = if asks && help::find(first).is_some() { Some(first) } else { argv.get(1).map(String::as_str).filter(|n| *n != "--help" && *n != "-h") };
         let text = match name {
@@ -109,7 +114,17 @@ fn execute(argv: Vec<String>, mut out: &mut dyn Write) -> Result<i32, String> {
         return Ok(0);
     }
     let (command, rest): (&str, Vec<String>) = if COMMANDS.contains(&first) { (first, argv[1..].to_vec()) } else { ("find", argv.clone()) };
-    let mut s = Settings::read(rest, |e| note!("lw: {e}"))?;
+    if FILE_TOOLS.contains(&command) {
+        let code = match command {
+            "split" => split::run(&rest, out)?,
+            "cut" => cut::run(&rest, out)?,
+            "sort" => sort::run(&rest, out)?,
+            _ => look::run(&rest, out)?,
+        };
+        out.flush().map_err(io)?;
+        return Ok(code);
+    }
+    let mut s =Settings::read(rest, |e| note!("lw: {e}"))?;
     if s.version {
         writeln!(out, "lw {}", env!("CARGO_PKG_VERSION")).map_err(io)?;
         return Ok(0);
@@ -593,14 +608,21 @@ fn code_places(s: &Settings, definitions: bool, name: &str, target: &str, began:
 }
 
 mod account;
+mod chunks;
+mod cut;
 mod generate;
+mod gnu_args;
 mod help;
+mod look;
 mod marks;
 mod printer;
 mod report;
 mod sampler;
 mod search;
 mod serve;
+mod sort;
+mod sort_order;
+mod split;
 mod time;
 
 fn main() {
