@@ -700,14 +700,23 @@ struct Scroll {
     at: i32,
     /// While the mark is dragged: how far below the mark's top it was taken.
     held: Option<i32>,
+    /// The pointer is over the bar.
+    over: bool,
 }
+
+/// What Windows leaves at each end of a bar for its arrows, and how long it
+/// makes the mark of a bar that was given no page size.
+const BAR_END: i32 = 17;
 
 impl Scroll {
     /// The mark's top and length within a bar this long.
     fn mark(&self, length: i32) -> (i32, i32) {
-        let size = (length / 8).clamp(24.min(length), length);
-        let span = (self.most - self.least).max(1);
-        ((length - size) * (self.at - self.least).clamp(0, span) / span, size)
+        let ends = if length > BAR_END * 4 { BAR_END } else { 0 };
+        let track = length - ends * 2;
+        let size = BAR_END.min(track);
+        let span = (self.most - self.least).max(1) as i64;
+        let along = (track - size) as i64 * (self.at - self.least).clamp(0, span as i32) as i64 / span;
+        (ends + along as i32, size)
     }
 }
 
@@ -742,13 +751,21 @@ unsafe extern "system" fn scroll_proc(hwnd: HWND, message: u32, w: WPARAM, l: LP
         WM_PAINT => unsafe {
             let mut paint: PAINTSTRUCT = std::mem::zeroed();
             let dc = window::BeginPaint(hwnd, &mut paint);
-            let (top, size) = state(&window, |bar: &mut Scroll| bar.mark(area.bottom)).unwrap_or((0, 0));
-            let (back, _, _, _, _) = palette();
-            SetDCBrushColor(dc, back);
+            let (top, size, wide) =
+                state(&window, |bar: &mut Scroll| (bar.mark(area.bottom).0, bar.mark(area.bottom).1, bar.over || bar.held.is_some())).unwrap_or((0, 0, false));
+            // As Windows 11 draws a bar: a flat strip with a thin mark, which
+            // thickens while the pointer is on the bar.
+            SetDCBrushColor(dc, if DARK.get() { 0x171717 } else { 0xF0F0F0 });
             FillRect(dc, &area, GetStockObject(DC_BRUSH) as HBRUSH);
-            let mark = if DARK.get() { 0x6A6063 } else { 0xB5ADB0 };
-            let inset = ((area.right - 6) / 2).max(1);
-            gdi::rounded(dc, RECT { left: inset, top: top + 2, right: area.right - inset, bottom: top + size - 2 }, 3.0, mark, mark);
+            let mark = if DARK.get() { 0x959595 } else { 0x858585 };
+            if wide {
+                let inset = ((area.right - 6) / 2).max(1);
+                gdi::rounded(dc, RECT { left: inset, top, right: area.right - inset, bottom: top + size }, 3.0, mark, mark);
+            } else {
+                let left = (area.right - 1) / 2;
+                SetDCBrushColor(dc, mark);
+                FillRect(dc, &RECT { left, top, right: left + 2, bottom: top + size }, GetStockObject(DC_BRUSH) as HBRUSH);
+            }
             window::EndPaint(hwnd, &paint);
             0
         },
@@ -764,7 +781,16 @@ unsafe extern "system" fn scroll_proc(hwnd: HWND, message: u32, w: WPARAM, l: LP
             }
             0
         },
+        WM_MOUSELEAVE => {
+            if state(&window, |bar: &mut Scroll| std::mem::replace(&mut bar.over, false)).unwrap_or(false) {
+                window.view.setNeedsDisplay(true);
+            }
+            0
+        }
         WM_MOUSEMOVE | WM_LBUTTONUP => {
+            if !state(&window, |bar: &mut Scroll| std::mem::replace(&mut bar.over, true)).unwrap_or(true) {
+                window.view.setNeedsDisplay(true);
+            }
             let moved = state(&window, |bar: &mut Scroll| {
                 let grip = bar.held?;
                 let (_, size) = bar.mark(area.bottom);
