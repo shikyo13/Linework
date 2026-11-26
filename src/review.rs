@@ -728,9 +728,7 @@ fn show_review(owner: H, mut r: Review, initial: u64, shown: &mut Option<u64>) -
         let mut geometry = client(h);
         let mut first_lines = [0; 2];
         enable(owner, false);
-        unsafe {
-            ShowWindow(hwnd(h), SW_SHOW);
-        }
+        crate::win::show_popup(h, owner);
         focus(p.list);
         loop {
             if !hooked && client(h) != geometry {
@@ -865,9 +863,13 @@ fn show_review(owner: H, mut r: Review, initial: u64, shown: &mut Option<u64>) -
     })();
     enable(owner, true);
     unsafe { RemoveWindowSubclass(hwnd(h), Some(resize_panel), 1); }
+    // Back to the owner only when the review window had the keyboard.
+    let had_keyboard = unsafe { GetActiveWindow() } == hwnd(h);
     destroy(h);
-    unsafe {
-        SetActiveWindow(hwnd(owner));
+    if had_keyboard {
+        unsafe {
+            SetActiveWindow(hwnd(owner));
+        }
     }
     if unsafe { IsChild(hwnd(owner), hwnd(old)) } != 0 {
         focus(old);

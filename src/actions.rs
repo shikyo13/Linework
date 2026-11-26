@@ -879,7 +879,17 @@ impl App {
         if self.buffers[i].large {
             let d = &self.buffers[i].doc;
             if !d.indexing_complete() && line >= d.line_count() {
-                self.indexed_jump.insert(self.buffers[i].id, (line,col));
+                // Lines of one length let the place be worked out before the
+                // count reaches it; the count confirms or corrects it.
+                let tabs = self.edit().send(GETTABWIDTH, 0, 0).max(1) as u64;
+                let guess = (n <= 4096)
+                    .then(|| d.estimate_line_start(l))
+                    .flatten()
+                    .and_then(|pos| crate::launch::column_offset(d, pos, n, tabs, || false).ok());
+                self.indexed_jump.insert(self.buffers[i].id, (line, col, guess));
+                if let Some(at) = guess {
+                    self.go(at, 0);
+                }
                 self.notice(format!("Locating line {line}…"));
                 return;
             }

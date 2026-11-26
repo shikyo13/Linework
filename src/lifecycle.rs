@@ -1466,9 +1466,26 @@ impl App {
     fn tick(&mut self) {
         if let Some(i) = self.current() {
             let buf = &self.buffers[i];
-            if let Some(&(line, col)) = self.indexed_jump.get(&buf.id) {
+            if let Some(&(line, col, guess)) = self.indexed_jump.get(&buf.id) {
                 if buf.doc.indexing_complete() || line < buf.doc.line_count() {
-                    self.goto_line_col(line,col)
+                    // The line is found: its "Locating line" notice is done too.
+                    if self.status.starts_with("Locating line") {
+                        self.status_at = Instant::now() - Duration::from_secs(6);
+                    }
+                    let exact = guess.and_then(|_| {
+                        let start = buf.doc.line_start(line.saturating_sub(1));
+                        let tabs = self.edit().send(GETTABWIDTH, 0, 0).max(1) as u64;
+                        crate::launch::column_offset(&buf.doc, start, col.saturating_sub(1), tabs, || false).ok()
+                    });
+                    if guess.is_some_and(|at| at != self.global_pos() || exact == Some(at)) {
+                        // Moved away from the estimate since, or the estimate was
+                        // right: the view stays as it is.
+                        self.indexed_jump.remove(&buf.id);
+                        self.refresh();
+                    } else {
+                        // The exact place: the same as a right estimate.
+                        self.goto_line_col(line, col)
+                    }
                 } else if let Some(err) = buf.doc.index_error() {
                     self.indexed_jump.remove(&buf.id);
                     self.notice(err)

@@ -349,7 +349,9 @@ pub struct App {
     last_find: Option<(u64, u64, u64, String)>,
     last_job_hit: Option<Range<u64>>,
     pending_jump: std::collections::HashMap<String, (u64, u64)>,
-    indexed_jump: std::collections::HashMap<u64, (u64, u64)>,
+    /// A jump waiting for the line count: line, column, and where an
+    /// estimate (`Document::estimate_line_start`) already put the caret.
+    indexed_jump: std::collections::HashMap<u64, (u64, u64, Option<u64>)>,
     column_request: Arc<std::sync::atomic::AtomicU64>,
 }
 impl App {

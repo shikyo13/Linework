@@ -187,7 +187,9 @@ pub unsafe extern "system" fn proc(h: HWND, m: u32, w: usize, l: isize) -> isize
             }
             WM_ACTIVATE if (w & 0xffff) != WA_INACTIVE as usize => {
                 push(Event::Activated);
-                DefWindowProcW(h, m, w, l)
+                let r = DefWindowProcW(h, m, w, l);
+                crate::win::focus_pending(h as H);
+                r
             }
             WM_ACTIVATE | WM_MOVE => {
                 // A glide's stand-in is placed in screen coordinates.
@@ -365,7 +367,15 @@ pub unsafe extern "system" fn proc(h: HWND, m: u32, w: usize, l: isize) -> isize
                 let _native_plugins = crate::npp::after_notification(l, b);
                 let mut nt = *(l as *const Notification);
                 let code = nt.nmhdr.code;
+                // Styles for a log are made now, before Scintilla paints.
+                if code == n::SCN_STYLENEEDED
+                    && linework_editor::style_needed(nt.nmhdr.hwnd_from as isize, nt.position.max(0) as usize)
+                {
+                    return 0;
+                }
                 if code == n::SCN_UPDATEUI {
+                    // A log's lines on screen are styled before they are painted.
+                    linework_editor::style_visible(nt.nmhdr.hwnd_from as isize);
                     // Before the editor paints, so a glide starts on the
                     // same frame as the move it stands in for.
                     crate::glide::editor_updated(nt.nmhdr.hwnd_from, nt.updated);

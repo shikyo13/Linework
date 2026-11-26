@@ -320,8 +320,8 @@ fn inspect(
     let mut selected_index = 0;
     panel.update(&steps, 0);
     unsafe {
+        crate::win::show_popup(h, owner);
         EnableWindow(hwnd(owner), 0);
-        ShowWindow(hwnd(h), SW_SHOW);
     }
     focus(if steps.is_empty() {
         panel.name
@@ -475,7 +475,10 @@ fn inspect(
     };
     unsafe {
         EnableWindow(hwnd(owner), 1);
-        SetActiveWindow(hwnd(owner));
+        // Back to the owner only when the popup had the keyboard.
+        if GetActiveWindow() == hwnd(h) {
+            SetActiveWindow(hwnd(owner));
+        }
     }
     destroy(h);
     outcome
