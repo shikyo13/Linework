@@ -1,6 +1,7 @@
 Cascadia Mono, version 2407.024
 Copyright 2021 Microsoft Corporation, with Reserved Font Name Cascadia Code.
-Licensed under the SIL Open Font License, Version 1.1: https://scripts.sil.org/OFL
+Licensed under the SIL Open Font License, Version 1.1 (the full text is in OFL.txt
+beside this file): https://scripts.sil.org/OFL
 Source: https://github.com/microsoft/cascadia-code (release v2407.24), files
 ttf/CascadiaMono.ttf and ttf/CascadiaMonoItalic.ttf, unchanged.
 

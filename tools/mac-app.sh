@@ -21,7 +21,7 @@ for image in mac_cursor_busy mac_cursor_flipped; do
     tiffutil -cathidpicheck "$images/$image.png" "$images/$image@2x.png" -out "$app/Contents/Resources/$image.tiff" 2>/dev/null
 done
 mkdir -p "$app/Contents/Resources/fonts"
-cp "$here"/assets/mac/fonts/*.ttf "$here"/assets/mac/fonts/NOTICE.txt "$app/Contents/Resources/fonts/"
+cp "$here"/assets/mac/fonts/*.ttf "$here"/assets/mac/fonts/NOTICE.txt "$here"/assets/mac/fonts/OFL.txt "$app/Contents/Resources/fonts/"
 cp "$here/assets/mac/Linework.icns" "$app/Contents/Resources/Linework.icns"
 # The same Info.plist the Xcode project uses, with its settings filled in.
 sed -e 's/$(EXECUTABLE_NAME)/Linework/' -e 's/$(PRODUCT_BUNDLE_IDENTIFIER)/com.zerosecurity.linework/' \
