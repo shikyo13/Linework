@@ -164,16 +164,15 @@ fn with_font<T>(context: &Dc, run: impl FnOnce(&Font) -> T) -> T {
 }
 
 fn weight(windows: i32) -> f64 {
-    // AppKit's weights run from -1 to 1 with regular at 0, as Windows' run
-    // from 100 to 900 with regular at 400.
+    // AppKit's weights run from -1 to 1 with regular at 0 and bold at 0.4.
+    // To this call Segoe UI is a family of two weights, regular and bold
+    // (its semibold and light are families of their own), and Windows gives
+    // the regular one up to 550 and the bold one above. The system font here
+    // has every weight between, which would make 500 heavier and 600 lighter
+    // than the same text is there.
     match windows {
-        ..=350 => -0.4,
-        351..=450 => 0.0,
-        451..=550 => 0.23,
-        551..=625 => 0.3,
-        626..=675 => 0.35,
-        676..=750 => 0.4,
-        _ => 0.56,
+        ..=550 => 0.0,
+        _ => 0.4,
     }
 }
 
