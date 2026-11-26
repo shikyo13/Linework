@@ -13,7 +13,12 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 type Id = *mut c_void;
 type Selector = *const c_void;
 type Direct = unsafe extern "C" fn(isize, u32, usize, isize) -> isize;
-type Handler = RefCell<Option<Rc<dyn Fn(&Notification)>>>;
+/// What a view's listener is given: who hears the notifications, and the view
+/// they come from.
+struct Hearing {
+    handler: RefCell<Option<Rc<dyn Fn(&Notification)>>>,
+    view: Id,
+}
 
 #[repr(C)]
 struct Rect {
@@ -68,10 +73,9 @@ unsafe fn send_frame(receiver: Id, name: &CStr, frame: Rect) -> Id {
 pub(crate) struct View {
     view: Id,
     listener: Id,
-    handler: Box<Handler>,
-    /// Scintilla's own object behind the view: what the direct function takes
-    /// and what every notification names as its sender.
-    pub(crate) backend: isize,
+    hearing: Box<Hearing>,
+    /// Scintilla's own object behind the view, which the direct function takes.
+    backend: isize,
     direct: Direct,
 }
 
@@ -100,11 +104,11 @@ impl View {
             return Err("Cannot reach the text editor".into());
         }
         let direct: Direct = unsafe { std::mem::transmute(entry) };
-        let handler: Box<Handler> = Box::new(RefCell::new(None));
+        let hearing = Box::new(Hearing { handler: RefCell::new(None), view });
         let listener = unsafe {
             let class = listener_class();
             let listener = send(send(class, c"alloc", std::ptr::null_mut()), c"init", std::ptr::null_mut());
-            listener.byte_offset(handler_offset(class)).cast::<*const Handler>().write(&*handler);
+            listener.byte_offset(hearing_offset(class)).cast::<*const Hearing>().write(&*hearing);
             send(view, c"setDelegate:", listener);
             direct(backend, SCI_SETIDENTIFIER, id as usize, 0);
             if parent > 0 {
@@ -112,9 +116,10 @@ impl View {
             }
             listener
         };
-        Ok(Self { view, listener, handler, backend, direct })
+        Ok(Self { view, listener, hearing, backend, direct })
     }
 
+    /// The view's address: the window, in a Windows host's terms.
     pub(crate) fn view(&self) -> isize {
         self.view as isize
     }
@@ -124,7 +129,7 @@ impl View {
     }
 
     pub(crate) fn listen(&self, handler: Option<Rc<dyn Fn(&Notification)>>) {
-        self.handler.replace(handler);
+        self.hearing.handler.replace(handler);
     }
 
     pub(crate) fn set_frame(&self, x: f64, y: f64, width: f64, height: f64) {
@@ -144,12 +149,12 @@ impl Drop for View {
 }
 
 /// The class of the object each view reports to. It holds one address: where
-/// that view's handler is kept.
+/// that view's hearing is kept.
 fn listener_class() -> Id {
     static CLASS: OnceLock<usize> = OnceLock::new();
     *CLASS.get_or_init(|| unsafe {
         let class = objc_allocateClassPair(objc_getClass(c"NSObject".as_ptr()), c"LineworkEditorListener".as_ptr(), 0);
-        class_addIvar(class, c"handler".as_ptr(), size_of::<usize>(), 3, c"^v".as_ptr());
+        class_addIvar(class, c"hearing".as_ptr(), size_of::<usize>(), 3, c"^v".as_ptr());
         class_addMethod(
             class,
             selector(c"notification:"),
@@ -161,19 +166,32 @@ fn listener_class() -> Id {
     }) as Id
 }
 
-fn handler_offset(class: Id) -> isize {
-    unsafe { ivar_getOffset(class_getInstanceVariable(class, c"handler".as_ptr())) }
+fn hearing_offset(class: Id) -> isize {
+    unsafe { ivar_getOffset(class_getInstanceVariable(class, c"hearing".as_ptr())) }
 }
 
 unsafe extern "C" fn notified(listener: Id, _: Selector, notification: *const Notification) {
+    let hearing = unsafe { &*listener.byte_offset(hearing_offset(listener_class())).cast::<*const Hearing>().read() };
+    // Scintilla names its own inner object as the sender. To the host the
+    // sender is the view, as the window is on Windows.
+    let mut notice = unsafe { *notification };
+    notice.nmhdr.hwnd_from = hearing.view as isize;
     // The handler may send messages that notify again, or replace itself, so it
     // is taken out of its cell before it runs.
-    let handler = unsafe {
-        let cell = listener.byte_offset(handler_offset(listener_class())).cast::<*const Handler>().read();
-        (*cell).borrow().clone()
-    };
+    let handler = hearing.handler.borrow().clone();
     if let Some(handler) = handler {
-        handler(unsafe { &*notification });
+        return handler(&notice);
+    }
+    // With no handler named, the view around this one is told, if it listens:
+    // the place a Windows host receives WM_NOTIFY.
+    unsafe {
+        let parent = send(hearing.view, c"superview", std::ptr::null_mut());
+        let name = selector(c"linework_notify:");
+        let responds: unsafe extern "C" fn(Id, Selector, Selector) -> bool = std::mem::transmute(objc_msgSend as unsafe extern "C" fn());
+        if !parent.is_null() && responds(parent, selector(c"respondsToSelector:"), name) {
+            let tell: unsafe extern "C" fn(Id, Selector, *const Notification) = std::mem::transmute(objc_msgSend as unsafe extern "C" fn());
+            tell(parent, name, &notice);
+        }
     }
 }
 

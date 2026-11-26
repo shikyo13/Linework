@@ -4,7 +4,7 @@ pub type BOOL = i32;
 pub type COLORREF = u32;
 pub unsafe extern "system" fn CloseHandle(hobject : HANDLE) -> BOOL { let _ = hobject; crate::missing("CloseHandle"); unsafe { core::mem::zeroed() } }
 pub const ERROR_CLASS_ALREADY_EXISTS: WIN32_ERROR = 1410u32;
-pub unsafe extern "system" fn GetLastError() -> WIN32_ERROR { crate::missing("GetLastError"); unsafe { core::mem::zeroed() } }
+pub unsafe extern "system" fn GetLastError() -> WIN32_ERROR { unsafe { crate::imp::GetLastError() } }
 pub unsafe extern "system" fn GlobalFree(hmem : HGLOBAL) -> HGLOBAL { let _ = hmem; crate::missing("GlobalFree"); unsafe { core::mem::zeroed() } }
 pub type HANDLE = *mut core::ffi::c_void;
 pub type HGLOBAL = *mut core::ffi::c_void;

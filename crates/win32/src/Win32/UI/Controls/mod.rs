@@ -64,7 +64,7 @@ pub const SBP_UPPERTRACKVERT: SCROLLBARPARTS = 7i32;
 pub const SCRBS_NORMAL: SCROLLBARSTYLESTATES = 1i32;
 pub type SCROLLBARPARTS = i32;
 pub type SCROLLBARSTYLESTATES = i32;
-pub unsafe extern "system" fn SetWindowTheme(hwnd : super::super::Foundation:: HWND, pszsubappname : windows_sys::core::PCWSTR, pszsubidlist : windows_sys::core::PCWSTR) -> windows_sys::core::HRESULT { let _ = hwnd; let _ = pszsubappname; let _ = pszsubidlist; crate::missing("SetWindowTheme"); unsafe { core::mem::zeroed() } }
+pub unsafe extern "system" fn SetWindowTheme(hwnd : super::super::Foundation:: HWND, pszsubappname : windows_sys::core::PCWSTR, pszsubidlist : windows_sys::core::PCWSTR) -> windows_sys::core::HRESULT { unsafe { crate::imp::SetWindowTheme(hwnd, pszsubappname, pszsubidlist) } }
 #[repr(C, packed(1))]
 #[derive(Clone, Copy)]
 pub struct TASKDIALOGCONFIG {

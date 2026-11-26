@@ -245,6 +245,11 @@ pub fn profile() -> PathBuf {
     std::env::var_os("LINEWORK_PROFILE")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
+            // Where macOS keeps what a program stores for one person.
+            #[cfg(target_os = "macos")]
+            if let Some(home) = std::env::var_os("HOME") {
+                return PathBuf::from(home).join("Library/Application Support/Linework");
+            }
             std::env::var_os("LOCALAPPDATA")
                 .map(PathBuf::from)
                 .unwrap_or_else(std::env::temp_dir)

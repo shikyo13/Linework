@@ -65,7 +65,8 @@ def items(module):
 
 def used_names():
     names = set()
-    for path in glob.glob(os.path.join(here, "src", "*.rs")):
+    sources = glob.glob(os.path.join(here, "src", "*.rs")) + glob.glob(os.path.join(here, "crates", "win32", "src", "imp", "*.rs"))
+    for path in sources:
         if os.path.basename(path) in REPLACED:
             continue
         text = re.sub(r"//[^\n]*", "", open(path).read())

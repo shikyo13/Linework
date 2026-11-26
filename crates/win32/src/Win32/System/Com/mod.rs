@@ -2,5 +2,5 @@
 #![allow(non_snake_case, non_camel_case_types, non_upper_case_globals, clippy::all)]
 pub type COINIT = i32;
 pub const COINIT_APARTMENTTHREADED: COINIT = 2i32;
-pub unsafe extern "system" fn CoInitializeEx(pvreserved : *const core::ffi::c_void, dwcoinit : u32) -> windows_sys::core::HRESULT { let _ = pvreserved; let _ = dwcoinit; crate::missing("CoInitializeEx"); unsafe { core::mem::zeroed() } }
-pub unsafe extern "system" fn CoUninitialize() { crate::missing("CoUninitialize"); unsafe { core::mem::zeroed() } }
+pub unsafe extern "system" fn CoInitializeEx(pvreserved : *const core::ffi::c_void, dwcoinit : u32) -> windows_sys::core::HRESULT { unsafe { crate::imp::CoInitializeEx(pvreserved, dwcoinit) } }
+pub unsafe extern "system" fn CoUninitialize() { unsafe { crate::imp::CoUninitialize() } }

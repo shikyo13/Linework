@@ -146,7 +146,7 @@ impl Editor {
         #[cfg(target_os = "macos")]
         let view = mac::View::create(parent, id)?;
         #[cfg(target_os = "macos")]
-        let hwnd = view.backend as *mut std::ffi::c_void;
+        let hwnd = view.view() as *mut std::ffi::c_void;
         #[cfg(windows)]
         let class: Vec<u16> = "Scintilla".encode_utf16().chain(Some(0)).collect();
         #[cfg(windows)]
@@ -232,8 +232,8 @@ impl Editor {
         Ok(editor)
     }
 
-    /// The window on Windows. On macOS, Scintilla's own object behind the view.
-    /// On both it is what a notification from this editor names as its sender.
+    /// The window on Windows, the view on macOS. On both it is what a
+    /// notification from this editor names as its sender.
     pub fn hwnd(&self) -> isize {
         self.hwnd
     }

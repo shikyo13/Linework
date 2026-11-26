@@ -2,7 +2,7 @@
 #![allow(non_snake_case, non_camel_case_types, non_upper_case_globals, clippy::all)]
 pub type DPI_AWARENESS_CONTEXT = *mut core::ffi::c_void;
 pub const DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2: DPI_AWARENESS_CONTEXT = -4i32 as _;
-pub unsafe extern "system" fn GetDpiForWindow(hwnd : super::super::Foundation:: HWND) -> u32 { let _ = hwnd; crate::missing("GetDpiForWindow"); unsafe { core::mem::zeroed() } }
-pub unsafe extern "system" fn GetSystemMetricsForDpi(nindex : super::WindowsAndMessaging:: SYSTEM_METRICS_INDEX, dpi : u32) -> i32 { let _ = nindex; let _ = dpi; crate::missing("GetSystemMetricsForDpi"); unsafe { core::mem::zeroed() } }
-pub unsafe extern "system" fn SetProcessDpiAwarenessContext(value : DPI_AWARENESS_CONTEXT) -> super::super::Foundation:: BOOL { let _ = value; crate::missing("SetProcessDpiAwarenessContext"); unsafe { core::mem::zeroed() } }
+pub unsafe extern "system" fn GetDpiForWindow(hwnd : super::super::Foundation:: HWND) -> u32 { unsafe { crate::imp::GetDpiForWindow(hwnd) } }
+pub unsafe extern "system" fn GetSystemMetricsForDpi(nindex : super::WindowsAndMessaging:: SYSTEM_METRICS_INDEX, dpi : u32) -> i32 { unsafe { crate::imp::GetSystemMetricsForDpi(nindex, dpi) } }
+pub unsafe extern "system" fn SetProcessDpiAwarenessContext(value : DPI_AWARENESS_CONTEXT) -> super::super::Foundation:: BOOL { unsafe { crate::imp::SetProcessDpiAwarenessContext(value) } }
 pub unsafe extern "system" fn SystemParametersInfoForDpi(uiaction : u32, uiparam : u32, pvparam : *mut core::ffi::c_void, fwinini : u32, dpi : u32) -> super::super::Foundation:: BOOL { let _ = uiaction; let _ = uiparam; let _ = pvparam; let _ = fwinini; let _ = dpi; crate::missing("SystemParametersInfoForDpi"); unsafe { core::mem::zeroed() } }

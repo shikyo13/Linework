@@ -5,4 +5,4 @@ pub type FILE_ACCESS_RIGHTS = u32;
 pub const MOVEFILE_REPLACE_EXISTING: MOVE_FILE_FLAGS = 1u32;
 pub const MOVEFILE_WRITE_THROUGH: MOVE_FILE_FLAGS = 8u32;
 pub type MOVE_FILE_FLAGS = u32;
-pub unsafe extern "system" fn MoveFileExW(lpexistingfilename : windows_sys::core::PCWSTR, lpnewfilename : windows_sys::core::PCWSTR, dwflags : MOVE_FILE_FLAGS) -> super::super::Foundation:: BOOL { let _ = lpexistingfilename; let _ = lpnewfilename; let _ = dwflags; crate::missing("MoveFileExW"); unsafe { core::mem::zeroed() } }
+pub unsafe extern "system" fn MoveFileExW(lpexistingfilename : windows_sys::core::PCWSTR, lpnewfilename : windows_sys::core::PCWSTR, dwflags : MOVE_FILE_FLAGS) -> super::super::Foundation:: BOOL { unsafe { crate::imp::MoveFileExW(lpexistingfilename, lpnewfilename, dwflags) } }

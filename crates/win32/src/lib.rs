@@ -10,6 +10,7 @@ extern crate self as windows_sys;
 pub mod Win32;
 mod imp;
 pub mod os;
+pub use imp::gdi::save_picture;
 
 /// The few basic types windows-sys keeps beside `Win32`.
 pub mod core {

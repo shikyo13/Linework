@@ -34,8 +34,8 @@ pub struct BLENDFUNCTION {
     pub SourceConstantAlpha: u8,
     pub AlphaFormat: u8,
 }
-pub unsafe extern "system" fn BeginPaint(hwnd : super::super::Foundation:: HWND, lppaint : *mut PAINTSTRUCT) -> HDC { let _ = hwnd; let _ = lppaint; crate::missing("BeginPaint"); unsafe { core::mem::zeroed() } }
-pub unsafe extern "system" fn BitBlt(hdc : HDC, x : i32, y : i32, cx : i32, cy : i32, hdcsrc : HDC, x1 : i32, y1 : i32, rop : ROP_CODE) -> super::super::Foundation:: BOOL { let _ = hdc; let _ = x; let _ = y; let _ = cx; let _ = cy; let _ = hdcsrc; let _ = x1; let _ = y1; let _ = rop; crate::missing("BitBlt"); unsafe { core::mem::zeroed() } }
+pub unsafe extern "system" fn BeginPaint(hwnd : super::super::Foundation:: HWND, lppaint : *mut PAINTSTRUCT) -> HDC { unsafe { crate::imp::BeginPaint(hwnd, lppaint) } }
+pub unsafe extern "system" fn BitBlt(hdc : HDC, x : i32, y : i32, cx : i32, cy : i32, hdcsrc : HDC, x1 : i32, y1 : i32, rop : ROP_CODE) -> super::super::Foundation:: BOOL { unsafe { crate::imp::BitBlt(hdc, x, y, cx, cy, hdcsrc, x1, y1, rop) } }
 pub const COLORONCOLOR: STRETCH_BLT_MODE = 3i32;
 pub const COLOR_HIGHLIGHT: SYS_COLOR_INDEX = 13i32;
 pub const COLOR_HIGHLIGHTTEXT: SYS_COLOR_INDEX = 14i32;
@@ -44,45 +44,52 @@ pub const COLOR_INFOTEXT: SYS_COLOR_INDEX = 23i32;
 pub const COLOR_WINDOW: SYS_COLOR_INDEX = 5i32;
 pub const COLOR_WINDOWTEXT: SYS_COLOR_INDEX = 8i32;
 pub unsafe extern "system" fn Chord(hdc : HDC, x1 : i32, y1 : i32, x2 : i32, y2 : i32, x3 : i32, y3 : i32, x4 : i32, y4 : i32) -> super::super::Foundation:: BOOL { let _ = hdc; let _ = x1; let _ = y1; let _ = x2; let _ = y2; let _ = x3; let _ = y3; let _ = x4; let _ = y4; crate::missing("Chord"); unsafe { core::mem::zeroed() } }
-pub unsafe extern "system" fn ClientToScreen(hwnd : super::super::Foundation:: HWND, lppoint : *mut super::super::Foundation:: POINT) -> super::super::Foundation:: BOOL { let _ = hwnd; let _ = lppoint; crate::missing("ClientToScreen"); unsafe { core::mem::zeroed() } }
+pub unsafe extern "system" fn ClientToScreen(hwnd : super::super::Foundation:: HWND, lppoint : *mut super::super::Foundation:: POINT) -> super::super::Foundation:: BOOL { unsafe { crate::imp::ClientToScreen(hwnd, lppoint) } }
 pub unsafe extern "system" fn CreateBitmap(nwidth : i32, nheight : i32, nplanes : u32, nbitcount : u32, lpbits : *const core::ffi::c_void) -> HBITMAP { let _ = nwidth; let _ = nheight; let _ = nplanes; let _ = nbitcount; let _ = lpbits; crate::missing("CreateBitmap"); unsafe { core::mem::zeroed() } }
-pub unsafe extern "system" fn CreateCompatibleBitmap(hdc : HDC, cx : i32, cy : i32) -> HBITMAP { let _ = hdc; let _ = cx; let _ = cy; crate::missing("CreateCompatibleBitmap"); unsafe { core::mem::zeroed() } }
-pub unsafe extern "system" fn CreateCompatibleDC(hdc : HDC) -> HDC { let _ = hdc; crate::missing("CreateCompatibleDC"); unsafe { core::mem::zeroed() } }
-pub unsafe extern "system" fn CreateFontIndirectW(lplf : *const LOGFONTW) -> HFONT { let _ = lplf; crate::missing("CreateFontIndirectW"); unsafe { core::mem::zeroed() } }
-pub unsafe extern "system" fn CreateFontW(cheight : i32, cwidth : i32, cescapement : i32, corientation : i32, cweight : i32, bitalic : u32, bunderline : u32, bstrikeout : u32, icharset : u32, ioutprecision : u32, iclipprecision : u32, iquality : u32, ipitchandfamily : u32, pszfacename : windows_sys::core::PCWSTR) -> HFONT { let _ = cheight; let _ = cwidth; let _ = cescapement; let _ = corientation; let _ = cweight; let _ = bitalic; let _ = bunderline; let _ = bstrikeout; let _ = icharset; let _ = ioutprecision; let _ = iclipprecision; let _ = iquality; let _ = ipitchandfamily; let _ = pszfacename; crate::missing("CreateFontW"); unsafe { core::mem::zeroed() } }
-pub unsafe extern "system" fn CreateSolidBrush(color : super::super::Foundation:: COLORREF) -> HBRUSH { let _ = color; crate::missing("CreateSolidBrush"); unsafe { core::mem::zeroed() } }
+pub unsafe extern "system" fn CreateCompatibleBitmap(hdc : HDC, cx : i32, cy : i32) -> HBITMAP { unsafe { crate::imp::CreateCompatibleBitmap(hdc, cx, cy) } }
+pub unsafe extern "system" fn CreateCompatibleDC(hdc : HDC) -> HDC { unsafe { crate::imp::CreateCompatibleDC(hdc) } }
+pub unsafe extern "system" fn CreateFontIndirectW(lplf : *const LOGFONTW) -> HFONT { unsafe { crate::imp::CreateFontIndirectW(lplf) } }
+pub unsafe extern "system" fn CreateFontW(cheight : i32, cwidth : i32, cescapement : i32, corientation : i32, cweight : i32, bitalic : u32, bunderline : u32, bstrikeout : u32, icharset : u32, ioutprecision : u32, iclipprecision : u32, iquality : u32, ipitchandfamily : u32, pszfacename : windows_sys::core::PCWSTR) -> HFONT { unsafe { crate::imp::CreateFontW(cheight, cwidth, cescapement, corientation, cweight, bitalic, bunderline, bstrikeout, icharset, ioutprecision, iclipprecision, iquality, ipitchandfamily, pszfacename) } }
+pub unsafe extern "system" fn CreateSolidBrush(color : super::super::Foundation:: COLORREF) -> HBRUSH { unsafe { crate::imp::CreateSolidBrush(color) } }
 pub const DC_BRUSH: GET_STOCK_OBJECT_FLAGS = 18i32;
 pub const DEFAULT_CHARSET: FONT_CHARSET = 1u8;
 pub const DEFAULT_QUALITY: FONT_QUALITY = 0u8;
 pub const DIB_RGB_COLORS: DIB_USAGE = 0u32;
 pub type DIB_USAGE = u32;
 pub type DRAW_TEXT_FORMAT = u32;
+pub const DT_BOTTOM: DRAW_TEXT_FORMAT = 8u32;
+pub const DT_CALCRECT: DRAW_TEXT_FORMAT = 1024u32;
 pub const DT_CENTER: DRAW_TEXT_FORMAT = 1u32;
 pub const DT_END_ELLIPSIS: DRAW_TEXT_FORMAT = 32768u32;
 pub const DT_LEFT: DRAW_TEXT_FORMAT = 0u32;
+pub const DT_NOCLIP: DRAW_TEXT_FORMAT = 256u32;
 pub const DT_NOPREFIX: DRAW_TEXT_FORMAT = 2048u32;
+pub const DT_PATH_ELLIPSIS: DRAW_TEXT_FORMAT = 16384u32;
 pub const DT_RIGHT: DRAW_TEXT_FORMAT = 2u32;
 pub const DT_SINGLELINE: DRAW_TEXT_FORMAT = 32u32;
 pub const DT_VCENTER: DRAW_TEXT_FORMAT = 4u32;
-pub unsafe extern "system" fn DeleteDC(hdc : HDC) -> super::super::Foundation:: BOOL { let _ = hdc; crate::missing("DeleteDC"); unsafe { core::mem::zeroed() } }
-pub unsafe extern "system" fn DeleteObject(ho : HGDIOBJ) -> super::super::Foundation:: BOOL { let _ = ho; crate::missing("DeleteObject"); unsafe { core::mem::zeroed() } }
-pub unsafe extern "system" fn DrawFocusRect(hdc : HDC, lprc : *const super::super::Foundation:: RECT) -> super::super::Foundation:: BOOL { let _ = hdc; let _ = lprc; crate::missing("DrawFocusRect"); unsafe { core::mem::zeroed() } }
-pub unsafe extern "system" fn DrawTextW(hdc : HDC, lpchtext : windows_sys::core::PCWSTR, cchtext : i32, lprc : *mut super::super::Foundation:: RECT, format : DRAW_TEXT_FORMAT) -> i32 { let _ = hdc; let _ = lpchtext; let _ = cchtext; let _ = lprc; let _ = format; crate::missing("DrawTextW"); unsafe { core::mem::zeroed() } }
-pub unsafe extern "system" fn EndPaint(hwnd : super::super::Foundation:: HWND, lppaint : *const PAINTSTRUCT) -> super::super::Foundation:: BOOL { let _ = hwnd; let _ = lppaint; crate::missing("EndPaint"); unsafe { core::mem::zeroed() } }
+pub const DT_WORDBREAK: DRAW_TEXT_FORMAT = 16u32;
+pub const DT_WORD_ELLIPSIS: DRAW_TEXT_FORMAT = 262144u32;
+pub unsafe extern "system" fn DeleteDC(hdc : HDC) -> super::super::Foundation:: BOOL { unsafe { crate::imp::DeleteDC(hdc) } }
+pub unsafe extern "system" fn DeleteObject(ho : HGDIOBJ) -> super::super::Foundation:: BOOL { unsafe { crate::imp::DeleteObject(ho) } }
+pub unsafe extern "system" fn DrawFocusRect(hdc : HDC, lprc : *const super::super::Foundation:: RECT) -> super::super::Foundation:: BOOL { unsafe { crate::imp::DrawFocusRect(hdc, lprc) } }
+pub unsafe extern "system" fn DrawTextW(hdc : HDC, lpchtext : windows_sys::core::PCWSTR, cchtext : i32, lprc : *mut super::super::Foundation:: RECT, format : DRAW_TEXT_FORMAT) -> i32 { unsafe { crate::imp::DrawTextW(hdc, lpchtext, cchtext, lprc, format) } }
+pub unsafe extern "system" fn EndPaint(hwnd : super::super::Foundation:: HWND, lppaint : *const PAINTSTRUCT) -> super::super::Foundation:: BOOL { unsafe { crate::imp::EndPaint(hwnd, lppaint) } }
 pub type FONT_CHARSET = u8;
 pub type FONT_CLIP_PRECISION = u8;
 pub type FONT_OUTPUT_PRECISION = u8;
 pub type FONT_QUALITY = u8;
-pub unsafe extern "system" fn FillRect(hdc : HDC, lprc : *const super::super::Foundation:: RECT, hbr : HBRUSH) -> i32 { let _ = hdc; let _ = lprc; let _ = hbr; crate::missing("FillRect"); unsafe { core::mem::zeroed() } }
+pub unsafe extern "system" fn FillRect(hdc : HDC, lprc : *const super::super::Foundation:: RECT, hbr : HBRUSH) -> i32 { unsafe { crate::imp::FillRect(hdc, lprc, hbr) } }
 pub type GDI_REGION_TYPE = i32;
 pub type GET_STOCK_OBJECT_FLAGS = i32;
-pub unsafe extern "system" fn GetDC(hwnd : super::super::Foundation:: HWND) -> HDC { let _ = hwnd; crate::missing("GetDC"); unsafe { core::mem::zeroed() } }
+pub unsafe extern "system" fn GdiFlush() -> super::super::Foundation:: BOOL { unsafe { crate::imp::GdiFlush() } }
+pub unsafe extern "system" fn GetDC(hwnd : super::super::Foundation:: HWND) -> HDC { unsafe { crate::imp::GetDC(hwnd) } }
 pub unsafe extern "system" fn GetMonitorInfoW(hmonitor : HMONITOR, lpmi : *mut MONITORINFO) -> super::super::Foundation:: BOOL { let _ = hmonitor; let _ = lpmi; crate::missing("GetMonitorInfoW"); unsafe { core::mem::zeroed() } }
 pub unsafe extern "system" fn GetPixel(hdc : HDC, x : i32, y : i32) -> super::super::Foundation:: COLORREF { let _ = hdc; let _ = x; let _ = y; crate::missing("GetPixel"); unsafe { core::mem::zeroed() } }
-pub unsafe extern "system" fn GetStockObject(i : GET_STOCK_OBJECT_FLAGS) -> HGDIOBJ { let _ = i; crate::missing("GetStockObject"); unsafe { core::mem::zeroed() } }
+pub unsafe extern "system" fn GetStockObject(i : GET_STOCK_OBJECT_FLAGS) -> HGDIOBJ { unsafe { crate::imp::GetStockObject(i) } }
 pub unsafe extern "system" fn GetSysColor(nindex : SYS_COLOR_INDEX) -> u32 { let _ = nindex; crate::missing("GetSysColor"); unsafe { core::mem::zeroed() } }
-pub unsafe extern "system" fn GetTextExtentPoint32W(hdc : HDC, lpstring : windows_sys::core::PCWSTR, c : i32, psizl : *mut super::super::Foundation:: SIZE) -> super::super::Foundation:: BOOL { let _ = hdc; let _ = lpstring; let _ = c; let _ = psizl; crate::missing("GetTextExtentPoint32W"); unsafe { core::mem::zeroed() } }
-pub unsafe extern "system" fn GetTextMetricsW(hdc : HDC, lptm : *mut TEXTMETRICW) -> super::super::Foundation:: BOOL { let _ = hdc; let _ = lptm; crate::missing("GetTextMetricsW"); unsafe { core::mem::zeroed() } }
+pub unsafe extern "system" fn GetTextExtentPoint32W(hdc : HDC, lpstring : windows_sys::core::PCWSTR, c : i32, psizl : *mut super::super::Foundation:: SIZE) -> super::super::Foundation:: BOOL { unsafe { crate::imp::GetTextExtentPoint32W(hdc, lpstring, c, psizl) } }
+pub unsafe extern "system" fn GetTextMetricsW(hdc : HDC, lptm : *mut TEXTMETRICW) -> super::super::Foundation:: BOOL { unsafe { crate::imp::GetTextMetricsW(hdc, lptm) } }
 pub type HBITMAP = *mut core::ffi::c_void;
 pub type HBRUSH = *mut core::ffi::c_void;
 pub type HDC = *mut core::ffi::c_void;
@@ -90,9 +97,9 @@ pub type HFONT = *mut core::ffi::c_void;
 pub type HGDIOBJ = *mut core::ffi::c_void;
 pub type HMONITOR = *mut core::ffi::c_void;
 pub type HRGN = *mut core::ffi::c_void;
-pub unsafe extern "system" fn InflateRect(lprc : *mut super::super::Foundation:: RECT, dx : i32, dy : i32) -> super::super::Foundation:: BOOL { let _ = lprc; let _ = dx; let _ = dy; crate::missing("InflateRect"); unsafe { core::mem::zeroed() } }
-pub unsafe extern "system" fn IntersectClipRect(hdc : HDC, left : i32, top : i32, right : i32, bottom : i32) -> GDI_REGION_TYPE { let _ = hdc; let _ = left; let _ = top; let _ = right; let _ = bottom; crate::missing("IntersectClipRect"); unsafe { core::mem::zeroed() } }
-pub unsafe extern "system" fn InvalidateRect(hwnd : super::super::Foundation:: HWND, lprect : *const super::super::Foundation:: RECT, berase : super::super::Foundation:: BOOL) -> super::super::Foundation:: BOOL { let _ = hwnd; let _ = lprect; let _ = berase; crate::missing("InvalidateRect"); unsafe { core::mem::zeroed() } }
+pub unsafe extern "system" fn InflateRect(lprc : *mut super::super::Foundation:: RECT, dx : i32, dy : i32) -> super::super::Foundation:: BOOL { unsafe { crate::imp::InflateRect(lprc, dx, dy) } }
+pub unsafe extern "system" fn IntersectClipRect(hdc : HDC, left : i32, top : i32, right : i32, bottom : i32) -> GDI_REGION_TYPE { unsafe { crate::imp::IntersectClipRect(hdc, left, top, right, bottom) } }
+pub unsafe extern "system" fn InvalidateRect(hwnd : super::super::Foundation:: HWND, lprect : *const super::super::Foundation:: RECT, berase : super::super::Foundation:: BOOL) -> super::super::Foundation:: BOOL { unsafe { crate::imp::InvalidateRect(hwnd, lprect, berase) } }
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct LOGFONTW {
@@ -121,7 +128,7 @@ pub struct MONITORINFO {
 }
 pub const MONITOR_DEFAULTTONEAREST: MONITOR_FROM_FLAGS = 2u32;
 pub type MONITOR_FROM_FLAGS = u32;
-pub unsafe extern "system" fn MapWindowPoints(hwndfrom : super::super::Foundation:: HWND, hwndto : super::super::Foundation:: HWND, lppoints : *mut super::super::Foundation:: POINT, cpoints : u32) -> i32 { let _ = hwndfrom; let _ = hwndto; let _ = lppoints; let _ = cpoints; crate::missing("MapWindowPoints"); unsafe { core::mem::zeroed() } }
+pub unsafe extern "system" fn MapWindowPoints(hwndfrom : super::super::Foundation:: HWND, hwndto : super::super::Foundation:: HWND, lppoints : *mut super::super::Foundation:: POINT, cpoints : u32) -> i32 { unsafe { crate::imp::MapWindowPoints(hwndfrom, hwndto, lppoints, cpoints) } }
 pub unsafe extern "system" fn MonitorFromWindow(hwnd : super::super::Foundation:: HWND, dwflags : MONITOR_FROM_FLAGS) -> HMONITOR { let _ = hwnd; let _ = dwflags; crate::missing("MonitorFromWindow"); unsafe { core::mem::zeroed() } }
 pub const NULL_BRUSH: GET_STOCK_OBJECT_FLAGS = 5i32;
 #[repr(C)]
@@ -150,20 +157,21 @@ pub struct RGBQUAD {
     pub rgbReserved: u8,
 }
 pub type ROP_CODE = u32;
-pub unsafe extern "system" fn RedrawWindow(hwnd : super::super::Foundation:: HWND, lprcupdate : *const super::super::Foundation:: RECT, hrgnupdate : HRGN, flags : REDRAW_WINDOW_FLAGS) -> super::super::Foundation:: BOOL { let _ = hwnd; let _ = lprcupdate; let _ = hrgnupdate; let _ = flags; crate::missing("RedrawWindow"); unsafe { core::mem::zeroed() } }
-pub unsafe extern "system" fn ReleaseDC(hwnd : super::super::Foundation:: HWND, hdc : HDC) -> i32 { let _ = hwnd; let _ = hdc; crate::missing("ReleaseDC"); unsafe { core::mem::zeroed() } }
-pub unsafe extern "system" fn RestoreDC(hdc : HDC, nsaveddc : i32) -> super::super::Foundation:: BOOL { let _ = hdc; let _ = nsaveddc; crate::missing("RestoreDC"); unsafe { core::mem::zeroed() } }
+pub unsafe extern "system" fn RedrawWindow(hwnd : super::super::Foundation:: HWND, lprcupdate : *const super::super::Foundation:: RECT, hrgnupdate : HRGN, flags : REDRAW_WINDOW_FLAGS) -> super::super::Foundation:: BOOL { unsafe { crate::imp::RedrawWindow(hwnd, lprcupdate, hrgnupdate, flags) } }
+pub unsafe extern "system" fn ReleaseDC(hwnd : super::super::Foundation:: HWND, hdc : HDC) -> i32 { unsafe { crate::imp::ReleaseDC(hwnd, hdc) } }
+pub unsafe extern "system" fn RestoreDC(hdc : HDC, nsaveddc : i32) -> super::super::Foundation:: BOOL { unsafe { crate::imp::RestoreDC(hdc, nsaveddc) } }
+pub const SIMPLEREGION: GDI_REGION_TYPE = 2i32;
 pub const SRCCOPY: ROP_CODE = 13369376u32;
 pub type STRETCH_BLT_MODE = i32;
 pub type SYS_COLOR_INDEX = i32;
-pub unsafe extern "system" fn SaveDC(hdc : HDC) -> i32 { let _ = hdc; crate::missing("SaveDC"); unsafe { core::mem::zeroed() } }
-pub unsafe extern "system" fn ScreenToClient(hwnd : super::super::Foundation:: HWND, lppoint : *mut super::super::Foundation:: POINT) -> super::super::Foundation:: BOOL { let _ = hwnd; let _ = lppoint; crate::missing("ScreenToClient"); unsafe { core::mem::zeroed() } }
-pub unsafe extern "system" fn SelectObject(hdc : HDC, h : HGDIOBJ) -> HGDIOBJ { let _ = hdc; let _ = h; crate::missing("SelectObject"); unsafe { core::mem::zeroed() } }
-pub unsafe extern "system" fn SetBkColor(hdc : HDC, color : super::super::Foundation:: COLORREF) -> super::super::Foundation:: COLORREF { let _ = hdc; let _ = color; crate::missing("SetBkColor"); unsafe { core::mem::zeroed() } }
-pub unsafe extern "system" fn SetBkMode(hdc : HDC, mode : i32) -> i32 { let _ = hdc; let _ = mode; crate::missing("SetBkMode"); unsafe { core::mem::zeroed() } }
-pub unsafe extern "system" fn SetDCBrushColor(hdc : HDC, color : super::super::Foundation:: COLORREF) -> super::super::Foundation:: COLORREF { let _ = hdc; let _ = color; crate::missing("SetDCBrushColor"); unsafe { core::mem::zeroed() } }
+pub unsafe extern "system" fn SaveDC(hdc : HDC) -> i32 { unsafe { crate::imp::SaveDC(hdc) } }
+pub unsafe extern "system" fn ScreenToClient(hwnd : super::super::Foundation:: HWND, lppoint : *mut super::super::Foundation:: POINT) -> super::super::Foundation:: BOOL { unsafe { crate::imp::ScreenToClient(hwnd, lppoint) } }
+pub unsafe extern "system" fn SelectObject(hdc : HDC, h : HGDIOBJ) -> HGDIOBJ { unsafe { crate::imp::SelectObject(hdc, h) } }
+pub unsafe extern "system" fn SetBkColor(hdc : HDC, color : super::super::Foundation:: COLORREF) -> super::super::Foundation:: COLORREF { unsafe { crate::imp::SetBkColor(hdc, color) } }
+pub unsafe extern "system" fn SetBkMode(hdc : HDC, mode : i32) -> i32 { unsafe { crate::imp::SetBkMode(hdc, mode) } }
+pub unsafe extern "system" fn SetDCBrushColor(hdc : HDC, color : super::super::Foundation:: COLORREF) -> super::super::Foundation:: COLORREF { unsafe { crate::imp::SetDCBrushColor(hdc, color) } }
 pub unsafe extern "system" fn SetStretchBltMode(hdc : HDC, mode : STRETCH_BLT_MODE) -> i32 { let _ = hdc; let _ = mode; crate::missing("SetStretchBltMode"); unsafe { core::mem::zeroed() } }
-pub unsafe extern "system" fn SetTextColor(hdc : HDC, color : super::super::Foundation:: COLORREF) -> super::super::Foundation:: COLORREF { let _ = hdc; let _ = color; crate::missing("SetTextColor"); unsafe { core::mem::zeroed() } }
+pub unsafe extern "system" fn SetTextColor(hdc : HDC, color : super::super::Foundation:: COLORREF) -> super::super::Foundation:: COLORREF { unsafe { crate::imp::SetTextColor(hdc, color) } }
 pub unsafe extern "system" fn StretchDIBits(hdc : HDC, xdest : i32, ydest : i32, destwidth : i32, destheight : i32, xsrc : i32, ysrc : i32, srcwidth : i32, srcheight : i32, lpbits : *const core::ffi::c_void, lpbmi : *const BITMAPINFO, iusage : DIB_USAGE, rop : ROP_CODE) -> i32 { let _ = hdc; let _ = xdest; let _ = ydest; let _ = destwidth; let _ = destheight; let _ = xsrc; let _ = ysrc; let _ = srcwidth; let _ = srcheight; let _ = lpbits; let _ = lpbmi; let _ = iusage; let _ = rop; crate::missing("StretchDIBits"); unsafe { core::mem::zeroed() } }
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -191,5 +199,6 @@ pub struct TEXTMETRICW {
 }
 pub type TMPF_FLAGS = u8;
 pub const TRANSPARENT: BACKGROUND_MODE = 1u32;
-pub unsafe extern "system" fn UnionRect(lprcdst : *mut super::super::Foundation:: RECT, lprcsrc1 : *const super::super::Foundation:: RECT, lprcsrc2 : *const super::super::Foundation:: RECT) -> super::super::Foundation:: BOOL { let _ = lprcdst; let _ = lprcsrc1; let _ = lprcsrc2; crate::missing("UnionRect"); unsafe { core::mem::zeroed() } }
-pub unsafe extern "system" fn UpdateWindow(hwnd : super::super::Foundation:: HWND) -> super::super::Foundation:: BOOL { let _ = hwnd; crate::missing("UpdateWindow"); unsafe { core::mem::zeroed() } }
+pub unsafe extern "system" fn UnionRect(lprcdst : *mut super::super::Foundation:: RECT, lprcsrc1 : *const super::super::Foundation:: RECT, lprcsrc2 : *const super::super::Foundation:: RECT) -> super::super::Foundation:: BOOL { unsafe { crate::imp::UnionRect(lprcdst, lprcsrc1, lprcsrc2) } }
+pub unsafe extern "system" fn UpdateWindow(hwnd : super::super::Foundation:: HWND) -> super::super::Foundation:: BOOL { unsafe { crate::imp::UpdateWindow(hwnd) } }
+pub const WHITE_BRUSH: GET_STOCK_OBJECT_FLAGS = 0i32;
