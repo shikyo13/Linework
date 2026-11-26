@@ -12,6 +12,11 @@ mod imp;
 pub mod os;
 pub mod web;
 pub use imp::gdi::save_picture;
+/// The folder holding the font files the program carries, for parts that
+/// must hand them on (a web page cannot see a font known only to this process).
+pub fn carried_fonts() -> Option<std::path::PathBuf> {
+    imp::misc::fonts_folder()
+}
 
 /// The few basic types windows-sys keeps beside `Win32`.
 pub mod core {

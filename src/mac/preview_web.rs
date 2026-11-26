@@ -24,6 +24,17 @@ const ENGINE: &str = include_str!("../../assets/preview-render.js");
 const SCHEME: &str = "linework-preview";
 const ORIGIN: &str = "linework-preview://doc/";
 const SHELL_URL: &str = "linework-preview://doc/view";
+/// Where the page finds the code font's files, upright and italic.
+const FONTS: &str = "linework-preview://doc/-font/";
+const FONT_FILES: [&str; 2] = ["CascadiaMono.ttf", "CascadiaMonoItalic.ttf"];
+
+fn font_rules() -> String {
+    FONT_FILES
+        .iter()
+        .zip(["normal", "italic"])
+        .map(|(file, style)| format!("@font-face{{font-family:\"Cascadia Mono\";font-style:{style};font-weight:200 700;src:url(\"{FONTS}{file}\")}}"))
+        .collect()
+}
 const RETRY: usize = 1;
 /// As on Windows: the page runs the host's own script and may send messages back.
 const INTERACTIVE: bool = true;
@@ -307,8 +318,16 @@ fn start(shared: &Shared) {
             if address == SHELL_URL {
                 // The page may load pictures from the program's own address and nowhere else.
                 let shell = SHELL.replace("https://linework-preview.invalid", "linework-preview:");
+                // Text in the page's code font: the page's own process cannot see a
+                // font this process has made known, so the page is given the files.
+                let shell = shell.replace("style-src 'unsafe-inline';", "style-src 'unsafe-inline'; font-src linework-preview:;").replace("<style>", &format!("<style>{}", font_rules()));
                 let shell = if s.borrow().light { shell.replace("<html lang=\"en\">", "<html lang=\"en\" class=\"light\">") } else { shell };
                 return Some((shell.into_bytes(), "text/html; charset=utf-8"));
+            }
+            if let Some(name) = address.strip_prefix(FONTS) {
+                let file = FONT_FILES.iter().find(|file| **file == name)?;
+                let bytes = std::fs::read(linework_win32::carried_fonts()?.join(file)).ok()?;
+                return Some((bytes, "font/ttf"));
             }
             let s = s.borrow();
             let root = s.root.as_ref()?;

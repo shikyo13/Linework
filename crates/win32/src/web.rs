@@ -103,9 +103,14 @@ fn serve(hooks: &Hooks, task: &ProtocolObject<dyn WKURLSchemeTask>) {
         Some((body, kind)) => (body, kind, 200isize),
         None => (Vec::new(), "text/plain", 403),
     };
-    let names = [NSString::from_str("Content-Type"), NSString::from_str("Cache-Control"), NSString::from_str("X-Content-Type-Options")];
-    let values = [NSString::from_str(kind), NSString::from_str("no-store"), NSString::from_str("nosniff")];
-    let headers: Retained<NSDictionary<NSString, NSString>> = NSDictionary::from_slices(&[&*names[0], &*names[1], &*names[2]], &[&*values[0], &*values[1], &*values[2]]);
+    // A font is used only when its answer says any page may; the frame that
+    // shows the document counts as another page to the one that serves it.
+    let open_to = if kind.starts_with("font/") { "*" } else { "null" };
+    let names = ["Content-Type", "Cache-Control", "X-Content-Type-Options", "Access-Control-Allow-Origin"].map(NSString::from_str);
+    let values = [kind, "no-store", "nosniff", open_to].map(NSString::from_str);
+    let count = if kind.starts_with("font/") { 4 } else { 3 };
+    let (names, values): (Vec<&NSString>, Vec<&NSString>) = (names[..count].iter().map(|name| &**name).collect(), values[..count].iter().map(|value| &**value).collect());
+    let headers: Retained<NSDictionary<NSString, NSString>> = NSDictionary::from_slices(&names, &values);
     let response: Option<Retained<AnyObject>> = unsafe {
         let made: objc2::rc::Allocated<AnyObject> = msg_send![objc2::class!(NSHTTPURLResponse), alloc];
         msg_send![made, initWithURL: &*url, statusCode: code, HTTPVersion: &*NSString::from_str("HTTP/1.1"), headerFields: &*headers]

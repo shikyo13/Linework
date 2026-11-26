@@ -47,10 +47,14 @@ unsafe extern "C" {
 /// Makes the program's own font files usable by name, for this process only.
 /// In the application bundle they are in Resources/fonts; in a build run from
 /// the source tree they are in assets/mac/fonts.
-fn fonts() {
+pub(crate) fn fonts_folder() -> Option<std::path::PathBuf> {
     let beside = std::env::current_exe().ok().and_then(|exe| Some(exe.parent()?.parent()?.join("Resources/fonts")));
     let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/mac/fonts");
-    let Some(folder) = beside.into_iter().chain(Some(source)).find(|folder| folder.is_dir()) else {
+    beside.into_iter().chain(Some(source)).find(|folder| folder.is_dir())
+}
+
+fn fonts() {
+    let Some(folder) = fonts_folder() else {
         return eprintln!("linework-win32: the program's fonts were not found");
     };
     let Ok(files) = std::fs::read_dir(folder) else { return };
