@@ -132,6 +132,8 @@ enum Backing {
     Disk(Arc<File>, u64),
     Memory(Box<[u8]>),
     Recovery(Box<crate::recovery_blocks::Packed>),
+    /// Old text with many matches replaced, put together on read.
+    Patched(Box<crate::patched::Patched>),
 }
 struct Page {
     number: u64,
@@ -189,6 +191,10 @@ impl Source {
     fn from_file(file: Arc<File>, origin: u64, len: u64, external: Option<External>) -> io::Result<Arc<Self>> {
         let recorded = Some(super::Stamp::from(&file)?);
         Self::indexed_backing(Backing::Disk(file, origin), len, external, recorded)
+    }
+    pub(crate) fn patched(text: crate::patched::Patched) -> io::Result<Arc<Self>> {
+        let len = text.len();
+        Self::indexed_backing(Backing::Patched(Box::new(text)), len, None, None)
     }
     pub(crate) fn recovery(packed: crate::recovery_blocks::Packed, len: u64) -> io::Result<Arc<Self>> {
         Self::indexed_backing(Backing::Recovery(Box::new(packed)), len, None, None)
@@ -262,7 +268,7 @@ impl Source {
             return Ok(Some((slot.as_ref().unwrap().try_clone()?, at)));
         }
         match &self.backing {
-            Backing::Memory(_) | Backing::Recovery(_) => Ok(None),
+            Backing::Memory(_) | Backing::Recovery(_) | Backing::Patched(_) => Ok(None),
             Backing::Disk(file, origin) => Ok(Some((file.try_clone()?, origin + at))),
         }
     }
@@ -623,6 +629,7 @@ impl Source {
                 result
             }
             Backing::Recovery(archive) => archive.read(pos, dst),
+            Backing::Patched(text) => text.read(pos, dst),
             Backing::Memory(m) => {
                 dst.copy_from_slice(&m[pos as usize..pos as usize + dst.len()]);
                 Ok(())

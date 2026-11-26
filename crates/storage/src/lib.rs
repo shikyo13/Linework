@@ -26,6 +26,7 @@ mod inplace;
 #[cfg(windows)]
 pub use save_journal::set_save_journal;
 mod parallel;
+mod patched;
 mod search;
 mod source;
 #[cfg(windows)]
@@ -398,6 +399,42 @@ impl Document {
             return indexed;
         }
         n.start(line, indexed).unwrap_or(indexed)
+    }
+    /// Where line `line` (from 0) would start if every line had the length
+    /// of the first, before the line count reaches it. Given only when the
+    /// line feeds in the first MiB are exactly that far apart and the bytes at
+    /// the estimate are one whole line of that length; it is still an
+    /// estimate until the count confirms it.
+    pub fn estimate_line_start(&self, line: u64) -> Option<u64> {
+        const HEAD: u64 = 1 << 20;
+        let len = self.len();
+        let head = self.read(0, len.min(HEAD) as usize).ok()?;
+        let mut ends = memchr::memchr_iter(b'\n', &head);
+        let length = ends.next()? as u64 + 1;
+        let mut lines = 1u64;
+        for (k, end) in ends.enumerate() {
+            if end as u64 + 1 != (k as u64 + 2) * length {
+                return None;
+            }
+            lines += 1;
+        }
+        // Enough lines to judge by.
+        if lines < 256 {
+            return None;
+        }
+        let at = line.checked_mul(length)?;
+        if at == 0 || at >= len {
+            return None;
+        }
+        // The byte before the estimate ends a line, and the line there is the same length.
+        let take = (length + 1).min(len - at + 1);
+        let bytes = self.read(at - 1, take as usize).ok()?;
+        let inner = &bytes[1..];
+        let whole = match memchr::memchr(b'\n', inner) {
+            Some(i) => i as u64 + 1 == length,
+            None => at + inner.len() as u64 == len && (inner.len() as u64) < length,
+        };
+        (bytes[0] == b'\n' && whole).then_some(at)
     }
     pub fn char_boundary(&self, pos: u64) -> u64 {
         let pos = pos.min(self.len());

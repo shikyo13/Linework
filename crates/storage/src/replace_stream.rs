@@ -75,6 +75,18 @@ impl<'a> Template<'a> {
     pub fn captures(&self) -> bool {
         self.captures
     }
+    /// The replacement's bytes when it refers to no group, with `$$` and the
+    /// like already resolved.
+    pub fn literal(&self) -> Option<Vec<u8>> {
+        let mut out = Vec::new();
+        for part in &self.parts {
+            match part {
+                Part::Text(t) => out.extend_from_slice(t),
+                Part::Group(_) => return None,
+            }
+        }
+        Some(out)
+    }
     pub fn length(&self, groups: Option<&Groups<'_>>) -> io::Result<u64> {
         self.parts.iter().try_fold(0u64, |n, p| {
             let len = match p {
@@ -181,35 +193,6 @@ impl<'a> Batch<'a> {
     pub fn end(&self) -> u64 {
         self.end
     }
-    /// Continue as a streamed batch. `assembled` already holds the edited text
-    /// of the document's `start..end`, and `count` matches went into it.
-    pub fn resume(
-        doc: &'a Document,
-        cancel: &'a AtomicBool,
-        start: u64,
-        assembled: Root,
-        end: u64,
-        count: usize,
-    ) -> io::Result<Self> {
-        let mut batch = Self::new(doc, cancel);
-        let mut out = BufWriter::with_capacity(BLOCK, tempfile::tempfile()?);
-        batch.reader.copy(0..start, &mut out)?;
-        if let Some(root) = &assembled {
-            let mut block = vec![0; BLOCK];
-            let mut at = 0;
-            while at < root.len {
-                batch.reader.check()?;
-                let n = (root.len - at).min(BLOCK as u64) as usize;
-                root.read(at, &mut block[..n])?;
-                out.write_all(&block[..n])?;
-                at += n as u64;
-            }
-        }
-        batch.writer = Some(out);
-        batch.end = end;
-        batch.count = count;
-        Ok(batch)
-    }
     fn spill(&mut self) -> io::Result<()> {
         let mut out = BufWriter::with_capacity(BLOCK, tempfile::tempfile()?);
         let mut at = 0;
@@ -253,13 +236,17 @@ impl<'a> Batch<'a> {
         };
         self.reader
             .copy(self.end..self.reader.doc.len(), &mut out)?;
-        let file = out.into_inner().map_err(|e| e.into_error())?;
         self.reader.check()?;
-        let n = file.metadata()?.len();
-        let root = tree::leaf(Source::file(Arc::new(file), 0, n)?, 0, n)?;
-        Ok((self.count, Change::Whole(root)))
+        Ok((self.count, Change::Whole(written(out)?)))
     }
 }
+/// The edited document a finished temporary file holds.
+fn written(out: BufWriter<File>) -> io::Result<Root> {
+    let file = out.into_inner().map_err(|e| e.into_error())?;
+    let n = file.metadata()?.len();
+    tree::leaf(Source::file(Arc::new(file), 0, n)?, 0, n)
+}
+
 
 #[cfg(test)]
 mod tests {

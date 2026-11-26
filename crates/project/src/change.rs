@@ -49,7 +49,7 @@ pub fn plan(path: &Path, old: &str, new: &str, options: SearchOptions, preview: 
     let mut before = Vec::new();
     if preview {
         doc.find_lines(old, options, widest, linework_storage::LineEnds::LineFeed, cancel, &mut |line| {
-            before.push(line.clone());
+            before.push(line.owned());
             Ok(false)
         })?;
     }

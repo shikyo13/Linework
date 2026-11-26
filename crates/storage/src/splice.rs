@@ -5,10 +5,11 @@
 //! breaks between them, which makes every new piece complete when it is made.
 use super::{
     parallel,
-    replacing::{Batch, Change, Template, SPARSE_BYTES, SPARSE_MATCHES},
-    Search, CHUNK, PARALLEL_MIN,
+    replacing::{Change, SPARSE_BYTES, SPARSE_MATCHES},
+    Groups, Search, CHUNK, PARALLEL_MIN,
 };
 use crate::{
+    patched::{Patched, Stretch},
     source::{count, Source},
     tree::{self, Body, Node},
     Document,
@@ -37,15 +38,8 @@ fn census(
     bytes: &mut Vec<u8>,
     read: impl FnMut(u64, &mut [u8]) -> io::Result<()>,
 ) -> io::Result<Vec<Event>> {
-    let origin = search.load(left, right, bytes, read)?;
-    let mut hits = Vec::new();
-    search.matches(bytes, origin, &(from..right), false, &mut |hit, _| {
-        if hit.end <= search.scope.end {
-            hits.push(hit);
-        }
-        Ok(false)
-    })?;
-    let at = |pos: u64| bytes.get((pos - origin) as usize).copied();
+    let (hits, origin) = hits_in(search, from, (left, right), bytes, read)?;
+    let at = |pos: u64| byte_at(search, bytes, origin, pos);
     let mut events = Vec::with_capacity(hits.len() * 2 + 2);
     let mut cut = cuts.partition_point(|&c| c <= from);
     let mut pos = from;
@@ -72,6 +66,62 @@ fn census(
         cut += cuts[cut..].partition_point(|&c| c <= pos);
     }
     Ok(events)
+}
+
+/// The byte at `pos`, from `bytes` (read from `origin`) or, past them, from the document.
+fn byte_at(search: &Search<'_>, bytes: &[u8], origin: u64, pos: u64) -> Option<u8> {
+    bytes.get((pos - origin) as usize).copied().or_else(|| {
+        let mut one = [0u8];
+        (pos < search.d.len() && search.d.read_into(pos, &mut one).is_ok()).then_some(one[0])
+    })
+}
+
+/// The matches `hits` (all starting in `from..right`) as a stretch from `from`,
+/// which runs on to the end of a match that ends past `right`.
+fn stretch_of(from: u64, right: u64, hits: &[Range<u64>]) -> Stretch {
+    let len = hits.first().map_or(0, |h| (h.end - h.start) as u32);
+    let uniform = hits.iter().all(|h| h.end - h.start == u64::from(len));
+    Stretch {
+        old: from,
+        old_len: hits.last().map_or(right, |h| h.end.max(right)) - from,
+        hits: hits.iter().map(|h| (h.start - from) as u32).collect(),
+        lens: (!uniform).then(|| hits.iter().map(|h| (h.end - h.start) as u32).collect()),
+        len,
+    }
+}
+
+/// The matches that start in `from..right` and end in the search's scope, in
+/// order, with the chunk read into `bytes` from the returned origin.
+fn hits_in(
+    search: &Search<'_>,
+    from: u64,
+    (left, right): (u64, u64),
+    bytes: &mut Vec<u8>,
+    read: impl FnMut(u64, &mut [u8]) -> io::Result<()>,
+) -> io::Result<(Vec<Range<u64>>, u64)> {
+    let mut hits = Vec::new();
+    let mut keep = |hit: Range<u64>, _: Option<&Groups<'_>>| {
+        if hit.end <= search.scope.end {
+            hits.push(hit);
+        }
+        Ok(false)
+    };
+    // A pattern reads on to the end of the piece's last line; when that line
+    // is too long, the streaming engine finds the piece's matches.
+    let origin = if search.lined {
+        let (origin, whole) = search.load_lines(left, right, bytes, read)?;
+        if whole {
+            search.matches(bytes, origin, &(from..right), false, &mut keep)?;
+        } else {
+            search.streamed_part(from..right, &mut keep)?;
+        }
+        origin
+    } else {
+        let origin = search.load(left, right, bytes, read)?;
+        search.matches(bytes, origin, &(from..right), false, &mut keep)?;
+        origin
+    };
+    Ok((hits, origin))
 }
 
 struct Splice<'a> {
@@ -261,12 +311,15 @@ pub(super) fn replace(
                         doc.read_into(at, out)
                     })?;
                 }
-                Ok(state.apply(events, replacement, &mut edits, observe))
+                // Past the first few chunks, a count heading over the piece limit
+                // switches to the patched text at once instead of at the limit.
+                let dense = k >= 3 && edits.count as u64 * chunks / (k as u64 + 1) > MAX_PIECES as u64;
+                Ok(dense || state.apply(events, replacement, &mut edits, observe))
             },
         )?
     };
     if dense {
-        return stream(doc, search, replacement, state, edits.count, observe);
+        return stream(doc, search, replacement, state.pos, observe);
     }
     if state.from < state.pos {
         // A selection that ends inside a piece.
@@ -285,26 +338,112 @@ pub(super) fn replace(
     Ok((edits.count, Change::Whole(root)))
 }
 
-/// Too many matches to hold as pieces. Write what has been assembled to a
-/// temporary file and stream the rest of the document after it.
+/// Too many matches to hold as pieces. The pieces made so far are dropped and
+/// the scope becomes one piece of a `Patched` source: the old text, where each
+/// match starts, and the replacement. Threads find each chunk's matches; they
+/// are taken in order. Matches before `reported` were passed to `observe` already.
 fn stream(
     doc: &Document,
     search: &Search<'_>,
     replacement: &[u8],
-    state: Splice<'_>,
-    done: usize,
+    reported: u64,
     observe: &mut dyn FnMut(Range<u64>, u64),
 ) -> io::Result<(usize, Change)> {
-    let assembled = tree::build(&state.out);
-    let mut batch = Batch::resume(doc, search.cancel, search.scope.start, assembled, state.from, done)?;
-    let template = Template::bytes(replacement);
-    let scope = search.scope.clone();
-    search.scan(state.pos..scope.end + 1, false, &mut |hit, groups| {
-        if hit.start >= batch.end() && hit.end <= scope.end {
-            observe(hit.clone(), replacement.len() as u64);
-            batch.push(hit, &template, groups)?;
+    let range = search.scope.start..search.scope.end;
+    let base = doc.root.clone().ok_or_else(|| io::Error::other("empty document"))?;
+    let (mut stretches, mut count, mut cursor) = (Vec::new(), 0, range.start);
+    let chunks = (range.end - range.start).div_ceil(CHUNK) as usize;
+    let lead = doc.lead(range.start);
+    let mut bytes = Vec::new();
+    parallel::ordered(
+        chunks,
+        parallel::threads().min(chunks),
+        || (parallel::Reader::led(doc, lead.as_ref()), Vec::new(), search.fork()),
+        |k, (reader, bytes, search)| {
+            search.check()?;
+            let (left, right) = search.bounds(&range, k as u64);
+            reader.ahead(left)?;
+            let hits = hits_in(search, left, (left, right), bytes, |at, buf| reader.read_into(at, buf))?.0;
+            Ok(stretch_of(left, right, &hits))
+        },
+        |k, mut stretch: Stretch| {
+            let (left, right) = search.bounds(&range, k as u64);
+            if cursor >= right {
+                // A match that started earlier covers this whole chunk.
+                return Ok(false);
+            }
+            if cursor > left {
+                if stretch.hits.first().is_some_and(|&h| left + u64::from(h) < cursor) {
+                    // Its thread began inside the previous match: search it again from that match's end.
+                    let hits = hits_in(search, cursor, (left, right), &mut bytes, |at, buf| doc.read_into(at, buf))?.0;
+                    stretch = stretch_of(cursor, right, &hits);
+                } else {
+                    // The stretch starts where the previous match ended.
+                    let shift = (cursor - left) as u32;
+                    stretch.hits.iter_mut().for_each(|h| *h -= shift);
+                    stretch.old = cursor;
+                    stretch.old_len -= u64::from(shift);
+                }
+            }
+            for (j, &h) in stretch.hits.iter().enumerate() {
+                let start = stretch.old + u64::from(h);
+                if start >= reported {
+                    let len = stretch.lens.as_ref().map_or(stretch.len, |l| l[j]);
+                    observe(start..start + u64::from(len), replacement.len() as u64);
+                }
+            }
+            count += stretch.hits.len();
+            cursor = stretch.old + stretch.old_len;
+            stretches.push(stretch);
+            Ok(false)
+        },
+    )?;
+    search.check()?;
+    let text = Patched::new(base, replacement, stretches);
+    let len = text.len();
+    let mut root = tree::leaf(Source::patched(text)?, 0, len)?;
+    if range.start != 0 || range.end != doc.len() {
+        let (before, _) = tree::split(doc.root.clone(), range.start)?;
+        let (_, after) = tree::split(doc.root.clone(), range.end)?;
+        root = tree::join(tree::join(before, root), after);
+    }
+    Ok((count, Change::Whole(root)))
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{Document, SearchOptions};
+    use std::io;
+
+    /// Past `MAX_PIECES` matches the rest is written by threads chunk by chunk;
+    /// the text is what one replace over the whole of it gives, and undo restores it.
+    #[test]
+    fn many_matches_are_written_in_order() -> io::Result<()> {
+        let mut text = Vec::new();
+        for n in 0..6_000_000u32 {
+            text.extend_from_slice(if n % 1000 == 999 { b"abb\r\n" } else { b"ab\n" });
         }
-        Ok(false)
-    })?;
-    batch.finish()
+        let mut d = Document::empty();
+        d.replace(0, 0, &text)?;
+        let cases = [
+            ("b", "XYZ", SearchOptions { case_sensitive: true, wrap: false, ..Default::default() }),
+            ("bb?", "", SearchOptions { regex: true, case_sensitive: true, wrap: false, ..Default::default() }),
+        ];
+        for (query, with, options) in cases {
+            let re = regex::bytes::Regex::new(&if options.regex { query.to_string() } else { regex::escape(query) }).unwrap();
+            let want = re.replace_all(&text, with.as_bytes()).into_owned();
+            let mut seen = Vec::new();
+            let all = 0..d.len();
+            let cancel = std::sync::atomic::AtomicBool::new(false);
+            let count = d.replace_observed(query, with, options, all, &cancel, |hit, _| seen.push(hit))?;
+            assert_eq!(count, re.find_iter(&text).count(), "{query}");
+            // Each match is reported once, in order, including across the switch to the file.
+            assert!(seen.iter().map(|h| h.start..h.end).eq(re.find_iter(&text).map(|m| m.start() as u64..m.end() as u64)), "{query}: reported");
+            assert!(d.read(0, d.len() as usize)? == want, "{query}: text differs");
+            assert_eq!(d.line_count(), 6_000_001, "{query}: lines");
+            d.undo();
+            assert!(d.read(0, d.len() as usize)? == text, "{query}: undo differs");
+        }
+        Ok(())
+    }
 }

@@ -8,6 +8,7 @@ mod splicing;
 #[path = "search_cursor.rs"]
 mod streaming;
 use std::{
+    borrow::Cow,
     io,
     ops::Range,
     sync::atomic::{AtomicBool, Ordering},
@@ -46,8 +47,56 @@ struct Search<'a> {
     pattern: Option<Regex>,
     fold: Option<Fold>,
     streamed: Option<streaming::Regex>,
+    /// A pattern on a large text that never matches a line feed, so every match
+    /// lies within one line: pieces of the text are searched on several
+    /// threads with `pattern`, each read on to the end of its last line.
+    lined: bool,
+    /// A `lined` pattern that never matches empty text, so Replace All can
+    /// splice its matches as it does plain text's.
+    solid: bool,
     cancel: &'a AtomicBool,
     scope: Range<u64>,
+}
+/// How far past its piece a thread reads to finish the piece's last line.
+/// A line longer than this is searched by the streaming engine instead.
+const LINE_REACH: u64 = 4 * CHUNK;
+/// Whether every match of the pattern is at least one byte long, as parsed
+/// with the options the search compiles it with.
+fn never_empty(pattern: &str, case_insensitive: bool) -> bool {
+    regex_syntax::ParserBuilder::new()
+        .case_insensitive(case_insensitive)
+        .multi_line(true)
+        .crlf(true)
+        .utf8(false)
+        .build()
+        .parse(pattern)
+        .is_ok_and(|h| h.properties().minimum_len().is_some_and(|n| n > 0))
+}
+/// Whether the pattern can match a line feed anywhere (a literal, a class
+/// holding it, or anything that contains one), as parsed with the options
+/// the search compiles it with. A pattern that fails to parse here is taken
+/// to cross lines, so it keeps the streaming engine.
+fn crosses_lines(pattern: &str, case_insensitive: bool) -> bool {
+    use regex_syntax::hir::{Class, Hir, HirKind};
+    fn feed(h: &Hir) -> bool {
+        match h.kind() {
+            HirKind::Empty | HirKind::Look(_) => false,
+            HirKind::Literal(l) => l.0.contains(&b'\n'),
+            HirKind::Class(Class::Unicode(c)) => c.ranges().iter().any(|r| r.start() <= '\n' && '\n' <= r.end()),
+            HirKind::Class(Class::Bytes(c)) => c.ranges().iter().any(|r| r.start() <= b'\n' && b'\n' <= r.end()),
+            HirKind::Repetition(r) => feed(&r.sub),
+            HirKind::Capture(c) => feed(&c.sub),
+            HirKind::Concat(v) | HirKind::Alternation(v) => v.iter().any(feed),
+        }
+    }
+    regex_syntax::ParserBuilder::new()
+        .case_insensitive(case_insensitive)
+        .multi_line(true)
+        .crlf(true)
+        .utf8(false)
+        .build()
+        .parse(pattern)
+        .map_or(true, |h| feed(&h))
 }
 /// A quicker way to find plain ASCII text in any letter case, when the text
 /// has at least two characters in a row that have no case, such as the "=503"
@@ -128,8 +177,9 @@ impl Fold {
     }
 }
 /// One line that holds a match, from `Document::find_lines`.
+/// Its text is lent for the call that receives it; `owned` keeps a copy.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct FoundLine {
+pub struct FoundLine<'a> {
     /// Counted from 0, as `Document::line_of` counts.
     pub line: u64,
     /// Where the line starts in the document.
@@ -138,11 +188,24 @@ pub struct FoundLine {
     pub first: Range<u64>,
     /// The line's text without its line break, at most the `widest` bytes
     /// asked for. A longer line gives the part around its first match.
-    pub text: Vec<u8>,
+    pub text: Cow<'a, [u8]>,
     /// Where `text` starts in the document: `start`, unless the line was longer than `widest`.
     pub text_start: u64,
     /// Whether the line goes on past the end of `text`.
     pub cut: bool,
+}
+impl FoundLine<'_> {
+    /// The same line with its own copy of the text.
+    pub fn owned(&self) -> FoundLine<'static> {
+        FoundLine {
+            line: self.line,
+            start: self.start,
+            first: self.first.clone(),
+            text: Cow::Owned(self.text.to_vec()),
+            text_start: self.text_start,
+            cut: self.cut,
+        }
+    }
 }
 /// The text kept of a matching line: where the line starts, where the kept
 /// text starts, the text, and whether the line goes on past it.
@@ -152,8 +215,10 @@ struct PieceLine {
     /// Line breaks between the piece's first byte and the match.
     breaks: u64,
     first: Range<u64>,
-    /// The line's text when the bytes the thread held contained the whole line.
-    found: Option<Kept>,
+    /// When the bytes the thread held contained the whole line: where the line
+    /// starts, where its kept text starts, that text's place in the piece's
+    /// `text`, and whether the line goes on past it.
+    found: Option<(u64, u64, Range<u32>, bool)>,
 }
 
 /// Of a line `line_start..line_end` with a match at `at`, the part to keep in
@@ -170,6 +235,9 @@ struct Piece {
     /// Line breaks in the whole piece, counted as the line index counts them.
     breaks: u64,
     lines: Vec<PieceLine>,
+    /// The kept text of every line in `lines`, one after another, so a piece
+    /// of many matching lines makes one allocation rather than one a line.
+    text: Vec<u8>,
     /// The end of the last match, for the rule that matches do not overlap.
     last_end: Option<u64>,
 }
@@ -325,6 +393,7 @@ impl<'a> Search<'a> {
             return Err(invalid("Search text exceeds 1 MiB"));
         }
         let mut streamed = None;
+        let (mut lined, mut solid) = (false, false);
         let pattern = if opt.regex || !opt.case_sensitive || opt.whole_word {
             let raw = if opt.regex {
                 q.into()
@@ -336,19 +405,31 @@ impl<'a> Search<'a> {
             } else {
                 raw
             };
+            let whole = || {
+                RegexBuilder::new(&s)
+                    .case_insensitive(!opt.case_sensitive)
+                    .multi_line(true)
+                    .crlf(true)
+                    .size_limit(16 * 1024 * 1024)
+                    .build()
+                    .map_err(|e| invalid(e.to_string()))
+            };
             if opt.regex && (d.len() > FULL_REGEX || scope.start != 0 || scope.end != d.len()) {
                 streamed = Some(streaming::compile(&s, opt.case_sensitive)?);
-                None
+                // Pieces may be searched apart only when no match can cross the
+                // scope's end either: it is the text's end or follows a line feed.
+                let mut before = [0u8];
+                let ends_a_line = scope.end == d.len()
+                    || (scope.end > 0 && d.read_into(scope.end - 1, &mut before).is_ok() && before[0] == b'\n');
+                lined = !opt.backwards && ends_a_line && !crosses_lines(&s, !opt.case_sensitive);
+                solid = lined && never_empty(&s, !opt.case_sensitive);
+                if lined {
+                    Some(whole()?)
+                } else {
+                    None
+                }
             } else {
-                Some(
-                    RegexBuilder::new(&s)
-                        .case_insensitive(!opt.case_sensitive)
-                        .multi_line(true)
-                        .crlf(true)
-                        .size_limit(16 * 1024 * 1024)
-                        .build()
-                        .map_err(|e| invalid(e.to_string()))?,
-                )
+                Some(whole()?)
             }
         } else {
             None
@@ -361,6 +442,8 @@ impl<'a> Search<'a> {
             pattern,
             fold: plain.then(|| Fold::new(q)).flatten(),
             streamed,
+            lined,
+            solid,
             cancel,
             scope,
         })
@@ -375,14 +458,28 @@ impl<'a> Search<'a> {
             Ok(())
         }
     }
-    fn scan(&self, range: Range<u64>, captures: bool, visit: &mut Visitor<'_>) -> io::Result<bool> {
+    fn scan(&self, range: Range<u64>, captures: bool, outer: &mut Visitor<'_>) -> io::Result<bool> {
         if range.is_empty() {
             return Ok(false);
         }
+        // The streaming engine passes over an empty match that starts where the
+        // match before it ended. A pattern searched in pieces does the same,
+        // across pieces too, so a text finds the same matches either way.
+        let mut prior = None;
+        let mut adjacent = |hit: Range<u64>, groups: Option<&Groups<'_>>| {
+            if hit.is_empty() && prior == Some(hit.start) {
+                return Ok(false);
+            }
+            prior = Some(hit.end);
+            outer(hit, groups)
+        };
+        let visit: &mut Visitor<'_> = if self.lined { &mut adjacent } else { outer };
         if let Some(re) = &self.streamed {
-            return streaming::scan(self, re, range, captures, visit);
+            if !self.lined || self.opt.backwards {
+                return streaming::scan(self, re, range, captures, visit);
+            }
         }
-        if self.opt.regex {
+        if self.opt.regex && !self.lined {
             self.check()?;
             return self.matches(
                 &self.d.read(0, self.d.len() as usize)?,
@@ -410,12 +507,18 @@ impl<'a> Search<'a> {
             if from >= right {
                 continue;
             }
-            let origin = self.load(left, right, &mut bytes, |at, out| self.d.read_into(at, out))?;
             let mut step = |hit: Range<u64>, groups: Option<&Groups<'_>>| {
                 floor = hit.end;
                 visit(hit, groups)
             };
-            if self.matches(&bytes, origin, &(from..right), captures, &mut step)? {
+            let read = |at, out: &mut [u8]| self.d.read_into(at, out);
+            let stop = if self.lined {
+                self.lined_part(left, right, from, &mut bytes, read, captures, &mut step)?
+            } else {
+                let origin = self.load(left, right, &mut bytes, read)?;
+                self.matches(&bytes, origin, &(from..right), captures, &mut step)?
+            };
+            if stop {
                 return Ok(true);
             }
         }
@@ -427,24 +530,43 @@ impl<'a> Search<'a> {
         // forward scan reads with a lead (`lead.rs`).
         let rest = (count - direct) as usize;
         let lead = if self.opt.backwards { None } else { self.d.lead(self.bounds(&range, direct).0) };
+        // A pattern's capture groups travel with its matches, as (start, length)
+        // from the chunk's start; an unmatched group is `NO_GROUP`.
+        const NO_GROUP: (u32, u32) = (u32::MAX, 0);
+        let groups_per_hit = if captures && self.opt.regex {
+            self.pattern.as_ref().map_or(0, |p| p.captures_len())
+        } else {
+            0
+        };
         let found = |k: usize, (reader, bytes, search): &mut (parallel::Reader<'_>, Vec<u8>, Search<'_>)| {
             search.check()?;
             let (left, right) = search.bounds(&range, direct + k as u64);
             reader.ahead(left)?;
-            let origin = search.load(left, right, bytes, |at, out| reader.read_into(at, out))?;
-            let mut hits = Vec::new();
-            search.matches(bytes, origin, &(left..right), false, &mut |hit, _| {
+            let (mut hits, mut groups) = (Vec::new(), Vec::new());
+            let mut keep = |hit: Range<u64>, g: Option<&Groups<'_>>| {
                 hits.push(((hit.start - left) as u32, (hit.end - hit.start) as u32));
+                if let Some(g) = g.filter(|_| groups_per_hit > 0) {
+                    for i in 0..groups_per_hit {
+                        groups.push(g(i).map_or(NO_GROUP, |r| ((r.start - left) as u32, (r.end - r.start) as u32)));
+                    }
+                }
                 Ok(false)
-            })?;
-            Ok(hits)
+            };
+            let read = |at, out: &mut [u8]| reader.read_into(at, out);
+            if search.lined {
+                search.lined_part(left, right, left, bytes, read, captures, &mut keep)?;
+            } else {
+                let origin = search.load(left, right, bytes, read)?;
+                search.matches(bytes, origin, &(left..right), false, &mut keep)?;
+            }
+            Ok((hits, groups))
         };
         parallel::ordered(
             rest,
             workers.min(rest),
             || (parallel::Reader::led(self.d, lead.as_ref()), Vec::new(), self.fork()),
             found,
-            |k, hits: Vec<(u32, u32)>| {
+            |k, (hits, groups): (Vec<(u32, u32)>, Vec<(u32, u32)>)| {
                 let (left, right) = self.bounds(&range, direct + k as u64);
                 let from = floor;
                 if !self.opt.backwards && hits.first().is_some_and(|h| left + u64::from(h.0) < from) {
@@ -453,17 +575,28 @@ impl<'a> Search<'a> {
                     if from >= right {
                         return Ok(false);
                     }
-                    let origin =
-                        self.load(left, right, &mut bytes, |at, out| self.d.read_into(at, out))?;
-                    return self.matches(&bytes, origin, &(from..right), false, &mut |hit, groups| {
+                    let mut step = |hit: Range<u64>, groups: Option<&Groups<'_>>| {
                         floor = hit.end;
                         visit(hit, groups)
-                    });
+                    };
+                    let read = |at, out: &mut [u8]| self.d.read_into(at, out);
+                    if self.lined {
+                        return self.lined_part(left, right, from, &mut bytes, read, captures, &mut step);
+                    }
+                    let origin = self.load(left, right, &mut bytes, read)?;
+                    return self.matches(&bytes, origin, &(from..right), false, &mut step);
                 }
-                for (start, len) in hits {
+                for (j, (start, len)) in hits.into_iter().enumerate() {
                     let start = left + u64::from(start);
                     floor = start + u64::from(len);
-                    if visit(start..floor, None)? {
+                    let own = groups.get(j * groups_per_hit..(j + 1) * groups_per_hit).unwrap_or(&[]);
+                    let group = |i: usize| {
+                        own.get(i)
+                            .filter(|g| **g != NO_GROUP)
+                            .map(|g| left + u64::from(g.0)..left + u64::from(g.0) + u64::from(g.1))
+                    };
+                    let groups: Option<&Groups<'_>> = (groups_per_hit > 0).then_some(&group);
+                    if visit(start..floor, groups)? {
                         return Ok(true);
                     }
                 }
@@ -479,7 +612,10 @@ impl<'a> Search<'a> {
             opt: self.opt,
             pattern: self.pattern.clone(),
             fold: self.fold.clone(),
-            streamed: None,
+            // A piece whose last line runs past `LINE_REACH` is searched by the streaming engine.
+            streamed: if self.lined { self.streamed.clone() } else { None },
+            lined: self.lined,
+            solid: self.solid,
             cancel: self.cancel,
             scope: self.scope.clone(),
         }
@@ -512,6 +648,65 @@ impl<'a> Search<'a> {
         bytes.resize(end.saturating_sub(origin) as usize, 0);
         read(origin, bytes)?;
         Ok(origin)
+    }
+    /// `load` for a `lined` search: the piece and on to the line feed that ends
+    /// its last line, so every match starting in it is whole in `bytes`.
+    /// Returns where `bytes` starts and whether that line end was reached
+    /// within `LINE_REACH`; when it was not, `bytes` still holds the piece and
+    /// the byte after it.
+    fn load_lines(
+        &self,
+        left: u64,
+        right: u64,
+        bytes: &mut Vec<u8>,
+        mut read: impl FnMut(u64, &mut [u8]) -> io::Result<()>,
+    ) -> io::Result<(u64, bool)> {
+        let len = self.d.len();
+        let origin = left.saturating_sub(4);
+        // The line of the piece's last byte ends at the first line feed from there.
+        let last = (right.min(len).max(left + 1) - 1 - origin) as usize;
+        let mut end = (right + 64 * 1024).min(len);
+        bytes.clear();
+        loop {
+            let old = bytes.len();
+            bytes.resize((end - origin) as usize, 0);
+            read(origin + old as u64, &mut bytes[old..])?;
+            let from = last.max(old.saturating_sub(1)).min(bytes.len());
+            if end == len || memchr::memchr(b'\n', &bytes[from..]).is_some() {
+                return Ok((origin, true));
+            }
+            if end >= right + LINE_REACH {
+                return Ok((origin, false));
+            }
+            end = (end + (end - right)).min(right + LINE_REACH).min(len);
+        }
+    }
+    /// The matches starting in `range`, found by the streaming engine.
+    fn streamed_part(&self, range: Range<u64>, visit: &mut Visitor<'_>) -> io::Result<bool> {
+        let re = self.streamed.as_ref().ok_or_else(|| invalid("No streaming pattern"))?;
+        streaming::scan(self, re, range, false, visit)
+    }
+    /// Search the piece `left..right` from `from` for a `lined` search on this
+    /// thread: in the bytes read on to its last line's end, or by the
+    /// streaming engine when that line is longer than `LINE_REACH`.
+    #[allow(clippy::too_many_arguments)]
+    fn lined_part(
+        &self,
+        left: u64,
+        right: u64,
+        from: u64,
+        bytes: &mut Vec<u8>,
+        read: impl FnMut(u64, &mut [u8]) -> io::Result<()>,
+        captures: bool,
+        visit: &mut Visitor<'_>,
+    ) -> io::Result<bool> {
+        let (origin, whole) = self.load_lines(left, right, bytes, read)?;
+        if whole {
+            self.matches(bytes, origin, &(from..right), captures, visit)
+        } else {
+            let re = self.streamed.as_ref().ok_or_else(|| invalid("No streaming pattern"))?;
+            streaming::scan(self, re, from..right, captures, visit)
+        }
     }
     fn matches(
         &self,
@@ -620,6 +815,48 @@ impl<'a> Search<'a> {
         }
         Ok(false)
     }
+    /// Read the piece `left..right` with `read` and search it from `from` as
+    /// `piece` does. A `lined` search reads on to its last line's end; when that
+    /// line is longer than `LINE_REACH`, the streaming engine finds the piece's
+    /// matches and their lines' text is read later, around each match.
+    #[allow(clippy::too_many_arguments)]
+    fn lined_piece(
+        &self,
+        left: u64,
+        right: u64,
+        from: u64,
+        widest: usize,
+        ends: LineEnds,
+        bytes: &mut Vec<u8>,
+        read: impl FnMut(u64, &mut [u8]) -> io::Result<()>,
+    ) -> io::Result<Piece> {
+        if !self.lined {
+            let origin = self.load(left, right, bytes, read)?;
+            return self.piece(bytes, origin, left, right, from, widest, ends);
+        }
+        let (origin, whole) = self.load_lines(left, right, bytes, read)?;
+        if whole {
+            return self.piece(bytes, origin, left, right, from, widest, ends);
+        }
+        let re = self.streamed.as_ref().ok_or_else(|| invalid("No streaming pattern"))?;
+        let rel = |at: u64| (at - origin) as usize;
+        let (mut lines, mut last_end): (Vec<PieceLine>, _) = (Vec::new(), None);
+        let (mut counted, mut breaks) = (rel(left), 0u64);
+        let buf = &bytes[..];
+        streaming::scan(self, re, from..right, false, &mut |hit, _| {
+            let s = rel(hit.start);
+            breaks += ends.count(&buf[counted..s], buf.get(s).copied());
+            counted = s;
+            last_end = Some(hit.end);
+            if !lines.last().is_some_and(|l| l.breaks == breaks) {
+                lines.push(PieceLine { breaks, first: hit, found: None });
+            }
+            Ok(false)
+        })?;
+        let end = rel(right);
+        breaks += ends.count(&buf[counted..end], buf.get(end).copied());
+        Ok(Piece { breaks, lines, text: Vec::new(), last_end })
+    }
     /// Search the piece `left..right` of a forward scan from `from`, in `buf`
     /// read from `origin`, and count its line breaks in the same pass: for each
     /// matching line, the breaks before its first match, and its text when the
@@ -630,6 +867,7 @@ impl<'a> Search<'a> {
         let mut lines: Vec<PieceLine> = Vec::new();
         let (mut counted, mut breaks) = (rel(left), 0u64);
         let mut last_end = None;
+        let mut text = Vec::new();
         let whole = origin + buf.len() as u64 == self.d.len();
         self.matches(buf, origin, &(from..right), false, &mut |hit, _| {
             let s = rel(hit.start);
@@ -645,8 +883,9 @@ impl<'a> Search<'a> {
             let found = match (begin, end) {
                 (Some(b), Some(e)) => {
                     let kept = window(b as u64, e as u64, s as u64, widest);
-                    let text = buf[kept.start as usize..kept.end as usize].to_vec();
-                    Some((origin + b as u64, origin + kept.start, text, kept.end < e as u64))
+                    let at = text.len() as u32;
+                    text.extend_from_slice(&buf[kept.start as usize..kept.end as usize]);
+                    Some((origin + b as u64, origin + kept.start, at..text.len() as u32, kept.end < e as u64))
                 }
                 _ => None,
             };
@@ -655,7 +894,7 @@ impl<'a> Search<'a> {
         })?;
         let end = rel(right);
         breaks += ends.count(&buf[counted..end], buf.get(end).copied());
-        Ok(Piece { breaks, lines, last_end })
+        Ok(Piece { breaks, lines, text, last_end })
     }
 }
 impl Document {
@@ -784,13 +1023,16 @@ impl Document {
         let search = Search::new(self, query, options, cancel, scope.clone())?;
         let mut last = None;
         let end = scope.end;
-        let mut emit = |line: u64, first: Range<u64>, found: Option<Kept>| -> io::Result<bool> {
+        let mut emit = |line: u64, first: Range<u64>, found: Option<(u64, u64, Cow<'_, [u8]>, bool)>| -> io::Result<bool> {
             if last == Some(line) {
                 return Ok(false);
             }
             let (start, text_start, text, cut) = match found {
                 Some(found) => found,
-                None => self.line_text(first.start, widest, ends)?,
+                None => {
+                    let (start, text_start, text, cut) = self.line_text(first.start, widest, ends)?;
+                    (start, text_start, Cow::Owned(text), cut)
+                }
             };
             // An empty match at the end of the scope, where a line would begin
             // (after the text's last line break, or at the next line of a
@@ -801,7 +1043,7 @@ impl Document {
             last = Some(line);
             visit(&FoundLine { line, start, first, text, text_start, cut })
         };
-        if search.opt.regex {
+        if search.opt.regex && !search.lined {
             // A pattern searches the whole text or streams it: take its matches
             // in order and count the lines up to each in one forward pass.
             let start = self.line_text(scope.start, 0, ends)?.0;
@@ -814,8 +1056,8 @@ impl Document {
                     return Ok(false);
                 }
                 shown = Some(line);
-                let kept = lines.text(hit.start)?;
-                emit(line, hit, Some(kept))
+                let (start, text_start, text, cut) = lines.text(hit.start)?;
+                emit(line, hit, Some((start, text_start, Cow::Owned(text), cut)))
             });
         }
         let range = scope.clone();
@@ -828,13 +1070,16 @@ impl Document {
         let mut take = |k: usize, piece: Piece| -> io::Result<bool> {
             let (left, right) = search.bounds(&range, k as u64);
             let piece = if piece.lines.first().is_some_and(|l| l.first.start < floor) {
-                let origin = search.load(left, right, &mut bytes, |at, out| self.read_into(at, out))?;
-                search.piece(&bytes, origin, left, right, floor.min(right), widest, ends)?
+                let read = |at, out: &mut [u8]| self.read_into(at, out);
+                search.lined_piece(left, right, floor.min(right), widest, ends, &mut bytes, read)?
             } else {
                 piece
             };
             for l in piece.lines {
-                if emit(base + l.breaks, l.first, l.found)? {
+                let found = l.found.map(|(start, text_start, at, cut)| {
+                    (start, text_start, Cow::Borrowed(&piece.text[at.start as usize..at.end as usize]), cut)
+                });
+                if emit(base + l.breaks, l.first, found)? {
                     return Ok(true);
                 }
             }
@@ -850,8 +1095,8 @@ impl Document {
             for k in 0..count {
                 search.check()?;
                 let (left, right) = search.bounds(&range, k as u64);
-                let origin = search.load(left, right, &mut own, |at, out| self.read_into(at, out))?;
-                let piece = search.piece(&own, origin, left, right, left, widest, ends)?;
+                let read = |at, out: &mut [u8]| self.read_into(at, out);
+                let piece = search.lined_piece(left, right, left, widest, ends, &mut own, read)?;
                 if take(k, piece)? {
                     return Ok(true);
                 }
@@ -867,8 +1112,7 @@ impl Document {
                 search.check()?;
                 let (left, right) = search.bounds(&range, k as u64);
                 reader.ahead(left)?;
-                let origin = search.load(left, right, own, |at, out| reader.read_into(at, out))?;
-                search.piece(own, origin, left, right, left, widest, ends)
+                search.lined_piece(left, right, left, widest, ends, own, |at, out| reader.read_into(at, out))
             },
             take,
         )
@@ -1037,8 +1281,17 @@ impl Document {
         options.backwards = false;
         let search = Search::new(self, query, options, cancel, scope.clone())?;
         self.check_original()?;
-        let (count, change) = if options.regex {
-            let template = replacing::Template::new(&search, replacement);
+        let template = replacing::Template::new(&search, replacement);
+        // A pattern searched in pieces whose replacement uses no group is
+        // spliced as plain text is: the new text shares the old one's pieces.
+        let spliced = if options.regex {
+            template.literal().filter(|_| search.solid)
+        } else {
+            Some(replacement.as_bytes().to_vec())
+        };
+        let (count, change) = if let Some(literal) = spliced {
+            splicing::replace(self, &search, &literal, &mut observe)?
+        } else {
             let mut edits = replacing::Batch::new(self, cancel);
             search.scan(
                 scope.start..scope.end + 1,
@@ -1052,8 +1305,6 @@ impl Document {
                 },
             )?;
             edits.finish()?
-        } else {
-            splicing::replace(self, &search, replacement.as_bytes(), &mut observe)?
         };
         search.check()?;
         self.check_original()?;
@@ -1146,7 +1397,7 @@ mod found_line_tests {
         let options = SearchOptions { case_sensitive: true, wrap: false, ..Default::default() };
         let mut whole = Vec::new();
         d.find_lines("needle", options, 1 << 20, LineEnds::Editor, &cancel, &mut |l| {
-            whole.push(l.clone());
+            whole.push(l.owned());
             Ok(false)
         })?;
         for at in [0, 1, 3, 1_000_001, d.len() / 2 + 5, d.len() - 3, d.len()] {
@@ -1155,7 +1406,7 @@ mod found_line_tests {
         let scope = d.len() / 3 + 2..2 * d.len() / 3;
         let mut part = Vec::new();
         d.find_lines_in("needle", options, scope.clone(), d.count_breaks(scope.start, &cancel)?, 1 << 20, LineEnds::Editor, &cancel, &mut |l| {
-            part.push(l.clone());
+            part.push(l.owned());
             Ok(false)
         })?;
         let expected: Vec<_> = whole.into_iter().filter(|l| scope.contains(&l.first.start)).collect();
@@ -1187,6 +1438,101 @@ mod found_line_tests {
         assert_eq!(lines(b"a\nb", "$", None)?, [1, 2]);
         // A span that ends where the next line begins.
         assert_eq!(lines(b"a\nb\nc\n", "^", Some(0..4))?, [1, 2]);
+        Ok(())
+    }
+
+    /// A pattern that cannot match a line feed is searched in pieces on several
+    /// threads; it finds, numbers and replaces exactly what one pass over the
+    /// whole text does. The text crosses the size where patterns stream, has
+    /// CR, LF and CRLF line ends, lines ending at piece edges, and a line
+    /// longer than a thread reads past its piece.
+    #[test]
+    fn lined_patterns_match_one_pass() -> io::Result<()> {
+        let piece = CHUNK as usize;
+        let breaks: [&[u8]; 3] = [b"\n", b"\r\n", b"\r"];
+        let mut text = Vec::new();
+        let mut n = 0usize;
+        while text.len() < FULL_REGEX as usize + 2 * piece {
+            if n == 4000 {
+                // One line of 6 MiB with matches spread along it.
+                for k in 0..(6 * piece / 64) {
+                    text.extend_from_slice(if k % 7 == 0 { b"key=12 needle 2026 " } else { b"zzzzzzzzzzzzzzzzzzz " });
+                    text.resize(text.len() + 44, b'q');
+                }
+                text.push(b'\n');
+            }
+            let line: &[u8] = match n % 5 {
+                0 => b"2026-11-21 GET key=503 Needle",
+                1 => b"plain words needle x",
+                2 => b"",
+                3 => b"x2026 id=7 NEEDLE end",
+                _ => b"word, word; words",
+            };
+            text.extend_from_slice(line);
+            text.extend_from_slice(breaks[n % 3]);
+            n += 1;
+            let edge = (text.len() / piece + 1) * piece;
+            if edge - text.len() < 40 {
+                text.resize(edge - 1, b'y');
+                text.push(b'\n');
+            }
+        }
+        let mut d = Document::empty();
+        d.replace(0, 0, &text)?;
+        let cancel = AtomicBool::new(false);
+        let patterns = ["^2026", "ne+dle$", r"(\w+)=(\d+)", r"\bword\b", "x*", "$", r"(?i)needle", r"\d{4}-\d\d"];
+        for (pattern, case_sensitive) in patterns.iter().flat_map(|p| [(*p, true), (*p, false)]) {
+            let options = SearchOptions { regex: true, case_sensitive, wrap: false, ..Default::default() };
+            let search = Search::new(&d, pattern, options, &cancel, 0..d.len())?;
+            assert!(search.lined, "{pattern} should be searched in pieces");
+            let re = RegexBuilder::new(pattern).case_insensitive(!case_sensitive).multi_line(true).crlf(true).build().unwrap();
+            let want: Vec<_> = re.find_iter(&text).map(|m| m.start() as u64..m.end() as u64).collect();
+            let got = d.find_all_bounded(pattern, options, usize::MAX, &cancel)?;
+            assert_eq!(got.len(), want.len(), "{pattern} {case_sensitive}");
+            assert!(got == want, "{pattern} {case_sensitive}: matches differ");
+            // Lines: each numbered as the line index numbers it, once.
+            let mut lines = Vec::new();
+            d.find_lines(pattern, options, 64, LineEnds::Editor, &cancel, &mut |l| {
+                lines.push((l.line, l.first.clone()));
+                Ok(false)
+            })?;
+            let mut expected = Vec::new();
+            for hit in &want {
+                let line = d.line_of(hit.start);
+                // An empty match after the last line break is in no line.
+                if hit.start == d.len() && d.line_start(line) == d.len() {
+                    continue;
+                }
+                if expected.last().is_none_or(|(l, _)| *l != line) {
+                    expected.push((line, hit.clone()));
+                }
+            }
+            assert!(lines == expected, "{pattern} {case_sensitive}: lines differ");
+        }
+        // Replace All with groups gives what one pass gives.
+        let re = RegexBuilder::new(r"(\w+)=(\d+)").multi_line(true).crlf(true).build().unwrap();
+        let want = re.replace_all(&text, &b"${2}:${1}"[..]).into_owned();
+        let options = SearchOptions { regex: true, case_sensitive: true, wrap: false, ..Default::default() };
+        let count = d.replace_all(r"(\w+)=(\d+)", "${2}:${1}", options)?;
+        assert_eq!(count, re.find_iter(&text).count());
+        assert!(d.read(0, d.len() as usize)? == want, "replaced text differs");
+        // Without groups, a pattern's matches are spliced as plain text's are.
+        for (pattern, with) in [("ne+dle", "N$$"), (r"\d{4}-\d\d", "")] {
+            let search = Search::new(&d, pattern, options, &cancel, 0..d.len())?;
+            assert!(search.solid, "{pattern} should be spliced");
+            let re = RegexBuilder::new(pattern).multi_line(true).crlf(true).build().unwrap();
+            let before = d.read(0, d.len() as usize)?;
+            let want = re.replace_all(&before, with.as_bytes()).into_owned();
+            let count = d.replace_all(pattern, with, options)?;
+            assert_eq!(count, re.find_iter(&before).count(), "{pattern}");
+            assert!(d.read(0, d.len() as usize)? == want, "{pattern}: spliced text differs");
+            d.undo();
+            assert!(d.read(0, d.len() as usize)? == before, "{pattern}: undo differs");
+        }
+        // A pattern that can match a line feed keeps the streaming engine.
+        for p in [r"a\sb", "[^x]", r"(?s)a.b", "a\nb"] {
+            assert!(!Search::new(&d, p, options, &cancel, 0..d.len())?.lined, "{p}");
+        }
         Ok(())
     }
 
@@ -1230,7 +1576,7 @@ mod found_line_tests {
             }
             let mut found = Vec::new();
             d.find_lines(query, options, 1 << 30, LineEnds::Editor, &cancel, &mut |l| {
-                found.push(l.clone());
+                found.push(l.owned());
                 Ok(false)
             })?;
             assert_eq!(found.len(), expected.len(), "{query}");
