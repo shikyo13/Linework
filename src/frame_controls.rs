@@ -145,36 +145,21 @@ fn label(hit: &Hit, f: &Frame) -> Option<String> {
             } else {
                 "Open document preview"
             }.into(),
-            "case" => format!("Match case, {}", on(f.case_)),
-            "regex" => format!("Regular expression, {}", on(f.regex)),
-            "word" => format!("Whole word, {}", on(f.whole)),
-            "scope" => format!(
-                "Search scope, {}",
-                if f.search_folder {
-                    "folder"
-                } else if f.selection_scope {
-                    "selection"
-                } else {
-                    "file"
-                }
-            ),
             "findprev" => "Previous match".into(),
             "findnext" => "Next match".into(),
-            "hidefind" => "Close find bar".into(),
-            "replaceone" => "Replace next".into(),
-            "replaceall" => if f.search_folder {
-                "Preview replacements"
-            } else {
-                "Replace all"
+            "p:file" | "p:open" | "p:folder" => {
+                let (name, n) = match id.as_str() {
+                    "p:file" if f.panel.selection => ("Search the selection", 0),
+                    "p:file" => ("Search this file", 0),
+                    "p:open" => ("Search the open files", 1),
+                    _ => ("Search the folder", 2),
+                };
+                format!("{name}{}", if f.panel.searching == n { ", selected" } else { "" })
             }
-            .into(),
             _ => return None,
         },
         _ => return None,
     })
-}
-fn on(v: bool) -> &'static str {
-    if v { "on" } else { "off" }
 }
 pub(super) fn stage(parent: H, damage: RECT, layout: &mut WindowLayout) {
     let hits = HITS.with_borrow(|hits| {

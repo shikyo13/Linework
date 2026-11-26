@@ -368,8 +368,9 @@ def select_range(app, start, total):
     app.accept(d)
     wait("requested global byte", lambda: positions(app) == (start - 512, total))
     app.key(17)
-    box = g.GetDlgItem(app.h, 610)
-    wait("Find bar visible", lambda: g.IsWindowVisible(box))
+    # The search panel's find field, over this file.
+    box = g.GetDlgItem(app.h, 640)
+    wait("search panel visible", lambda: g.IsWindowVisible(box))
     msg(box, c.WM_SETTEXT, 0, QUERY)
     post(box, c.WM_KEYDOWN, c.VK_RETURN, 1)
     wait(
@@ -377,8 +378,8 @@ def select_range(app, start, total):
         lambda: "selected" in status(app, 620) and positions(app) == (start, total),
         45,
     )
+    # Escape returns the keyboard to the text; the panel stays open.
     post(box, c.WM_KEYDOWN, c.VK_ESCAPE, 1)
-    wait("Find bar dismissed", lambda: not g.IsWindowVisible(box))
     pos_global = positions(app)[0]
     pos_local = msg(app.ed, 2008, 0, 0)
     page_start = pos_global - pos_local

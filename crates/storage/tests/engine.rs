@@ -509,3 +509,38 @@ fn follow_regrowth_and_explicit_overwrite_preserve_independent_snapshots() -> io
     assert_eq!(fs::read(&path)?, b"racing writer");
     Ok(())
 }
+
+/// A line's place is estimated only when the lines are one length, and is exact then.
+#[test]
+fn line_start_is_estimated_only_for_lines_of_one_length() -> io::Result<()> {
+    let doc = |text: &[u8]| -> io::Result<Document> {
+        let mut d = Document::empty();
+        d.replace(0, 0, text)?;
+        Ok(d)
+    };
+    let mut even = Vec::new();
+    for n in 0..100_000u32 {
+        even.extend_from_slice(format!("line {n:09} of the log\r\n").as_bytes());
+    }
+    let length = 27u64;
+    let d = doc(&even)?;
+    for line in [1u64, 5_000, 99_999] {
+        assert_eq!(d.estimate_line_start(line), Some(line * length), "line {line}");
+    }
+    assert_eq!(d.estimate_line_start(100_000), None, "past the end");
+    // A last line without its line feed is still found.
+    let mut cut = even.clone();
+    cut.truncate(cut.len() - 2);
+    assert_eq!(doc(&cut)?.estimate_line_start(99_999), Some(99_999 * length));
+    // Different lines at the estimate: no estimate.
+    let mut later = even.clone();
+    later.splice(50_000 * length as usize..50_000 * length as usize, b"a longer line\r\n".iter().copied());
+    assert_eq!(doc(&later)?.estimate_line_start(80_000), None);
+    // Uneven lines: no estimate.
+    let mut uneven = Vec::new();
+    for n in 0..100_000u32 {
+        uneven.extend_from_slice(format!("{n}\n").as_bytes());
+    }
+    assert_eq!(doc(&uneven)?.estimate_line_start(50_000), None);
+    Ok(())
+}

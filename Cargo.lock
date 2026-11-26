@@ -477,7 +477,7 @@ dependencies = [
 
 [[package]]
 name = "linework"
-version = "1.8.0"
+version = "1.11.0"
 dependencies = [
  "csv",
  "imara-diff",
@@ -569,6 +569,7 @@ dependencies = [
  "memchr",
  "regex",
  "regex-cursor",
+ "regex-syntax",
  "serde",
  "serde_json",
  "sha2",

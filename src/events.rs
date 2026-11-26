@@ -23,6 +23,10 @@ struct Projection {
     binding: Binding,
     map: std::sync::Arc<linework_storage::FoldMap>,
 }
+thread_local! {
+    /// Set while an opened file waits for its first paint before its line count starts.
+    pub static AWAIT_PAINT: Cell<bool> = const { Cell::new(false) };
+}
 thread_local! {static PROJECTIONS: RefCell<[Projection;2]>=RefCell::new(Default::default());}
 pub fn install(p: usize, binding: Binding, map: std::sync::Arc<linework_storage::FoldMap>) {
     PROJECTIONS.with_borrow_mut(|v| v[p] = Projection { binding, map });
@@ -89,6 +93,8 @@ fn apply_divider() {
 }
 pub enum Event {
     Activated,
+    /// A text view painted while `AWAIT_PAINT` was set.
+    Painted,
     SideWidth(i32, bool),
     PreviewWidth(i32, bool),
     Size,
@@ -115,7 +121,7 @@ pub enum Event {
     Context(i32, i32, H),
     /// Something the reader did in the document preview pane.
     Preview(crate::preview::Signal),
-    /// Text changed in a field that asks for a folder search: the find bar or a search panel field.
+    /// Text changed in a search panel field.
     SearchInput(i32),
 }
 pub fn push(e: Event) {
@@ -187,7 +193,9 @@ pub unsafe extern "system" fn proc(h: HWND, m: u32, w: usize, l: isize) -> isize
             }
             WM_ACTIVATE if (w & 0xffff) != WA_INACTIVE as usize => {
                 push(Event::Activated);
-                DefWindowProcW(h, m, w, l)
+                let r = DefWindowProcW(h, m, w, l);
+                crate::win::focus_pending(h as H);
+                r
             }
             WM_ACTIVATE | WM_MOVE => {
                 // A glide's stand-in is placed in screen coordinates.
@@ -365,7 +373,19 @@ pub unsafe extern "system" fn proc(h: HWND, m: u32, w: usize, l: isize) -> isize
                 let _native_plugins = crate::npp::after_notification(l, b);
                 let mut nt = *(l as *const Notification);
                 let code = nt.nmhdr.code;
+                if code == n::SCN_PAINTED && AWAIT_PAINT.get() {
+                    AWAIT_PAINT.set(false);
+                    push(Event::Painted);
+                }
+                // Styles for a log are made now, before Scintilla paints.
+                if code == n::SCN_STYLENEEDED
+                    && linework_editor::style_needed(nt.nmhdr.hwnd_from as isize, nt.position.max(0) as usize)
+                {
+                    return 0;
+                }
                 if code == n::SCN_UPDATEUI {
+                    // A log's lines on screen are styled before they are painted.
+                    linework_editor::style_visible(nt.nmhdr.hwnd_from as isize);
                     // Before the editor paints, so a glide starts on the
                     // same frame as the move it stands in for.
                     crate::glide::editor_updated(nt.nmhdr.hwnd_from, nt.updated);

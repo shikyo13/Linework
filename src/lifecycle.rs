@@ -537,7 +537,6 @@ impl App {
         if self.buffers.is_empty() {
             self.split = false;
             self.active = 0;
-            self.findbar = false;
         } else {
             for p in 0..if self.split { 2 } else { 1 } {
                 if self.assigned[p].is_none() {
@@ -576,14 +575,7 @@ impl App {
         };
         crate::sidebar_grip::layout(self.h, self.prefs.sidebar, sx, self.prefs.light);
         let y = scale(frame::HEAD + frame::TABS);
-        let find = self.findbar;
-        let area = y
-            + scale(8)
-            + if find {
-                scale(frame::findbar_height(self.repbar) - 4)
-            } else {
-                0
-            };
+        let area = y + scale(8);
         let bottom = ht - scale(frame::FOOT);
         layout.set(
             self.status_left,
@@ -607,8 +599,10 @@ impl App {
         let field_w = sx - scale(frame::RAIL + 27);
         for (i, field) in self.panel_fields.into_iter().enumerate() {
             let shown = panel && (i < 2 || self.panel_more);
-            // Room for the Preview button beside replace, and for the line count beside near.
+            // Room for the previous and next buttons beside find, the Preview
+            // button beside replace, and the line count beside near.
             let narrower = match i {
+                0 => scale(68),
                 1 => scale(76),
                 5 => scale(76),
                 _ => 0,
@@ -635,10 +629,6 @@ impl App {
         if msg(self.list, LB_GETITEMHEIGHT, 0, 0) != row_height {
             msg(self.list, LB_SETITEMHEIGHT, 0, row_height);
         }
-        let bw = (w - sx - scale(345)).max(scale(65));
-        layout.set(self.searchbox, find.then(|| rect(sx + scale(8), y + scale(5), bw, scale(29))));
-        let replace_y = y + scale(42);
-        layout.set(self.replacebox, (find && self.repbar).then(|| rect(sx + scale(8), replace_y, bw, scale(29))));
         let count = if self.split { 2 } else { 1 };
         let format = self.preview_kind();
         let preview_width = self.document_preview.layout(self.h, &mut layout, w, sx, area, bottom,
@@ -839,13 +829,6 @@ impl App {
             },
             first_tab: self.tab_first,
             split: self.split,
-            find: self.findbar,
-            replace: self.repbar,
-            case_: self.case_,
-            regex: self.regex,
-            whole: self.whole,
-            search_folder: self.folder_scope,
-            selection_scope: self.selection_search_active(),
             recent: self
                 .prefs
                 .recent
@@ -869,6 +852,13 @@ impl App {
                 more: self.panel_more,
                 context: self.panel.context,
                 near_lines: self.panel.near_lines,
+                searching: match self.search_scope {
+                    SearchScope::File => 0,
+                    SearchScope::Open => 1,
+                    SearchScope::Folder => 2,
+                },
+                folder: self.prefs.root.is_some(),
+                selection: self.selection_search_active(),
             },
             summary: self.search_summary.clone(),
         };
@@ -1083,6 +1073,11 @@ impl App {
     }
     pub fn event(&mut self, event: Event) {
         match event {
+            Event::Painted => {
+                for (id, _) in std::mem::take(&mut self.count_after_paint) {
+                    self.start_count(id);
+                }
+            }
             Event::Activated => {
                 let docs: Vec<_> = self
                     .buffers
@@ -1131,7 +1126,7 @@ impl App {
                 for h in [self.status_left, self.status_right] {
                     msg(h, WM_SETFONT, font(size(self.h, 11), 400, true) as usize, 1);
                 }
-                for h in [self.list, self.searchbox, self.replacebox] {
+                for h in [self.list] {
                     msg(
                         h,
                         WM_SETFONT,
@@ -1157,15 +1152,21 @@ impl App {
             Event::Hit(hit, x, y) => match hit {
                 Hit::Cmd(id) => self.command(&id),
                 Hit::Menu(g) => {
-                    let choices: Vec<_> = commands::COMMANDS
+                    // The menu's commands in `commands::MENUS` order; "-" is a separator.
+                    let ids = commands::MENUS.iter().find(|(name, _)| *name == g).map_or(&[][..], |m| m.1);
+                    let choices: Vec<_> = ids
                         .iter()
-                        .enumerate()
-                        .filter(|(_, c)| c.group == g)
-                        .map(|(i, c)| PopupItem {
-                            id: (i + 1) as u16,
-                            label: c.name,
-                            shortcut: self.shortcut(c),
-                            checked: self.is_checked(c.id),
+                        .filter_map(|id| {
+                            if *id == "-" {
+                                return Some(PopupItem { id: 0, label: "", shortcut: String::new(), checked: false });
+                            }
+                            let (i, c) = commands::COMMANDS.iter().enumerate().find(|(_, c)| c.id == *id)?;
+                            Some(PopupItem {
+                                id: (i + 1) as u16,
+                                label: c.name,
+                                shortcut: self.shortcut(c),
+                                checked: self.is_checked(c.id),
+                            })
                         })
                         .collect();
                     let r = menu_at(self.h, &choices, x, y);
@@ -1192,7 +1193,8 @@ impl App {
                     match s {
                         0 => self.rebuild_side(),
                         1 => self.project_symbols(false),
-                        _ => self.project_refresh_rows(),
+                        // The search panel, over what it last searched, or what there is.
+                        _ => self.open_search(self.usable_scope(), false),
                     };
                 }
             },
@@ -1463,12 +1465,50 @@ impl App {
         }
         self.tx.wake.notify();
     }
+    /// Start the background line count of buffer `id`.
+    fn start_count(&mut self, id: u64) {
+        if let Some(i) = self.idx(id) {
+            if let Err(e) = self.buffers[i].doc.start_indexing() {
+                self.notice(e.to_string());
+            }
+        }
+    }
     fn tick(&mut self) {
+        // A file whose view has not painted within a second counts its lines anyway.
+        let late: Vec<u64> = self
+            .count_after_paint
+            .iter()
+            .filter(|(_, at)| at.elapsed() >= Duration::from_secs(1))
+            .map(|(id, _)| *id)
+            .collect();
+        if !late.is_empty() {
+            self.count_after_paint.retain(|(id, _)| !late.contains(id));
+            for id in late {
+                self.start_count(id);
+            }
+        }
         if let Some(i) = self.current() {
             let buf = &self.buffers[i];
-            if let Some(&(line, col)) = self.indexed_jump.get(&buf.id) {
+            if let Some(&(line, col, guess)) = self.indexed_jump.get(&buf.id) {
                 if buf.doc.indexing_complete() || line < buf.doc.line_count() {
-                    self.goto_line_col(line,col)
+                    // The line is found: its "Locating line" notice is done too.
+                    if self.status.starts_with("Locating line") {
+                        self.status_at = Instant::now() - Duration::from_secs(6);
+                    }
+                    let exact = guess.and_then(|_| {
+                        let start = buf.doc.line_start(line.saturating_sub(1));
+                        let tabs = self.edit().send(GETTABWIDTH, 0, 0).max(1) as u64;
+                        crate::launch::column_offset(&buf.doc, start, col.saturating_sub(1), tabs, || false).ok()
+                    });
+                    if guess.is_some_and(|at| at != self.global_pos() || exact == Some(at)) {
+                        // Moved away from the estimate since, or the estimate was
+                        // right: the view stays as it is.
+                        self.indexed_jump.remove(&buf.id);
+                        self.refresh();
+                    } else {
+                        // The exact place: the same as a right estimate.
+                        self.goto_line_col(line, col)
+                    }
                 } else if let Some(err) = buf.doc.index_error() {
                     self.indexed_jump.remove(&buf.id);
                     self.notice(err)
@@ -1767,7 +1807,7 @@ impl App {
                             self.notice(if enc == "Hexadecimal" {
                                 "Showing raw bytes. Saving writes the hex digits back as bytes".to_string()
                             } else {
-                                format!("Read as {enc}: the file is not UTF-8. File, Reopen with encoding changes it")
+                                format!("Read as {enc}: the file is not UTF-8. Encoding, Reopen with encoding changes it")
                             });
                         }
                         if let Some((at,col)) = jump {
@@ -1775,6 +1815,19 @@ impl App {
                                 self.goto_line_col(at, col)
                             } else {
                                 self.go(at, 0)
+                            }
+                        }
+                        // The text first, then the line count beside it: counting a
+                        // large file while the window first paints slows the paint.
+                        // A jump waiting for the count without an estimate starts it at once.
+                        let key = state::key(&path);
+                        if let Some(i) = self.buffers.iter().position(|b| b.path.as_ref().is_some_and(|p| state::key(p) == key)) {
+                            let id = self.buffers[i].id;
+                            if self.indexed_jump.get(&id).is_some_and(|j| j.2.is_none()) {
+                                self.start_count(id);
+                            } else {
+                                self.count_after_paint.push((id, Instant::now()));
+                                events::AWAIT_PAINT.set(true);
                             }
                         }
                     }

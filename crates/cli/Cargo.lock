@@ -369,6 +369,7 @@ dependencies = [
  "memchr",
  "regex",
  "regex-cursor",
+ "regex-syntax",
  "serde",
  "serde_json",
  "sha2",

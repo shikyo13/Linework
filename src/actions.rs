@@ -86,7 +86,7 @@ impl App {
         if k == VK_ESCAPE && self.cancel_sublime() {
             return true;
         }
-        let field = f == self.searchbox || f == self.replacebox;
+        let field = self.panel_fields.contains(&f);
         if !ctrl && !alt && frame::controls::key(k, shift, self.edit().hwnd()) {
             return true;
         }
@@ -102,10 +102,19 @@ impl App {
         if self.panel_fields.contains(&f) {
             match k {
                 VK_RETURN => {
-                    // Enter in the replace field previews, and opens the review; anywhere else it searches now.
+                    // Enter in the replace field previews, and opens the review. In
+                    // the find field it goes to the next match (Shift, the previous)
+                    // when the panel searches the current file; otherwise it searches now.
                     let preview = f == self.panel_fields[1] || self.preview_mode;
+                    if !preview && f == self.panel_fields[0] && self.search_scope == SearchScope::File {
+                        if self.search_due.is_some() {
+                            self.run_search(false);
+                        }
+                        self.search_step(shift);
+                        return true;
+                    }
                     self.review_next = preview;
-                    self.run_folder_search(preview);
+                    self.run_search(preview);
                     return true;
                 }
                 VK_ESCAPE => {
@@ -133,24 +142,6 @@ impl App {
                 _ => {}
             }
         }
-        if field {
-            if k == VK_ESCAPE {
-                self.hide_find();
-                return true;
-            }
-            if k == VK_RETURN {
-                self.find(shift, f == self.replacebox);
-                return true;
-            }
-            if k == VK_TAB && self.repbar {
-                focus(if f == self.replacebox {
-                    self.searchbox
-                } else {
-                    self.replacebox
-                });
-                return true;
-            }
-        }
         if f == self.list {
             match k {
                 VK_RETURN => {
@@ -176,10 +167,6 @@ impl App {
             && matches!(k, VK_DOWN | VK_UP | VK_RETURN | VK_TAB | VK_ESCAPE)
         {
             return false;
-        }
-        if self.findbar && k == VK_ESCAPE {
-            self.hide_find();
-            return true;
         }
         if !ctrl
             && !alt
@@ -241,7 +228,7 @@ impl App {
         if alt
             && !ctrl
             && !shift
-            && matches!(k, 0x46 | 0x45 | 0x53 | 0x56 | 0x47 | 0x4d | 0x54 | 0x48)
+            && matches!(k, 0x46 | 0x45 | 0x53 | 0x56 | 0x47 | 0x4e | 0x54 | 0x50 | 0x48)
         {
             let group = match k {
                 0x46 => "File",
@@ -249,8 +236,9 @@ impl App {
                 0x53 => "Search",
                 0x56 => "View",
                 0x47 => "Go",
-                0x4d => "Macro",
+                0x4e => "Encoding",
                 0x54 => "Tools",
+                0x50 => "Settings",
                 _ => "Help",
             };
             events::push(Event::Hit(
@@ -432,8 +420,6 @@ impl App {
                     dark_chrome(self.h, i == 0);
                     for h in [
                         self.list,
-                        self.searchbox,
-                        self.replacebox,
                         self.editors[0].hwnd(),
                         self.editors[1].hwnd(),
                         self.scroll[0],
@@ -496,6 +482,11 @@ impl App {
             "tokencolors" | "highlights" | "markcolor" | "nextcolor" | "clearmarks" => {
                 self.appearance_command(id)
             }
+            "find" | "replace" => self.show_find(id == "replace"),
+            "findnext" | "findprev" => self.search_step(id == "findprev"),
+            // In the current file, with the search panel's text and replacement.
+            "replaceone" => self.find(false, true),
+            "replaceall" => self.replace_all(),
             "findselection" => self.show_selection_find(),
             "findoptions" => self.find_options(),
             "wsymbols" => self.project_symbols(true),
@@ -556,32 +547,6 @@ impl App {
                             self.select(i, p, Some(at));
                         }
                         self.layout();
-                    }
-                    "find" | "replace" => self.show_find(id == "replace"),
-                    "hidefind" => self.hide_find(),
-                    "scope" => self.choose_scope(),
-                    "case" | "regex" | "word" => {
-                        match id {
-                            "case" => self.case_ = !self.case_,
-                            "regex" => self.regex = !self.regex,
-                            _ => self.whole = !self.whole,
-                        }
-                        self.last_find = None;
-                        self.layout();
-                    }
-                    "findnext" | "findprev" | "replaceone" => {
-                        if self.folder_scope && self.findbar {
-                            self.run_folder_search(id == "replaceone")
-                        } else {
-                            self.find(id == "findprev", id == "replaceone")
-                        }
-                    }
-                    "replaceall" => {
-                        if self.folder_scope {
-                            self.run_folder_search(true)
-                        } else {
-                            self.replace_all()
-                        }
                     }
                     "managemacros" => self.manage_macros(),
                     "record" | "play" | "repeat" | "savemacro" | "loadmacro" => {
@@ -879,7 +844,17 @@ impl App {
         if self.buffers[i].large {
             let d = &self.buffers[i].doc;
             if !d.indexing_complete() && line >= d.line_count() {
-                self.indexed_jump.insert(self.buffers[i].id, (line,col));
+                // Lines of one length let the place be worked out before the
+                // count reaches it; the count confirms or corrects it.
+                let tabs = self.edit().send(GETTABWIDTH, 0, 0).max(1) as u64;
+                let guess = (n <= 4096)
+                    .then(|| d.estimate_line_start(l))
+                    .flatten()
+                    .and_then(|pos| crate::launch::column_offset(d, pos, n, tabs, || false).ok());
+                self.indexed_jump.insert(self.buffers[i].id, (line, col, guess));
+                if let Some(at) = guess {
+                    self.go(at, 0);
+                }
                 self.notice(format!("Locating line {line}…"));
                 return;
             }

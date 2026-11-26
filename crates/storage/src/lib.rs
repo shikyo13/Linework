@@ -28,6 +28,7 @@ mod inplace;
 #[cfg(windows)]
 pub use save_journal::set_save_journal;
 mod parallel;
+mod patched;
 mod search;
 mod source;
 #[cfg(windows)]
@@ -221,6 +222,29 @@ impl Document {
     pub fn open(path: &Path) -> io::Result<Self> {
         Self::open_core(path, None)
     }
+    /// `open`, with the background line count held until `start_indexing`,
+    /// so a program can show the text before the count competes with it.
+    pub fn open_deferred(path: &Path) -> io::Result<Self> {
+        source::DEFER_INDEXING.set(true);
+        let doc = Self::open_core(path, None);
+        source::DEFER_INDEXING.set(false);
+        doc
+    }
+    /// Start the background line count of every part of the text that has
+    /// not started one (after `open_deferred`); does nothing for the rest.
+    pub fn start_indexing(&self) -> io::Result<()> {
+        let mut sources = Vec::new();
+        if let Some(root) = &self.root {
+            root.pieces(&mut |s, _, _| {
+                sources.push(s.clone());
+                Ok(())
+            })?;
+        }
+        for s in sources {
+            s.start_index()?;
+        }
+        Ok(())
+    }
     pub fn open_as(path: &Path, encoding: &str) -> io::Result<Self> {
         Self::open_core(path, Some(Codec::named(encoding)?))
     }
@@ -234,7 +258,23 @@ impl Document {
         read_at(&file, 0, &mut first)?;
         let mut codec = match forced {
             Some(x) => x,
-            None => Codec::detect(&first, size == first.len() as u64)?,
+            None => match Codec::detect(&first, size == first.len() as u64) {
+                // Zero bytes at the start of a large file: judged by three
+                // samples from within it, a quarter, half and three quarters in.
+                Err(e) if first.contains(&0) && size >= 4 * first.len() as u64 => {
+                    let mut samples = Vec::with_capacity(3);
+                    for k in 1..=3 {
+                        let mut s = vec![0; first.len()];
+                        read_at(&file, size / 4 * k, &mut s)?;
+                        samples.push(s);
+                    }
+                    if !Codec::text_inside(&samples) {
+                        return Err(e);
+                    }
+                    Codec::detect_text(&first, false)
+                }
+                r => r?,
+            },
         };
         // The regular editing surface transfers the entire document to a UTF-8
         // control. Confirm the encoding before that transfer so an isolated
@@ -400,6 +440,42 @@ impl Document {
             return indexed;
         }
         n.start(line, indexed).unwrap_or(indexed)
+    }
+    /// Where line `line` (from 0) would start if every line had the length
+    /// of the first, before the line count reaches it. Given only when the
+    /// line feeds in the first MiB are exactly that far apart and the bytes at
+    /// the estimate are one whole line of that length; it is still an
+    /// estimate until the count confirms it.
+    pub fn estimate_line_start(&self, line: u64) -> Option<u64> {
+        const HEAD: u64 = 1 << 20;
+        let len = self.len();
+        let head = self.read(0, len.min(HEAD) as usize).ok()?;
+        let mut ends = memchr::memchr_iter(b'\n', &head);
+        let length = ends.next()? as u64 + 1;
+        let mut lines = 1u64;
+        for (k, end) in ends.enumerate() {
+            if end as u64 + 1 != (k as u64 + 2) * length {
+                return None;
+            }
+            lines += 1;
+        }
+        // Enough lines to judge by.
+        if lines < 256 {
+            return None;
+        }
+        let at = line.checked_mul(length)?;
+        if at == 0 || at >= len {
+            return None;
+        }
+        // The byte before the estimate ends a line, and the line there is the same length.
+        let take = (length + 1).min(len - at + 1);
+        let bytes = self.read(at - 1, take as usize).ok()?;
+        let inner = &bytes[1..];
+        let whole = match memchr::memchr(b'\n', inner) {
+            Some(i) => i as u64 + 1 == length,
+            None => at + inner.len() as u64 == len && (inner.len() as u64) < length,
+        };
+        (bytes[0] == b'\n' && whole).then_some(at)
     }
     pub fn char_boundary(&self, pos: u64) -> u64 {
         let pos = pos.min(self.len());

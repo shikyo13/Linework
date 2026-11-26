@@ -82,7 +82,9 @@ fn run() -> Result<(), String> {
         sidebar_grip::start(h);
         glide::start(h);
         npp::initialize(&mut app);
-        ShowWindow(hwnd(h), SW_SHOWNORMAL);
+        // As the launcher asked (Explorer and shortcuts ask for a normal, active window);
+        // a launch that asks for no activation leaves the keyboard where it is.
+        ShowWindow(hwnd(h), SW_SHOWDEFAULT);
         app.layout();
         launch::register_window(hwnd(h));
         app.start(launch.targets);

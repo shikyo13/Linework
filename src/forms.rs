@@ -178,8 +178,8 @@ pub(crate) fn control(
 fn run(owner: H, h: H, first: H, list: H, mut update: impl FnMut()) -> bool {
     unsafe {
         let previous_focus = focused();
+        crate::win::show_popup(h, owner);
         EnableWindow(hwnd(owner), 0);
-        ShowWindow(hwnd(h), SW_SHOW);
         focus(first);
         msg(first, EM_SETSEL_NUM, 0, -1);
         let mut answer = false;
@@ -246,7 +246,10 @@ fn run(owner: H, h: H, first: H, list: H, mut update: impl FnMut()) -> bool {
             }
         }
         EnableWindow(hwnd(owner), 1);
-        SetActiveWindow(hwnd(owner));
+        // Back to the owner only when the popup had the keyboard.
+        if GetActiveWindow() == hwnd(h) {
+            SetActiveWindow(hwnd(owner));
+        }
         if IsChild(hwnd(owner), hwnd(previous_focus)) != 0
             && IsWindowVisible(hwnd(previous_focus)) != 0
         {

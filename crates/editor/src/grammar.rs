@@ -582,6 +582,7 @@ impl Editor {
         });
         self.language.set(&super::language::registry()[0]);
         self.grammar.replace(Some(shared));
+        self.note_log();
         // Style bytes belong to the shared document. A second split pane
         // attaching to it must preserve styling already visible in the first.
         if !installed || self.send(SCI_GETLEXER, 0, 0) != 0 {

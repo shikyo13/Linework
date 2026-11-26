@@ -23,10 +23,14 @@ struct Desktop {
 impl Desktop {
     fn create() -> Self {
         unsafe {
+            // One desktop per test: tests run at once, and a shared name lets one
+            // test close the desktop while another is opening it.
+            static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+            let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let before =
                 GetThreadDesktop(windows_sys::Win32::System::Threading::GetCurrentThreadId());
             let handle = CreateDesktopW(
-                wide(&format!("LineworkReview{}", std::process::id())).as_ptr(),
+                wide(&format!("LineworkReview{}-{n}", std::process::id())).as_ptr(),
                 null(),
                 null(),
                 0,
@@ -438,7 +442,7 @@ fn paged_filter_and_native_controls(app: &mut App, dir: &Path) {
     bytes[target as usize..target as usize + 6].copy_from_slice(b"Target");
     assert_eq!(fs::read(&path).unwrap(), bytes);
     optional_real_plugin(app, dir, i, target);
-    app.findbar = true;
+    app.open_search(SearchScope::File, false);
     app.layout();
     unsafe {
         UpdateWindow(hwnd(app.h));
@@ -561,7 +565,7 @@ fn tab_paints_during_native_reposition() {
         let h = CreateWindowExW(0, wide("LineworkResizeTest").as_ptr(), wide("Resize").as_ptr(),
             WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, 0, 0, 960, 620, null_mut(), null_mut(), module() as _, null());
         assert!(!h.is_null());
-        frame::FRAME.replace(Frame { sidebar: true, sidebar_width: 230, find: true, replace: true,
+        frame::FRAME.replace(Frame { sidebar: true, sidebar_width: 230, side: 2, search_panel: true,
             tabs: vec![("example.md".into(), false)], active: Some(0), ..Default::default() });
         ShowWindow(h, SW_SHOWNOACTIVATE);
         invalidate(h as H);
@@ -585,7 +589,7 @@ fn tab_paints_during_native_reposition() {
             for (label, background) in [
                 ("example.md tab, selected", colors(light).bg),
                 ("File menu", colors(light).panel),
-                ("Replace all", colors(light).active),
+                ("Search this file, selected", colors(light).active),
             ] {
                 let button = (4000..4040).map(|id| GetDlgItem(h, id))
                     .find(|b| !b.is_null() && text(*b as H) == label).unwrap();
@@ -613,7 +617,8 @@ fn tab_paints_during_native_reposition() {
         msg(list, LB_ADDSTRING, 0, wide("another.txt").as_ptr() as _);
         for light in [false, true] {
             LIGHT.set(light);
-            frame::FRAME.with_borrow_mut(|f| f.light = light);
+            // The file list, not search results.
+            frame::FRAME.with_borrow_mut(|f| { f.light = light; f.side = 0; f.search_panel = false; });
             let mut previous = None;
             for width in [210, 246, 180] {
                 place(list, 48, 125, width, 80);

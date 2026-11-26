@@ -125,9 +125,6 @@ fn render(
         shell.header(zoomed);
         shell.side(side, !crate::sidebar_grip::owns_edge());
         shell.tabs(side);
-        if f.find {
-            shell.search(side);
-        }
         if f.tabs.is_empty() {
             shell.home(side);
         }

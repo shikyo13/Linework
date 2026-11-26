@@ -11,6 +11,7 @@ encoding_rs = "0.8"
 chardetng = "0.1.17"
 memchr = "2.7"
 regex = "1.11"
+regex-syntax = "0.8"
 regex-cursor = { version = "0.1.5", default-features = false, features = ["perf-inline"] }
 tempfile = "3.20"
 serde = { version = "1", features = ["derive"] }

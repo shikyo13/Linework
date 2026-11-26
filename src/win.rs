@@ -127,9 +127,44 @@ pub fn set_text(h: H, t: &str) {
         SetWindowTextW(hwnd(h), wide(t).as_ptr());
     }
 }
+thread_local! {
+    /// Where the keyboard focus goes when the window it belongs to is next activated.
+    static PENDING_FOCUS: std::cell::Cell<H> = const { std::cell::Cell::new(0) };
+}
+/// Move the keyboard focus to `h`, a control in one of this thread's windows.
+/// Only when that window is already active: moving the focus into a window
+/// that is not would activate it and could take the keyboard from the program
+/// the person is using. Otherwise `h` gets the focus when the window is
+/// next activated (`focus_pending`).
 pub fn focus(h: H) {
     unsafe {
+        let root = GetAncestor(hwnd(h), GA_ROOT);
+        if !root.is_null() && GetActiveWindow() != root {
+            PENDING_FOCUS.set(h);
+            return;
+        }
+        PENDING_FOCUS.set(0);
         SetFocus(hwnd(h));
+    }
+}
+/// Show a popup owned by `owner`: activated when Linework is the active
+/// window (the person asked for it there), otherwise shown without taking
+/// the keyboard from the program the person is using.
+pub fn show_popup(h: H, owner: H) {
+    unsafe {
+        let root = GetAncestor(hwnd(owner), GA_ROOT);
+        let active = !root.is_null() && GetActiveWindow() == root;
+        ShowWindow(hwnd(h), if active { SW_SHOW } else { SW_SHOWNA });
+    }
+}
+/// Give the focus held back by `focus` to its control, once `window` is active.
+pub fn focus_pending(window: H) {
+    let h = PENDING_FOCUS.get();
+    unsafe {
+        if h != 0 && IsWindow(hwnd(h)) != 0 && GetAncestor(hwnd(h), GA_ROOT) == hwnd(window) {
+            PENDING_FOCUS.set(0);
+            SetFocus(hwnd(h));
+        }
     }
 }
 pub fn focused() -> H {

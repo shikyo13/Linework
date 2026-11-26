@@ -1,10 +1,10 @@
-use crate::app::{App, Row, Target, Worker};
-use crate::win::{alert, set_text, text};
+use crate::app::{App, Buffer, Row, SearchScope, Target, Worker};
+use crate::win::alert;
 use crate::{forms, sci, state};
 use crate::frame::Rich;
 use linework_project::{
     self as project, ApplyReport, BuildReport, Index, LineKind, OpenBuffer, OpenStream,
-    SearchReport, SearchRequest, ToolConfig, ToolMode, ToolResult, UserTool,
+    SearchReport, ToolConfig, ToolMode, ToolResult, UserTool,
 };
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -66,9 +66,14 @@ impl Read for DocumentReader {
 
 impl App {
     pub(crate) fn workspace_streams(&self, root: Option<&Path>) -> Vec<OpenStream<'static>> {
+        self.streams_where(|_| true, root)
+    }
+    /// The open files `keep` chooses, below `root` when one is given, as the search reads them.
+    pub(crate) fn streams_where(&self, keep: impl Fn(&Buffer) -> bool, root: Option<&Path>) -> Vec<OpenStream<'static>> {
         self.buffers
             .iter()
             .enumerate()
+            .filter(|(_, buffer)| keep(buffer))
             .filter_map(|(i, buffer)| {
                 let path = match &buffer.path {
                     Some(path)
@@ -159,91 +164,17 @@ impl App {
         }
     }
 
-    /// Find or preview replacements in the folder: the search panel, or the find bar taking lw's words.
+    /// Find or preview replacements in the folder: the search panel over it.
     pub(super) fn project_search(&mut self, preview: bool) {
         self.open_folder_search(preview);
     }
+    /// Find or preview replacements in the open files: the search panel over them.
     pub(super) fn project_search_open(&mut self, preview: bool) {
         if self.buffers.is_empty() {
             self.notice("Open a file or create a tab to search");
             return;
         }
-        let query = self.short_text_for_search();
-        let mut fields = vec![forms::Field {
-            label: "Find",
-            value: query,
-        }];
-        if preview {
-            fields.push(forms::Field {
-                label: "Replace with",
-                value: text(self.replacebox),
-            });
-        }
-        let Some((values, options)) = forms::form(
-            self.h,
-            if preview { "Preview replacements in open tabs" } else { "Find in open tabs" },
-            &fields,
-            &[
-                ("Match case", self.case_),
-                ("Whole words", self.whole),
-                ("Regular expression", self.regex),
-            ],
-            if preview { "Preview" } else { "Find" },
-        ) else {
-            return;
-        };
-        if values[0].is_empty() {
-            self.notice("Enter text to search for");
-            return;
-        }
-        set_text(self.searchbox, &values[0]);
-        (self.case_, self.whole, self.regex) = (options[0], options[1], options[2]);
-        let ask = linework_project::ask::Panel {
-            text: values[0].clone(),
-            match_case: self.case_,
-            whole_word: self.whole,
-            regex: self.regex,
-            ..Default::default()
-        };
-        let mut req = SearchRequest::new(self.root_dir(), ask.words());
-        req.buffers_only = true;
-        if preview {
-            req.replacement = Some(values[1].clone());
-            set_text(self.replacebox, &values[1]);
-        }
-        self.drain_edits();
-        let buffers = self.workspace_streams(None);
-        self.report = None;
-        self.checked.clear();
-        self.preview_mode = preview;
-        self.review_next = preview;
-        self.prefs.sidebar = true;
-        self.side = 2;
-        self.show_rich_rows("Searching open tabs…".into(), vec![], vec![], vec![]);
-        let (job, cancel) = self.new_job("folder search");
-        let tx = self.tx.clone();
-        thread::spawn(move || {
-            let result = project::search_with_streams(&req, buffers, &cancel);
-            let _ = tx.send(Worker::Report(job, result));
-        });
-    }
-    /// The selection, when it is one short line, or else the find bar's text.
-    fn short_text_for_search(&self) -> String {
-        let selection = if self.current().is_some() {
-            let (a, b) = self.edit().selection();
-            if a.abs_diff(b) <= 2048 {
-                self.edit().selected_text()
-            } else {
-                String::new()
-            }
-        } else {
-            String::new()
-        };
-        if !selection.is_empty() && !selection.contains(['\r', '\n']) {
-            selection
-        } else {
-            text(self.searchbox)
-        }
+        self.open_search(SearchScope::Open, preview);
     }
 
     pub(super) fn project_report(&mut self, report: SearchReport) {

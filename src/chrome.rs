@@ -272,9 +272,8 @@ pub fn rail_tips(host: H) {
             }
             state.names = [
                 "Explorer",
-                "Find in file",
+                "Search",
                 "Symbols in file",
-                "Search results",
                 "Bookmarks",
                 "Keyboard shortcuts",
             ]
@@ -307,7 +306,7 @@ pub fn rail_tips(host: H) {
         }
         let first_layout = state.scale == 0;
         for (i, name) in state.names.iter_mut().enumerate() {
-            let y = if i < 5 {
+            let y = if i < 4 {
                 size(host, frame::HEAD + 9 + i as i32 * 43)
             } else {
                 height - size(host, frame::FOOT + 45)

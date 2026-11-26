@@ -62,9 +62,9 @@ impl Request {
         Ok((found, expanded))
     }
 }
-/// A find bar search as the file engine takes it, compiled by lw's pattern
-/// code: the same text, case and whole-word choices find the same matches in
-/// the find bar, the search panel and lw. Patterns may span lines here, since
+/// A search of the current file as the file engine takes it, compiled by lw's
+/// pattern code: the same text, case and whole-word choices find the same
+/// matches here, in the search panel's results and in lw. Patterns may span lines here, since
 /// a document is searched as one text.
 pub(crate) struct EngineQuery {
     text: String,
@@ -93,7 +93,7 @@ impl Request {
             multiline: true,
             ..Spec::default()
         })?;
-        let (text, regex, case_sensitive) = query.engine_form().ok_or("This pattern needs PCRE2, which the find bar does not use")?;
+        let (text, regex, case_sensitive) = query.engine_form().ok_or("This pattern needs PCRE2, which search in a file does not use")?;
         Ok(EngineQuery {
             text,
             options: SearchOptions { regex, case_sensitive, whole_word: false, ..self.options },
@@ -197,55 +197,28 @@ impl App {
         self.open_findbar(false, true);
         self.notice("Searching the captured selection");
     }
+    /// Find or replace in the current file: the search panel over it.
     pub(super) fn show_find(&mut self, replace: bool) {
-        let within_selection = replace && self.findbar && SELECTION.with_borrow(|s| s.is_some());
+        let within_selection = replace && self.search_panel_shown() && SELECTION.with_borrow(|s| s.is_some());
         self.open_findbar(replace, within_selection);
     }
     fn open_findbar(&mut self, replace: bool, keep_selection: bool) {
         if !keep_selection {
             SELECTION.with_borrow_mut(|s| *s = None);
         }
-        self.findbar = true;
-        self.repbar = replace;
-        self.folder_scope = false;
-        if self.current().is_some() && !SELECTION.with_borrow(|s| s.is_some()) {
-            let (a, b) = self.edit().selection();
-            if a != b && a.abs_diff(b) <= 4096 {
-                let s = self.edit().text_range(a.min(b), a.max(b));
-                if !s.contains(['\r', '\n', '\0']) {
-                    set_text(self.searchbox, &s);
-                }
-            }
-        }
-        self.layout();
-        focus(self.searchbox);
-        msg(self.searchbox, 0xb1, 0, -1);
-    }
-    pub(super) fn hide_find(&mut self) {
-        if PENDING.with_borrow(|p| {
-            p.as_ref()
-                .is_some_and(|p| self.current_job("find", p.job) && !p.from_macro)
-        }) {
-            self.cancel_job("find");
-            PENDING.with_borrow_mut(|p| *p = None);
-        }
-        self.findbar = false;
-        self.repbar = false;
-        self.folder_scope = false;
-        self.layout();
-        if self.current().is_some() {
-            focus(self.edit().hwnd());
-        }
+        let scope = if self.current().is_some() { SearchScope::File } else { self.usable_scope() };
+        self.open_search(scope, replace);
     }
     pub(super) fn find_options(&mut self) {
+        let p = &self.panel;
         if let Some((_, v)) = forms::form(
             self.h,
             "Find options",
             &[],
             &[
-                ("Match case", self.case_),
-                ("Whole words", self.whole),
-                ("Regular expression", self.regex),
+                ("Match case", p.match_case),
+                ("Whole words", p.whole_word),
+                ("Regular expression", p.regex),
                 ("Wrap around", WRAP.get()),
                 (
                     "Search within captured selection",
@@ -254,7 +227,9 @@ impl App {
             ],
             "Apply",
         ) {
-            (self.case_, self.whole, self.regex) = (v[0], v[1], v[2]);
+            (self.panel.match_case, self.panel.whole_word, self.panel.regex) = (v[0], v[1], v[2]);
+            self.last_find = None;
+            self.search_due = Some(Instant::now());
             WRAP.set(v[3]);
             if v[4] {
                 let valid = self
@@ -272,14 +247,14 @@ impl App {
     }
     fn request(&self, backwards: bool, replace: bool) -> Request {
         Request {
-            query: text(self.searchbox),
-            replacement: replace.then(|| text(self.replacebox)),
+            query: self.panel.text.clone(),
+            replacement: replace.then(|| text(self.panel_fields[1])),
             selected: SELECTION.with_borrow(|s| s.is_some()),
             bounds: None,
             options: SearchOptions {
-                regex: self.regex,
-                case_sensitive: self.case_,
-                whole_word: self.whole,
+                regex: self.panel.regex,
+                case_sensitive: self.panel.match_case,
+                whole_word: self.panel.whole_word,
                 backwards,
                 wrap: WRAP.get(),
             },
@@ -302,10 +277,6 @@ impl App {
         }
     }
     pub(super) fn find(&mut self, backwards: bool, replace: bool) {
-        if self.folder_scope {
-            self.run_folder_search(replace);
-            return;
-        }
         let req = self.request(backwards, replace);
         if req.query.is_empty() {
             self.open_findbar(replace, req.selected);
@@ -604,10 +575,6 @@ impl App {
         }
     }
     pub(super) fn replace_all(&mut self) {
-        if self.folder_scope {
-            self.run_folder_search(true);
-            return;
-        }
         let mut req = self.request(false, true);
         if req.query.is_empty() {
             self.open_findbar(true, req.selected);

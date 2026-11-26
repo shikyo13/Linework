@@ -40,7 +40,7 @@ pointer over the list below to see its Markdown.
 
 ## In the source editor
 
-These six are under **View**, **Editor effects...**. Edit heat and Paragraph
+These six are under **Settings**, **Editor effects...**. Edit heat and Paragraph
 focus start switched off, so tick them there first.
 
 Press End, then Ctrl+Home. The caret slides instead of jumping, and the

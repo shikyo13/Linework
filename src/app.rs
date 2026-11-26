@@ -32,7 +32,7 @@ use windows_sys::Win32::{
 };
 /// The search panel's fields: their control numbers and the hint each shows while empty.
 pub(crate) const PANEL_CUES: [(i32, &str); 8] = [
-    (640, "Find in folder"),
+    (640, "Find"),
     (641, "Replace with"),
     (642, "Files: *.rs, src/**"),
     (643, "Skip: tests/**, *.min.js"),
@@ -281,8 +281,8 @@ pub struct App {
     superseded: Option<&'static str>,
     jobs: std::collections::HashMap<&'static str, (u64, Arc<AtomicBool>)>,
     job: u64,
-    pub searchbox: H,
-    pub replacebox: H,
+    /// What the search panel searches.
+    pub(crate) search_scope: SearchScope,
     /// The search panel's fields: find, replace, files, skip, types, near, also has, lacks.
     pub panel_fields: [H; 8],
     /// What the search panel asks for.
@@ -305,9 +305,6 @@ pub struct App {
     pane_headers: [H; 2],
     pub list: H,
     scroll: [H; 2],
-    pub regex: bool,
-    pub case_: bool,
-    pub whole: bool,
     pub preview_mode: bool,
     pub(crate) document_preview: crate::preview::Pane,
     /// Where the last undo or redo changed text, while the editor shows it.
@@ -318,9 +315,6 @@ pub struct App {
     pub(crate) pasting: bool,
     /// The document and revision the latest file comparison read as its revised side.
     pub(crate) compared: Option<(u64, u64)>,
-    findbar: bool,
-    repbar: bool,
-    folder_scope: bool,
     pub recording: bool,
     pub playing: bool,
     pub macro_steps: Vec<Step>,
@@ -349,8 +343,12 @@ pub struct App {
     last_find: Option<(u64, u64, u64, String)>,
     last_job_hit: Option<Range<u64>>,
     pending_jump: std::collections::HashMap<String, (u64, u64)>,
-    indexed_jump: std::collections::HashMap<u64, (u64, u64)>,
+    /// A jump waiting for the line count: line, column, and where an
+    /// estimate (`Document::estimate_line_start`) already put the caret.
+    indexed_jump: std::collections::HashMap<u64, (u64, u64, Option<u64>)>,
     column_request: Arc<std::sync::atomic::AtomicU64>,
+    /// Opened files whose line count waits for their first paint, and since when.
+    pub(crate) count_after_paint: Vec<(u64, Instant)>,
 }
 impl App {
     pub fn new(h: H) -> Result<Self, String> {
@@ -392,22 +390,6 @@ impl App {
                 | LBS_NOINTEGRALHEIGHT as u32,
         );
         crate::frame::controls::buffer_list(list, false);
-        let searchbox = child(
-            h,
-            610,
-            "EDIT",
-            "",
-            WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL as u32,
-        );
-        let replacebox = child(
-            h,
-            611,
-            "EDIT",
-            "",
-            WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL as u32,
-        );
-        msg(searchbox, 0x1501, 1, wide("Find text…").as_ptr() as _);
-        msg(replacebox, 0x1501, 1, wide("Replace with…").as_ptr() as _);
         // The search panel's fields, shown in the sidebar's search view.
         let panel_fields = PANEL_CUES.map(|(id, cue)| {
             let field = child(h, id, "EDIT", "", WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL as u32);
@@ -427,8 +409,6 @@ impl App {
         ];
         for child in [
             list,
-            searchbox,
-            replacebox,
             editors[0].hwnd(),
             editors[1].hwnd(),
             scroll[0],
@@ -492,8 +472,7 @@ impl App {
             superseded: None,
             jobs: Default::default(),
             job: 0,
-            searchbox,
-            replacebox,
+            search_scope: SearchScope::File,
             panel_fields,
             panel: Default::default(),
             search_due: None,
@@ -507,18 +486,12 @@ impl App {
             pane_headers,
             list,
             scroll,
-            regex: false,
-            case_: false,
-            whole: false,
             preview_mode: false,
             document_preview: Default::default(),
             history_flash: Default::default(),
             polish: Default::default(),
             pasting: false,
             compared: None,
-            findbar: false,
-            repbar: false,
-            folder_scope: false,
             recording: false,
             playing: false,
             macro_steps: vec![],
@@ -549,6 +522,7 @@ impl App {
             pending_jump: Default::default(),
             indexed_jump: Default::default(),
             column_request: Default::default(),
+            count_after_paint: Vec::new(),
         };
         if let Some(path) = &a.prefs.dictionary {
             for e in &a.editors {
@@ -714,7 +688,8 @@ impl App {
             path.file_name().unwrap_or_default().to_string_lossy()
         ));
         std::thread::spawn(move || {
-            let result = Document::open(&path).map_err(|e| e.to_string());
+            // The line count starts once the text is shown (`Worker::Open`).
+            let result = Document::open_deferred(&path).map_err(|e| e.to_string());
             let _ = tx.send(Worker::Open(path, result, pane, restore));
         });
     }
@@ -881,6 +856,14 @@ impl App {
         if p == 1 {
             self.split = true
         };
+        // A search of the current file follows the file shown.
+        if self.assigned[p] != Some(self.buffers[i].id)
+            && self.search_scope == SearchScope::File
+            && self.search_panel_shown()
+            && !self.panel.text.is_empty()
+        {
+            self.search_due = Some(Instant::now());
+        }
         self.assigned[p] = Some(self.buffers[i].id);
         let saved_view = self.buffers[i].tab_views[p].take()
             .filter(|v| offset.is_none() && v.revision == self.buffers[i].rev);
@@ -1393,6 +1376,7 @@ mod polish;
 mod search_ui;
 #[path = "search_panel.rs"]
 mod search_panel;
+pub(crate) use search_panel::SearchScope;
 #[path = "spans.rs"]
 mod spans;
 
