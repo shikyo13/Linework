@@ -121,7 +121,7 @@ pub enum Event {
     Context(i32, i32, H),
     /// Something the reader did in the document preview pane.
     Preview(crate::preview::Signal),
-    /// Text changed in a field that asks for a folder search: the find bar or a search panel field.
+    /// Text changed in a search panel field.
     SearchInput(i32),
 }
 pub fn push(e: Event) {

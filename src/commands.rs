@@ -84,6 +84,8 @@ pub const COMMANDS: &[Command] = cmds![
     ("replace", "Replace in file", "Search", "Ctrl+H"),
     ("findnext", "Next match", "Search", "F3"),
     ("findprev", "Previous match", "Search", "Shift+F3"),
+    ("replaceone", "Replace next in file", "Search", ""),
+    ("replaceall", "Replace all in file", "Search", ""),
     ("findproject", "Find in folder", "Search", "Ctrl+Shift+F"),
     (
         "replaceproject",
@@ -228,7 +230,7 @@ pub const MENUS: &[(&str, &[&str])] = &[
     ("File", &["new", "open", "folder", "-", "save", "saveas", "saveall", "-", "reload", "reopen", "-", "close", "-", "exit"]),
     ("Edit", &["undo", "redo", "-", "cut", "copy", "paste", "-", "dup", "moveup", "movedown", "comment", "indent", "outdent", "-", "upper", "lower", "sortlines", "sortdesc", "dedup", "trimlines", "columnfill", "-", "complete", "snippets", "mdbold", "mditalic", "-", "spell", "correct"]),
     ("Selection", &["selall", "selnext", "selmatches", "selskipped", "undoselect", "-", "sellines", "caretup", "caretdown", "rectangle"]),
-    ("Search", &["find", "replace", "findnext", "findprev", "findselection", "-", "findproject", "replaceproject", "findopen", "replaceopen", "-", "applypreview", "togglehit", "toggleall", "previewhit", "undofolder", "-", "markcolor", "clearmarks", "-", "findoptions"]),
+    ("Search", &["find", "replace", "findnext", "findprev", "replaceone", "replaceall", "findselection", "-", "findproject", "replaceproject", "findopen", "replaceopen", "-", "applypreview", "togglehit", "toggleall", "previewhit", "undofolder", "-", "markcolor", "clearmarks", "-", "findoptions"]),
     ("View", &["palette", "-", "sidebar", "minimap", "docpreview", "-", "split", "single", "splitbelow", "other", "openother", "syncscroll", "-", "nexttab", "prevtab", "-", "wrap", "whitespace", "currentline", "markmatches", "paragraphfocus", "follow", "-", "fold", "foldall", "unfold", "-", "zoom+", "zoom-", "zoom0", "-", "previewshow", "previewsync", "previewfollow", "previewsource"]),
     ("Go", &["goto", "quick", "opentabs", "-", "symbols", "wsymbols", "def", "refs", "-", "back", "forward", "-", "bookmark", "nextmark", "marks", "nextcolor", "nextdiag"]),
     ("Encoding", &["recode", "encoding", "eol", "-", "encodingdetect", "encodingfallback", "encodingnew"]),

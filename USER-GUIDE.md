@@ -1,8 +1,8 @@
 # Linework user guide
 
-This guide covers Linework 1.9.0 in full. For a quick tour with pictures, see the README in the project repository.
+This guide covers Linework 1.10.0 in full. For a quick tour with pictures, see the README in the project repository.
 
-Linework is a Windows x64 text editor for code, notes and multi-gigabyte text files. Run **Linework-Setup-1.9.0-x64.msi** to install it for your Windows account. The installer adds Linework to Start, Windows Default Apps and Explorer’s **Edit with Linework** menu. To change file associations, choose **Choose Linework file defaults** in Start. Files opened from Explorer join your existing Linework window. Use **Settings → Apps → Installed apps** to remove the installation. Your documents and editor preferences are stored separately.
+Linework is a Windows x64 text editor for code, notes and multi-gigabyte text files. Run **Linework-Setup-1.10.0-x64.msi** to install it for your Windows account. The installer adds Linework to Start, Windows Default Apps and Explorer’s **Edit with Linework** menu. To change file associations, choose **Choose Linework file defaults** in Start. Files opened from Explorer join your existing Linework window. Use **Settings → Apps → Installed apps** to remove the installation. Your documents and editor preferences are stored separately.
 
 For a portable copy, keep **Linework.exe** beside its **runtime** folder and launch it from there. Both editions accept files and folders dropped onto the window or passed on the command line.
 
@@ -39,6 +39,7 @@ Encodings. Linework reads a byte order mark first, then UTF-16 without one, then
 | Select a rectangle or fill it with a number series | Selection → Rectangular selection, then Edit → Fill selections with a number series |
 | Toggle comments on selected lines | Ctrl+/ |
 | Search or replace in the active file | Ctrl+F or Ctrl+H |
+| Next or previous match | F3 and Shift+F3, or Enter and Shift+Enter in the find field |
 | Stay inside the original selection while finding or replacing | Select text, then Ctrl+F3 |
 | Search a folder or preview folder replacements | Ctrl+Shift+F or Ctrl+Shift+H |
 | Search or preview changes across open tabs, including unnamed drafts | Search → Find in open tabs or Preview replacements in open tabs |
@@ -47,7 +48,9 @@ Encodings. Linework reads a byte order mark first, then UTF-16 without one, then
 | Toggle a bookmark and jump to the next | Ctrl+F2 and F2 |
 | Record or finish a macro, then replay it | Ctrl+Shift+M, then F9 |
 
-The left rail opens Explorer, Find, Symbols, Search Results, Bookmarks and keyboard shortcuts. Explorer keeps the open editors above the current folder. Hover over a rail button to see its name.
+The left rail opens Explorer, Search, Symbols, Bookmarks and keyboard shortcuts. Explorer keeps the open editors above the current folder. Symbols lists the functions, classes and headings of the current file. Hover over a rail button to see its name.
+
+All searching happens in the **Search** panel on the left. Choose what it searches at its top: **This file**, **Open files** or **Folder** (Ctrl+F opens it on this file, Ctrl+Shift+F on the folder). Matching lines are listed as you type; click one to go to it. ↑ and ↓ beside the find field, F3 and Shift+F3 go to the previous and next match. **Preview** lists the replacements with a box to check for each; **Apply checked** makes them. **Search → Replace next in file** and **Replace all in file** replace in the current file directly, which is the fast way on a very large file. **More** adds file filters, context lines and conditions.
 
 **Review replacements** opens after a folder replacement search. Select a result to read the original and proposed text in labeled panes. Press **Space** to include or exclude that match, **Ctrl+Enter** to apply the included changes, or **Esc** to cancel. Results identify files that changed after preview. Edits to an open tab remain in memory until you save it.
 

@@ -537,7 +537,6 @@ impl App {
         if self.buffers.is_empty() {
             self.split = false;
             self.active = 0;
-            self.findbar = false;
         } else {
             for p in 0..if self.split { 2 } else { 1 } {
                 if self.assigned[p].is_none() {
@@ -576,14 +575,7 @@ impl App {
         };
         crate::sidebar_grip::layout(self.h, self.prefs.sidebar, sx, self.prefs.light);
         let y = scale(frame::HEAD + frame::TABS);
-        let find = self.findbar;
-        let area = y
-            + scale(8)
-            + if find {
-                scale(frame::findbar_height(self.repbar) - 4)
-            } else {
-                0
-            };
+        let area = y + scale(8);
         let bottom = ht - scale(frame::FOOT);
         layout.set(
             self.status_left,
@@ -607,8 +599,10 @@ impl App {
         let field_w = sx - scale(frame::RAIL + 27);
         for (i, field) in self.panel_fields.into_iter().enumerate() {
             let shown = panel && (i < 2 || self.panel_more);
-            // Room for the Preview button beside replace, and for the line count beside near.
+            // Room for the previous and next buttons beside find, the Preview
+            // button beside replace, and the line count beside near.
             let narrower = match i {
+                0 => scale(68),
                 1 => scale(76),
                 5 => scale(76),
                 _ => 0,
@@ -635,10 +629,6 @@ impl App {
         if msg(self.list, LB_GETITEMHEIGHT, 0, 0) != row_height {
             msg(self.list, LB_SETITEMHEIGHT, 0, row_height);
         }
-        let bw = (w - sx - scale(345)).max(scale(65));
-        layout.set(self.searchbox, find.then(|| rect(sx + scale(8), y + scale(5), bw, scale(29))));
-        let replace_y = y + scale(42);
-        layout.set(self.replacebox, (find && self.repbar).then(|| rect(sx + scale(8), replace_y, bw, scale(29))));
         let count = if self.split { 2 } else { 1 };
         let format = self.preview_kind();
         let preview_width = self.document_preview.layout(self.h, &mut layout, w, sx, area, bottom,
@@ -839,13 +829,6 @@ impl App {
             },
             first_tab: self.tab_first,
             split: self.split,
-            find: self.findbar,
-            replace: self.repbar,
-            case_: self.case_,
-            regex: self.regex,
-            whole: self.whole,
-            search_folder: self.folder_scope,
-            selection_scope: self.selection_search_active(),
             recent: self
                 .prefs
                 .recent
@@ -869,6 +852,13 @@ impl App {
                 more: self.panel_more,
                 context: self.panel.context,
                 near_lines: self.panel.near_lines,
+                searching: match self.search_scope {
+                    SearchScope::File => 0,
+                    SearchScope::Open => 1,
+                    SearchScope::Folder => 2,
+                },
+                folder: self.prefs.root.is_some(),
+                selection: self.selection_search_active(),
             },
             summary: self.search_summary.clone(),
         };
@@ -1136,7 +1126,7 @@ impl App {
                 for h in [self.status_left, self.status_right] {
                     msg(h, WM_SETFONT, font(size(self.h, 11), 400, true) as usize, 1);
                 }
-                for h in [self.list, self.searchbox, self.replacebox] {
+                for h in [self.list] {
                     msg(
                         h,
                         WM_SETFONT,
@@ -1203,9 +1193,8 @@ impl App {
                     match s {
                         0 => self.rebuild_side(),
                         1 => self.project_symbols(false),
-                        // The search panel, as Ctrl+Shift+F opens it; without a folder, what it needs.
-                        _ if self.prefs.root.is_some() => self.open_folder_search(false),
-                        _ => self.show_rows(2, "Open a folder to search".into(), Vec::new()),
+                        // The search panel, over what it last searched, or what there is.
+                        _ => self.open_search(self.usable_scope(), false),
                     };
                 }
             },

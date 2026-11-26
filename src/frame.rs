@@ -33,13 +33,6 @@ pub struct Frame {
     pub alternate: Option<usize>,
     pub first_tab: usize,
     pub split: bool,
-    pub find: bool,
-    pub replace: bool,
-    pub case_: bool,
-    pub regex: bool,
-    pub whole: bool,
-    pub search_folder: bool,
-    pub selection_scope: bool,
     pub recent: Vec<String>,
     pub recording: bool,
     pub preview: bool,
@@ -66,6 +59,12 @@ pub struct PanelState {
     pub more: bool,
     pub context: u32,
     pub near_lines: u32,
+    /// What is searched: 0 the current file, 1 the open files, 2 the folder.
+    pub searching: u8,
+    /// A folder is open.
+    pub folder: bool,
+    /// Next, previous and replace work within a captured selection.
+    pub selection: bool,
 }
 
 /// A line of folder search results, drawn in the sidebar list.
@@ -86,7 +85,8 @@ pub enum Rich {
 
 /// The search panel's layout in the sidebar, from the top. The fields are
 /// child windows placed at these heights; the switches are drawn between them.
-pub const PANEL_TOP: i32 = HEAD + 50;
+/// Above the find field, the choice of what to search.
+pub const PANEL_TOP: i32 = HEAD + 50 + PANEL_STEP;
 pub const FIELD_H: i32 = 30;
 const PANEL_STEP: i32 = 36;
 /// The width of the labels before the panel's More fields.
@@ -117,10 +117,6 @@ pub fn panel_bottom(more: bool) -> i32 {
     } else {
         panel_switches_y() + 34
     }
-}
-/// How tall the find bar is: its row, and the replace row.
-pub fn findbar_height(replace: bool) -> i32 {
-    40 + if replace { 36 } else { 0 }
 }
 thread_local! {
     /// The rows of the folder search results, drawn in place of the list's plain text.
@@ -317,13 +313,12 @@ impl Shell<'_> {
             if f.light { hx(0xEEEAF4) } else { hx(0x121318) },
         );
         s.fill(RAIL - 1, HEAD, 1, h - HEAD - FOOT, p.line);
-        // Find and bookmarks act on an open file.
+        // Bookmarks act on an open file.
         let file = !f.tabs.is_empty();
         for (i, (g, a, on, usable)) in [
             (0xE81E, Hit::Side(0), f.sidebar && f.side == 0, true),
-            (0xE721, cmd("find"), f.find, file),
+            (0xE721, Hit::Side(2), f.sidebar && f.side == 2, true),
             (0xE8D4, Hit::Side(1), f.sidebar && f.side == 1, true),
-            (0xE179, Hit::Side(2), f.sidebar && f.side == 2, true),
             (0xE734, cmd("marks"), false, file),
         ]
         .into_iter()
@@ -365,7 +360,7 @@ impl Shell<'_> {
             } else if f.side == 1 {
                 cmd("symbols")
             } else {
-                cmd("findproject")
+                cmd("p:run")
             },
             false,
             15,
@@ -453,6 +448,14 @@ impl Shell<'_> {
     fn panel(&self, x: i32, avail: i32) {
         let (s, p, f) = (self.s, self.p, self.f);
         let ps = &f.panel;
+        // What to search. Without a folder open, Folder says how to open one.
+        let third = (avail - 8) / 3;
+        let file = if ps.selection { "Selection" } else { "This file" };
+        for (i, (name, id)) in [(file, "p:file"), ("Open files", "p:open"), ("Folder", "p:folder")].into_iter().enumerate() {
+            self.button(x + i as i32 * (third + 4), PANEL_TOP - PANEL_STEP, third, 28, name, id, ps.searching == i as u8);
+        }
+        self.button(x + avail - 64, panel_field_y(0) + 1, 30, FIELD_H - 2, "↑", "findprev", false);
+        self.button(x + avail - 30, panel_field_y(0) + 1, 30, FIELD_H - 2, "↓", "findnext", false);
         self.button(x + avail - 70, panel_field_y(1) + 1, 70, FIELD_H - 2, "Preview", "p:preview", f.preview);
         let y = panel_switches_y();
         for (i, (name, id, on)) in [("Aa", "p:case", ps.case_), ("W", "p:word", ps.whole), (".*", "p:regex", ps.regex), ("", "p:scope", ps.scope)]
@@ -581,73 +584,13 @@ impl Shell<'_> {
         self.icon(w - 73, HEAD + 5, 31, 30, 0xE710, cmd("new"), false, 13);
         self.icon(w - 38, HEAD + 5, 31, 30, 0xE7FB, cmd("split"), f.split, 14);
     }
-    fn search(&self, side: i32) {
-        let (s, p, f, w) = (self.s, self.p, self.f, self.w);
-        let y = HEAD + TABS;
-        let row = findbar_height(f.replace);
-        s.fill(side, y, w - side, row, p.panel);
-        s.fill(side, y + row - 1, w - side, 1, p.line);
-        let ry = y + 42;
-        let bx = w - 327;
-        for (i, (name, id, on)) in [
-            ("Aa", "case", f.case_),
-            (".*", "regex", f.regex),
-            ("W", "word", f.whole),
-            ("↑", "findprev", false),
-            ("↓", "findnext", false),
-            (
-                if f.search_folder {
-                    "Folder"
-                } else if f.selection_scope {
-                    "Selection"
-                } else {
-                    "File"
-                },
-                "scope",
-                f.search_folder,
-            ),
-            ("×", "hidefind", false),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            self.button(
-                bx + [0, 38, 76, 114, 152, 190, 276][i],
-                y + 6,
-                if i == 5 { 82 } else { 34 },
-                27,
-                name,
-                id,
-                on,
-            );
-        }
-        if f.replace {
-            self.button(bx, ry, 101, 27, "Replace next", "replaceone", false);
-            self.button(
-                bx + 107,
-                ry,
-                134,
-                27,
-                if f.search_folder {
-                    "Preview changes"
-                } else {
-                    "Replace all"
-                },
-                "replaceall",
-                true,
-            );
-        }
-    }
     fn home(&self, side: i32) {
         let (s, p, f) = (self.s, self.p, self.f);
         let avail = self.w - side;
         let margin = if avail < 570 { 24 } else { 48 };
         let width = (avail - 2 * margin).min(746);
         let x = side + (avail - width) / 2;
-        let y = HEAD
-            + TABS
-            + (if f.find { findbar_height(f.replace) } else { 0 })
-            + ((self.h - 400) / 6).clamp(25, 57);
+        let y = HEAD + TABS + ((self.h - 400) / 6).clamp(25, 57);
         s.logo(x, y + 7, 52);
         s.text(
             x + 67,

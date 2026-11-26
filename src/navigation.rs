@@ -133,30 +133,6 @@ impl App {
             e.send(SETFIRSTVISIBLELINE, first as usize, 0);
         }
     }
-    pub(super) fn choose_scope(&mut self) {
-        let opts = ["Current file", "Selected text", "Open tabs…", "Folder…"].map(String::from);
-        let Some(n) = forms::pick(self.h, "Search scope", &opts, "") else {
-            return;
-        };
-        let replace = self.repbar;
-        let query = text(self.searchbox);
-        match n {
-            0 => {
-                self.show_find(false);
-                self.repbar = replace;
-                set_text(self.searchbox, &query);
-                self.layout();
-            }
-            1 => {
-                self.show_selection_find();
-                self.repbar = replace;
-                set_text(self.searchbox, &query);
-                self.layout();
-            }
-            2 => self.project_search_open(replace),
-            _ => self.project_search(replace),
-        }
-    }
     pub(super) fn is_checked(&self, id: &str) -> bool {
         match id {
             "spell" => self.prefs.spell,

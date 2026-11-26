@@ -121,7 +121,7 @@ impl Art {
                 rows.extend((first..count.min(first + visible)).map(|i| (i, list_text(h as H, i))));
             }
         }
-        let top_end = HEAD + TABS + if frame.find { 0 } else { 8 };
+        let top_end = HEAD + TABS + 8;
         Self {
             frame,
             rows,
@@ -149,9 +149,7 @@ impl Art {
         HITS.with_borrow_mut(Vec::clear);
         shell.side(side, false);
         shell.tabs(side);
-        if !self.frame.find {
-            s.fill(side, HEAD + TABS, w - side + 2, 9, p.bg);
-        }
+        s.fill(side, HEAD + TABS, w - side + 2, 9, p.bg);
         let [x, y, right_pad, bottom] = self.list;
         if !self.rows.is_empty() {
             let clip = s.r(x, y, side - x - right_pad, bottom - y);
