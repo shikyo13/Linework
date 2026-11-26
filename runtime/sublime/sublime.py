@@ -33,6 +33,7 @@ _timer_lock = threading.Lock()
 _timers = []
 _sequence = itertools.count()
 _timer_wake = lambda: None
+_mac = __import__("sys").platform == "darwin"
 
 
 class Region:
@@ -626,10 +627,13 @@ def windows():
 
 
 def platform():
-    return "windows"
+    return "osx" if _mac else "windows"
 
 
 def arch():
+    if _mac:
+        import platform as machine
+        return "arm64" if machine.machine() == "arm64" else "x64"
     return "x64"
 
 
@@ -828,6 +832,10 @@ def _clipboard():
 
 
 def get_clipboard(size_limit=16_777_216):
+    if _mac:
+        import subprocess
+        text = subprocess.run(["/usr/bin/pbpaste"], capture_output=True, check=True).stdout.decode("utf-8", "replace")
+        return text[:max(size_limit, 0)]
     c, user, kernel, hwnd = _clipboard()
     try:
         h = user.GetClipboardData(13)
@@ -849,6 +857,10 @@ def get_clipboard(size_limit=16_777_216):
 
 
 def set_clipboard(text):
+    if _mac:
+        import subprocess
+        subprocess.run(["/usr/bin/pbcopy"], input=text.encode("utf-8"), check=True)
+        return
     c, user, kernel, hwnd = _clipboard()
     h = None
     try:

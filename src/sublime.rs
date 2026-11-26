@@ -106,7 +106,34 @@ fn runtime() -> PathBuf {
     if beside.join("sublime/host.py").is_file() {
         return beside;
     }
+    // In a Mac application the program is in Contents/MacOS and what it carries in Contents/Resources.
+    let bundled = executable.parent().and_then(Path::parent).unwrap_or(Path::new(".")).join("Resources/runtime");
+    if bundled.join("sublime/host.py").is_file() {
+        return bundled;
+    }
     Path::new(env!("CARGO_MANIFEST_DIR")).join("runtime")
+}
+/// The Python that runs packages. Windows copies of Linework carry one.
+#[cfg(windows)]
+fn python(runtime: &Path) -> Result<PathBuf, String> {
+    Ok(runtime.join("python/python.exe"))
+}
+/// The Python that runs packages: one carried with the program if there is
+/// one, or else the Mac's own, the newest first. `/usr/bin/python3` is not
+/// tried: on a Mac without Apple's developer tools it only offers to install them.
+#[cfg(target_os = "macos")]
+fn python(runtime: &Path) -> Result<PathBuf, String> {
+    let places = [
+        runtime.join("python/bin/python3"),
+        "/opt/homebrew/bin/python3".into(),
+        "/usr/local/bin/python3".into(),
+        "/Library/Frameworks/Python.framework/Versions/Current/bin/python3".into(),
+        "/Library/Developer/CommandLineTools/usr/bin/python3".into(),
+        "/Applications/Xcode.app/Contents/Developer/usr/bin/python3".into(),
+    ];
+    places.into_iter().find(|place| place.is_file()).ok_or_else(|| {
+        "Packages need Python 3, and this Mac has none. Install it from python.org, or Apple's command line tools with: xcode-select --install".to_string()
+    })
 }
 fn start() -> Result<Host, String> {
     let runtime = runtime();
@@ -133,7 +160,7 @@ fn start() -> Result<Host, String> {
     let log =
         fs::File::create(state::profile().join(format!("sublime-host-{}.log", std::process::id())))
             .map_err(|e| e.to_string())?;
-    let mut child = Command::new(runtime.join("python/python.exe"))
+    let mut child = Command::new(python(&runtime)?)
         .args(["-I", "-B", "-X", "utf8", "-u"])
         .arg(runtime.join("sublime/host.py"))
         .arg(state::profile())

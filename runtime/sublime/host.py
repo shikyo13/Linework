@@ -44,7 +44,7 @@ def install(source):
             if source.resolve() in [staged.resolve(), *staged.resolve().parents]:
                 raise ValueError("Choose the plugin's own folder")
             for p in source.rglob("*"):
-                if p.is_symlink() or p.is_junction():
+                if p.is_symlink() or getattr(p, "is_junction", lambda: False)():
                     raise ValueError(f"Linked package member: {p}")
             shutil.copytree(
                 source, staged, ignore=shutil.ignore_patterns(".git", "__pycache__")
@@ -372,6 +372,21 @@ def main():
         wake_handle = kernel.OpenEventW(2, False, sys.argv[2])
         if wake_handle:
             sublime._timer_wake = lambda: kernel.SetEvent(wake_handle)
+    elif len(sys.argv) > 2:
+        # Away from Windows the editor listens on a named pipe in the temporary
+        # folder, named after the event; a byte written to it is the signal.
+        name = "".join(c if c.isalnum() or c in "-_" else "_" for c in sys.argv[2])
+        try:
+            wake_pipe = os.open(Path(tempfile.gettempdir()) / "linework-events" / name, os.O_WRONLY | os.O_NONBLOCK)
+        except OSError:
+            wake_pipe = None
+        def wake():
+            try:
+                os.write(wake_pipe, b"1")
+            except OSError:
+                pass
+        if wake_pipe is not None:
+            sublime._timer_wake = wake
     sublime._dispatcher = command
     def view_request(view, method, *args):
         if threading.current_thread() is not threading.main_thread() or view is not last_view or not active[0]:

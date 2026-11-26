@@ -23,6 +23,11 @@ done
 mkdir -p "$app/Contents/Resources/fonts"
 cp "$here"/assets/mac/fonts/*.ttf "$here"/assets/mac/fonts/NOTICE.txt "$here"/assets/mac/fonts/OFL.txt "$app/Contents/Resources/fonts/"
 cp "$here/assets/mac/Linework.icns" "$app/Contents/Resources/Linework.icns"
+# The package host's Python files (the Python itself is the Mac's own), and
+# the licences of what the program is built with.
+mkdir -p "$app/Contents/Resources/runtime/sublime"
+cp "$here"/runtime/sublime/*.py "$app/Contents/Resources/runtime/sublime/"
+cp -R "$here/runtime/licenses" "$app/Contents/Resources/runtime/licenses"
 # The same Info.plist the Xcode project uses, with its settings filled in.
 sed -e 's/$(EXECUTABLE_NAME)/Linework/' -e 's/$(PRODUCT_BUNDLE_IDENTIFIER)/com.zerosecurity.linework/' \
     -e "s/\$(MARKETING_VERSION)/$version/" -e 's/$(MACOSX_DEPLOYMENT_TARGET)/12.0/' \

@@ -348,12 +348,66 @@ pub unsafe fn OpenProcess(_: crate::Win32::System::Threading::PROCESS_ACCESS_RIG
     crate::imp::remote::process_handle(dwprocessid) as _
 }
 
-pub unsafe fn CreateEventW(_: *const crate::Win32::Security::SECURITY_ATTRIBUTES, _: i32, _: i32, _: *const u16) -> crate::Win32::Foundation::HANDLE {
-    1 as _
+/// Named events: the pipe each is read from and where the pipe is. Not kept
+/// per thread: one is closed while the main thread's own values are being
+/// taken down at exit.
+static EVENTS: std::sync::Mutex<Vec<(usize, std::fs::File, std::path::PathBuf)>> = std::sync::Mutex::new(Vec::new());
+
+fn events() -> std::sync::MutexGuard<'static, Vec<(usize, std::fs::File, std::path::PathBuf)>> {
+    EVENTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-pub unsafe fn CloseHandle(_: crate::Win32::Foundation::HANDLE) -> i32 {
+/// The handles given for named events start here, clear of process handles.
+const EVENT_BASE: usize = 0x4556_0000;
+
+/// A named event is a named pipe in the temporary folder: another process
+/// signals it by writing a byte, and a wait finds the byte. This is how the
+/// package host tells the editor a timer is due. An event with no name is
+/// never signalled by anyone and stays a bare token.
+pub unsafe fn CreateEventW(_: *const crate::Win32::Security::SECURITY_ATTRIBUTES, _: i32, _: i32, lpname: *const u16) -> crate::Win32::Foundation::HANDLE {
+    use std::os::unix::fs::OpenOptionsExt;
+    if lpname.is_null() {
+        return 1 as _;
+    }
+    let name: String = unsafe { crate::imp::gdi::wide_name(lpname) }.chars().map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect();
+    let folder = std::env::temp_dir().join("linework-events");
+    let path = folder.join(name);
+    let _ = std::fs::create_dir_all(&folder);
+    let _ = std::fs::remove_file(&path);
+    let Ok(c_path) = std::ffi::CString::new(path.to_string_lossy().as_bytes()) else { return std::ptr::null_mut() };
+    unsafe extern "C" {
+        fn mkfifo(path: *const core::ffi::c_char, mode: u16) -> i32;
+    }
+    if unsafe { mkfifo(c_path.as_ptr(), 0o600) } != 0 {
+        return std::ptr::null_mut();
+    }
+    // Opened for reading and writing so that a writer coming and going never ends it; 4 is O_NONBLOCK.
+    let Ok(pipe) = std::fs::OpenOptions::new().read(true).write(true).custom_flags(4).open(&path) else { return std::ptr::null_mut() };
+    let mut events = events();
+    let handle = EVENT_BASE + events.iter().map(|event| event.0 - EVENT_BASE + 1).max().unwrap_or(1);
+    events.push((handle, pipe, path));
+    handle as _
+}
+
+pub unsafe fn CloseHandle(hobject: crate::Win32::Foundation::HANDLE) -> i32 {
+    let mut events = events();
+    if let Some(at) = events.iter().position(|event| event.0 == hobject as usize) {
+        let _ = std::fs::remove_file(&events.remove(at).2);
+    }
     1
+}
+
+/// Whether a named event was signalled since it was last asked; asking clears it.
+fn event_signalled(handle: usize) -> Option<bool> {
+    use std::io::Read;
+    let mut events = events();
+    let event = events.iter_mut().find(|event| event.0 == handle)?;
+    let mut taken = [0u8; 64];
+    let mut any = false;
+    while matches!(event.1.read(&mut taken), Ok(count) if count > 0) {
+        any = true;
+    }
+    Some(any)
 }
 
 /// Another copy's process is waited for until it ends. Anything else is never
@@ -362,6 +416,19 @@ pub unsafe fn CloseHandle(_: crate::Win32::Foundation::HANDLE) -> i32 {
 pub unsafe fn WaitForSingleObject(hhandle: crate::Win32::Foundation::HANDLE, dwmilliseconds: u32) -> crate::Win32::Foundation::WAIT_EVENT {
     if let Some(process) = crate::imp::remote::process_of(hhandle as usize) {
         return if crate::imp::remote::ended(process, dwmilliseconds) { 0 } else { 258 };
+    }
+    if let Some(signalled) = event_signalled(hhandle as usize) {
+        if signalled || dwmilliseconds == 0 {
+            return if signalled { 0 } else { 258 };
+        }
+        let until = std::time::Instant::now() + std::time::Duration::from_millis(dwmilliseconds as u64);
+        while std::time::Instant::now() < until {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            if event_signalled(hhandle as usize) == Some(true) {
+                return 0;
+            }
+        }
+        return 258;
     }
     std::thread::sleep(std::time::Duration::from_millis(dwmilliseconds.min(50) as u64));
     258
