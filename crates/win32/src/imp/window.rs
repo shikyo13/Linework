@@ -60,6 +60,10 @@ thread_local! {
     /// Which subclass procedure of which window is running, innermost last.
     static RUNNING: RefCell<Vec<(usize, usize)>> = const { RefCell::new(Vec::new()) };
     static FOCUSING: Cell<bool> = const { Cell::new(false) };
+    /// The window of ours last made active or given the keys. macOS has no key
+    /// window while another program is in front, and the front end still has
+    /// one in mind.
+    static ACTIVE: RefCell<Option<Retained<NSWindow>>> = const { RefCell::new(None) };
 }
 
 pub(crate) fn mtm() -> MainThreadMarker {
@@ -316,11 +320,24 @@ pub unsafe fn CreateWindowExW(dwexstyle: WINDOW_EX_STYLE, lpclassname: *const u1
         .with_borrow(|classes| classes.get(&class).map(|class| class.proc))
         .unwrap_or_else(|| crate::imp::controls::proc_of(&class));
     let mtm = mtm();
-    let view: Retained<NSView> = Retained::into_super(LwView::new(mtm));
     let child = dwstyle & WS_CHILD != 0;
     let (width, height) = (nwidth.max(0) as f64, nheight.max(0) as f64);
     let id = if child { hmenu as isize } else { 0 };
-    let window = register(view.clone(), &class, proc, dwstyle, dwexstyle, id, false);
+    // An editor asked for by class name is Scintilla's own view, held with
+    // the object it reports to.
+    let editor = if class == "Scintilla" && child { crate::imp::scintilla::create(mtm, id) } else { None };
+    let (view, window) = match editor {
+        Some((view, hearing)) => {
+            let window = register(view.clone(), "Scintilla", Some(foreign_proc), dwstyle, dwexstyle, id, true);
+            window.control.replace(Some(Box::new(hearing)));
+            (view, window)
+        }
+        None => {
+            let view: Retained<NSView> = Retained::into_super(LwView::new(mtm));
+            let window = register(view.clone(), &class, proc, dwstyle, dwexstyle, id, false);
+            (view, window)
+        }
+    };
     window.text.replace(title.clone());
     if child {
         view.setFrame(NSRect::new(NSPoint::new(x as f64, y as f64), NSSize::new(width, height)));
@@ -418,7 +435,9 @@ pub unsafe fn DestroyWindow(hwnd: HWND) -> i32 {
     crate::imp::message::forget_window(hwnd);
     send(hwnd, WM_DESTROY, 0, 0);
     for child in children(&window) {
-        if !child.foreign {
+        // An editor from the editor crate is taken away by its owner; one made
+        // here by class name goes with its parent.
+        if !child.foreign || child.control.borrow().is_some() {
             unsafe { DestroyWindow(handle(&child.view)) };
         }
     }
@@ -537,7 +556,10 @@ pub(crate) fn set_visible(window: &Window, visible: bool, activate: bool) {
     window.style.set(if visible { style | WS_VISIBLE } else { style & !WS_VISIBLE });
     match window.frame.borrow().clone() {
         Some(frame) if !visible => frame.orderOut(None),
-        Some(frame) if activate => frame.makeKeyAndOrderFront(None),
+        Some(frame) if activate => {
+            activated(&frame);
+            frame.makeKeyAndOrderFront(None);
+        }
         Some(frame) => frame.orderFront(None),
         None => window.view.setHidden(!visible),
     }
@@ -802,6 +824,7 @@ pub unsafe fn SetFocus(hwnd: HWND) -> HWND {
     let previous = unsafe { GetFocus() };
     let Some(window) = find(hwnd) else { return previous };
     if let Some(frame) = window.view.window() {
+        activated(&frame);
         FOCUSING.set(true);
         frame.makeFirstResponder(Some(&key_view(&window)));
         FOCUSING.set(false);
@@ -810,8 +833,25 @@ pub unsafe fn SetFocus(hwnd: HWND) -> HWND {
     previous
 }
 
+/// Notes the window the front end is working in.
+pub(crate) fn activated(frame: &NSWindow) {
+    ACTIVE.replace(Some(frame.retain()));
+}
+
+/// The window that has the keys in `frame`.
+pub(crate) fn focus_in(frame: &NSWindow) -> HWND {
+    let Some(responder) = frame.firstResponder() else { return std::ptr::null_mut() };
+    let is_view: bool = unsafe { msg_send![&*responder, isKindOfClass: objc2::class!(NSView)] };
+    if !is_view {
+        return std::ptr::null_mut();
+    }
+    let view: &NSView = unsafe { &*(Retained::as_ptr(&responder) as *const NSView) };
+    owner_of(view).map_or(std::ptr::null_mut(), |window| handle(&window.view))
+}
+
 pub unsafe fn GetFocus() -> HWND {
-    let Some(frame) = app().keyWindow().or_else(|| app().mainWindow()) else { return std::ptr::null_mut() };
+    let ours = ACTIVE.with_borrow(|active| active.clone().filter(|frame| frame.isVisible()));
+    let Some(frame) = app().keyWindow().or(ours).or_else(|| app().mainWindow()) else { return std::ptr::null_mut() };
     let Some(responder) = frame.firstResponder() else { return std::ptr::null_mut() };
     let is_view: bool = unsafe { msg_send![&*responder, isKindOfClass: objc2::class!(NSView)] };
     if !is_view {

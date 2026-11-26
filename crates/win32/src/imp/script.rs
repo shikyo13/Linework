@@ -90,7 +90,9 @@ fn post(event: Option<Retained<NSEvent>>) {
 
 /// The window the steps act on: the key window, or the main one.
 fn target() -> Option<Retained<objc2_app_kit::NSWindow>> {
-    app().keyWindow().or_else(|| frames().into_iter().find(|(class, _)| class == "LineworkMain").map(|(_, frame)| frame))
+    let focus = unsafe { crate::imp::window::GetFocus() };
+    let working = crate::imp::window::find(focus).and_then(|window| window.view.window());
+    working.or_else(|| app().keyWindow()).or_else(|| frames().into_iter().find(|(class, _)| class == "LineworkMain").map(|(_, frame)| frame))
 }
 
 /// A pointer event at a place counted from the top left of the window's content.

@@ -336,6 +336,10 @@ define_class!(
 
         #[unsafe(method(windowDidBecomeKey:))]
         fn became_key(&self, notice: &NSNotification) {
+            let frame: Option<Retained<AnyObject>> = unsafe { notice.object() };
+            if let Some(frame) = frame.and_then(|frame| frame.downcast::<NSWindow>().ok()) {
+                window::activated(&frame);
+            }
             tell(notice, WM_ACTIVATE, WA_ACTIVE as usize);
         }
 

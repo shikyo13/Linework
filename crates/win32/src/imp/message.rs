@@ -216,7 +216,12 @@ fn key_message(event: &NSEvent, down: bool) -> Option<Posted> {
             keys.push(key);
         }
     });
-    let hwnd = unsafe { crate::imp::window::GetFocus() };
+    // A key belongs to the window its event names, when that is one of ours.
+    let named = event.window(crate::imp::window::mtm()).map(|frame| crate::imp::window::focus_in(&frame)).filter(|hwnd| !hwnd.is_null());
+    let hwnd = named.unwrap_or_else(|| unsafe { crate::imp::window::GetFocus() });
+    if std::env::var_os("LINEWORK_TRACE").is_some() {
+        eprintln!("key {key:#x} down={down} to {:?}", find(hwnd).map(|window| (window.class.clone(), window.id.get())));
+    }
     let repeat = if down && event.isARepeat() { 1 << 30 } else { 0 };
     Some(Posted {
         hwnd: hwnd as usize,

@@ -5,6 +5,7 @@ pub(crate) mod menu;
 pub(crate) mod message;
 pub(crate) mod misc;
 pub(crate) mod remote;
+pub(crate) mod scintilla;
 pub(crate) mod script;
 pub(crate) mod view;
 pub(crate) mod window;
