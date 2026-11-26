@@ -28,8 +28,21 @@ build() {
     rm -rf "$objects"
 }
 
-build scintilla "-fobjc-arc -I$scintilla/include -I$scintilla/src -I$scintilla/cocoa" \
-    "$scintilla"/src/*.cxx "$scintilla"/cocoa/*.mm
+# One change to Scintilla, made in a copy: a font's height above and below the
+# line is rounded up, as Scintilla's Windows build does, not to the nearest whole.
+# With the nearest whole, Cascadia Mono at 11 points sets lines 21 apart where
+# Windows sets them 22 apart.
+changed="$out/changed"
+rm -rf "$changed"
+mkdir -p "$changed"
+sed -e 's/return ascent + 0\.5f;/return std::ceil(ascent);/' -e 's/return descent + 0\.5f;/return std::ceil(descent);/' \
+    "$scintilla/cocoa/PlatCocoa.mm" > "$changed/PlatCocoa.mm"
+[ "$(grep -c 'return std::ceil(\(ascent\|descent\));' "$changed/PlatCocoa.mm")" -eq 2 ] ||
+    { echo "$0: PlatCocoa.mm is not as expected; the font height change was not made" >&2; exit 1; }
+sources=$(ls "$scintilla"/src/*.cxx "$scintilla"/cocoa/*.mm | grep -v '/cocoa/PlatCocoa\.mm$')
+# shellcheck disable=SC2086
+build scintilla "-fobjc-arc -I$scintilla/include -I$scintilla/src -I$scintilla/cocoa" $sources "$changed/PlatCocoa.mm"
+rm -rf "$changed"
 build lexilla "-I$lexilla/include -I$lexilla/lexlib -I$scintilla/include" \
     "$lexilla"/src/Lexilla.cxx "$lexilla"/lexlib/*.cxx "$lexilla"/lexers/*.cxx
 cat "$scintilla/version.txt" > "$out/scintilla-version.txt"
