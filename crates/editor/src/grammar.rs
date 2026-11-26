@@ -321,12 +321,19 @@ fn sources(folder: &Path) -> Result<(Vec<(PathBuf, String)>, Vec<String>), Strin
             if item.file_type().is_ok_and(|t| t.is_dir())
                 && !item.file_name().to_string_lossy().starts_with('.')
             {
-                use std::os::windows::fs::MetadataExt;
-                if item
-                    .metadata()
-                    .is_ok_and(|m| m.file_attributes() & 0x400 == 0)
+                // Away from Windows a link to a folder is not reported as a folder,
+                // so there is nothing further to rule out.
+                #[cfg(not(windows))]
+                dirs.push(p);
+                #[cfg(windows)]
                 {
-                    dirs.push(p);
+                    use std::os::windows::fs::MetadataExt;
+                    if item
+                        .metadata()
+                        .is_ok_and(|m| m.file_attributes() & 0x400 == 0)
+                    {
+                        dirs.push(p);
+                    }
                 }
                 continue;
             }
@@ -695,6 +702,7 @@ impl Editor {
         };
         let (tx, rx) = mpsc::channel();
         s.pending = Some((cancel, rx));
+        #[cfg(windows)]
         let host =
             unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetParent(self.hwnd() as _) }
                 as isize;
@@ -724,6 +732,9 @@ impl Editor {
                 })
                 .is_ok()
             {
+                #[cfg(target_os = "macos")]
+                crate::mac::wake();
+                #[cfg(windows)]
                 unsafe {
                     windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW(
                         host as _,

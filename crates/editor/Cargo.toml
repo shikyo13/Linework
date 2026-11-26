@@ -12,7 +12,15 @@ memchr = "2"
 syntect = { version = "5.3", default-features = false, features = ["yaml-load", "parsing", "default-syntaxes", "regex-fancy"] }
 yaml-rust = "0.4"
 onig = { version = "6.5", default-features = false }
+
+[target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_System_LibraryLoader",
     "Win32_Graphics_Gdi", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Controls_Dialogs"
 ] }
+
+# The macOS editor is an AppKit view, which belongs to the main thread, so its
+# test is a program of its own and not a set of harness threads.
+[[test]]
+name = "mac_workflows"
+harness = false

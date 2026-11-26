@@ -1,9 +1,14 @@
-//! Native Windows editing surface. File storage and workspace policy live in the host.
+//! Native editing surface: Scintilla in a Win32 window on Windows, in an AppKit
+//! view on macOS. File storage and workspace policy live in the host.
 mod completion;
 mod grammar;
 mod sublime_v2;
 pub use grammar::{import_user_grammar, load_user_grammars};
 mod language;
+#[cfg(target_os = "macos")]
+mod mac;
+#[cfg(target_os = "macos")]
+pub use mac::set_wake;
 pub mod sci;
 mod spelling;
 mod style;
@@ -16,12 +21,18 @@ use sci::*;
 use std::cell::{Cell, RefCell};
 use std::ffi::CString;
 use std::marker::PhantomData;
+#[cfg(windows)]
 use std::os::windows::ffi::OsStrExt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(windows)]
+use std::path::PathBuf;
 use std::rc::Rc;
+#[cfg(windows)]
 use std::sync::OnceLock;
 pub use style::{CaretStyle, ColorRole, ColorScheme, HighlightOptions, MARK_COLORS, Theme};
+#[cfg(windows)]
 use windows_sys::Win32::System::LibraryLoader::*;
+#[cfg(windows)]
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 #[repr(C)]
@@ -66,6 +77,12 @@ type CreateLexer = unsafe extern "system" fn(*const i8) -> *mut std::ffi::c_void
 struct Native {
     create_lexer: CreateLexer,
 }
+#[cfg(target_os = "macos")]
+fn native() -> Result<&'static Native, String> {
+    static NATIVE: Native = Native { create_lexer: mac::CreateLexer };
+    Ok(&NATIVE)
+}
+#[cfg(windows)]
 fn native() -> Result<&'static Native, String> {
     static NATIVE: OnceLock<Result<Native, String>> = OnceLock::new();
     NATIVE.get_or_init(|| {
@@ -97,6 +114,8 @@ struct TextRange {
 
 pub struct Editor {
     hwnd: isize,
+    #[cfg(target_os = "macos")]
+    view: mac::View,
     native: &'static Native,
     theme: Cell<Theme>,
     colors: RefCell<ColorScheme>,
@@ -124,7 +143,13 @@ pub struct Editor {
 impl Editor {
     pub fn create(parent: isize, id: i32) -> Result<Self, String> {
         let native = native()?;
+        #[cfg(target_os = "macos")]
+        let view = mac::View::create(parent, id)?;
+        #[cfg(target_os = "macos")]
+        let hwnd = view.backend as *mut std::ffi::c_void;
+        #[cfg(windows)]
         let class: Vec<u16> = "Scintilla".encode_utf16().chain(Some(0)).collect();
+        #[cfg(windows)]
         let hwnd = unsafe {
             CreateWindowExW(
                 0,
@@ -141,6 +166,7 @@ impl Editor {
                 std::ptr::null(),
             )
         };
+        #[cfg(windows)]
         if hwnd.is_null() {
             return Err(format!(
                 "Cannot create text editor: {}",
@@ -149,6 +175,8 @@ impl Editor {
         }
         let editor = Self {
             hwnd: hwnd as isize,
+            #[cfg(target_os = "macos")]
+            view,
             native,
             theme: Cell::new(Theme::Dark),
             colors: RefCell::new(ColorScheme::default()),
@@ -204,8 +232,26 @@ impl Editor {
         Ok(editor)
     }
 
+    /// The window on Windows. On macOS, Scintilla's own object behind the view.
+    /// On both it is what a notification from this editor names as its sender.
     pub fn hwnd(&self) -> isize {
         self.hwnd
+    }
+    /// The NSView to place in a window.
+    #[cfg(target_os = "macos")]
+    pub fn view(&self) -> isize {
+        self.view.view()
+    }
+    /// Places the view within the view that holds it, in points.
+    #[cfg(target_os = "macos")]
+    pub fn set_frame(&self, x: f64, y: f64, width: f64, height: f64) {
+        self.view.set_frame(x, y, width, height);
+    }
+    /// Names what hears this editor's notifications, the part WM_NOTIFY plays on
+    /// Windows. The host passes each one to `on_notify`, as it does there.
+    #[cfg(target_os = "macos")]
+    pub fn listen(&self, handler: Option<Rc<dyn Fn(&Notification)>>) {
+        self.view.listen(handler);
     }
     /// Numeric interface for built-in editing commands. Pointer-bearing and
     /// unknown messages are rejected before they reach the native component.
@@ -219,7 +265,14 @@ impl Editor {
     /// All pointer arguments must satisfy the documented Scintilla message ABI
     /// and remain valid throughout the synchronous dispatch.
     pub unsafe fn send_ptr(&self, msg: u32, w: usize, l: isize) -> isize {
-        unsafe { SendMessageW(self.hwnd as _, msg, w, l) }
+        #[cfg(windows)]
+        unsafe {
+            SendMessageW(self.hwnd as _, msg, w, l)
+        }
+        #[cfg(target_os = "macos")]
+        unsafe {
+            self.view.call(msg, w, l)
+        }
     }
     pub fn len(&self) -> usize {
         self.send(SCI_GETLENGTH, 0, 0).max(0) as usize
