@@ -89,6 +89,20 @@ fn placement_of(file: &File, from: u64, to: u64) -> Option<Vec<(u64, u64, u64)>>
     Some(runs)
 }
 
+/// Whether `length` bytes of `file` from `at` on are in the blocks its clone
+/// has them in, and so hold what the clone holds there. What the system has
+/// of a file in memory is kept for that file alone: a clone of a file that
+/// is in memory is read from the drive. So text is read from the file it was
+/// cloned from, which is in memory, and this is asked of what was read.
+pub(crate) fn same_blocks(file: &File, clone: &File, at: u64, length: u64) -> Option<bool> {
+    // What another program changed through a memory map is seen by a read
+    // at once, but is in no block until it is pushed out.
+    if unsafe { libc::fsync(file.as_raw_fd()) } != 0 {
+        return None;
+    }
+    Some(placement_of(file, at, at + length)? == placement_of(clone, at, at + length)?)
+}
+
 /// A private clone of a file, made when the file was known to hold what the
 /// document had saved. It has no name and is never written to, and it is
 /// its being there that keeps the file's blocks from being written where
@@ -572,6 +586,20 @@ mod tests {
         };
         assert_ne!(view, libc::MAP_FAILED);
         unsafe { *view.cast::<u8>().add(middle) = b'M' };
+        // The document still reads its own text there, not the other
+        // program's: text is read from the file itself only where the
+        // file's blocks show it to be what the document opened.
+        assert_eq!(doc.read(middle as u64, 1)?, [input[middle]]);
+        let mut whole = Vec::new();
+        let mut at = 0;
+        while at < doc.len() {
+            let part = doc.read(at, 4 << 20)?;
+            at += part.len() as u64;
+            whole.extend_from_slice(&part);
+        }
+        let mut ours = input.clone();
+        ours[3..6].copy_from_slice(b"new");
+        assert!(whole == ours);
         let refused = doc.save(&file);
         unsafe { libc::munmap(view, input.len()) };
         assert_eq!(refused.unwrap_err().kind(), io::ErrorKind::AlreadyExists);

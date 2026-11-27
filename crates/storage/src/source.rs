@@ -151,6 +151,10 @@ struct External {
     /// Where this source's first byte is in `snapshot`: 0 in a copy of just
     /// this text, the original's own offset in a clone of the whole file.
     snapshot_origin: AtomicU64,
+    /// Whether text may be read from the original where its blocks show it
+    /// to hold what the snapshot, a clone of it, holds.
+    #[cfg(target_os = "macos")]
+    warm: std::sync::atomic::AtomicBool,
     copy_lock: Mutex<()>,
     #[cfg(windows)]
     lease: Mutex<Option<crate::write_lease::Lease>>,
@@ -187,6 +191,8 @@ impl Source {
             path: path.into(),
             snapshot: Default::default(),
             snapshot_origin: Default::default(),
+            #[cfg(target_os = "macos")]
+            warm: Default::default(),
             copy_lock: Default::default(),
             #[cfg(windows)]
             lease: Default::default(),
@@ -320,6 +326,34 @@ impl Source {
     }
     fn private_origin(&self) -> u64 {
         self.external.as_ref().map_or(0, |e| e.snapshot_origin.load(Ordering::Acquire))
+    }
+    /// Reads from the original file and says whether what was read is the
+    /// snapshot's text. The system keeps what it has of a file in memory for
+    /// that file alone, so a clone of a file that is in memory is read from
+    /// the drive. The original holds the clone's text wherever its blocks
+    /// are still the clone's: any write to it, by anyone, moves the written
+    /// part to new blocks. Asked after the read, that settles what was read.
+    #[cfg(target_os = "macos")]
+    fn read_warm(&self, original: &File, clone: &File, origin: u64, pos: u64, dst: &mut [u8]) -> bool {
+        // Asking costs three calls to the system, about as much as copying
+        // a hundred kilobytes that are in memory. A small read gains nothing
+        // from it and is left to the clone, which holds what it has read.
+        const WORTH_ASKING: usize = 256 * 1024;
+        let Some(external) = &self.external else { return false };
+        if dst.len() < WORTH_ASKING || !external.warm.load(Ordering::Acquire) || self.private_origin() != origin {
+            return false;
+        }
+        if read_at(original, origin + pos, dst).is_err() {
+            return false;
+        }
+        match crate::mac_save::same_blocks(original, clone, origin + pos, dst.len() as u64) {
+            Some(same) => same,
+            None => {
+                // A volume that will not say: no use asking again.
+                external.warm.store(false, Ordering::Release);
+                false
+            }
+        }
     }
     /// A file holding this source's bytes that no other program can change,
     /// and where the source starts in it: what a save can clone.
@@ -465,6 +499,7 @@ impl Source {
                 return Err(super::conflict());
             }
             external.snapshot_origin.store(*origin, Ordering::Release);
+            external.warm.store(true, Ordering::Release);
             let _ = external.snapshot.set(clone);
             return Ok(());
         }
@@ -658,7 +693,11 @@ impl Source {
     fn raw(&self, pos: u64, dst: &mut [u8]) -> io::Result<()> {
         match &self.backing {
             Backing::Disk(f, origin) => {
-                if let Some(copy) = self.private_file() {return read_at(copy,self.private_origin()+pos,dst);}
+                if let Some(copy) = self.private_file() {
+                    #[cfg(target_os = "macos")]
+                    if self.read_warm(f, copy, *origin, pos, dst) { return Ok(()); }
+                    return read_at(copy,self.private_origin()+pos,dst);
+                }
                 #[cfg(windows)]
                 let result = match &self.external {
                     Some(external) => external.delta.read().unwrap().read(f, *origin, pos, dst),
@@ -687,6 +726,8 @@ impl Source {
             return self.raw(pos, dst);
         };
         if let Some(copy) = self.private_file() {
+            #[cfg(target_os = "macos")]
+            if self.read_warm(shared, copy, *origin, pos, dst) { return Ok(()); }
             return read_at(own(&mut lane.copy, copy), self.private_origin() + pos, dst);
         }
         let file = own(&mut lane.original, shared);
