@@ -728,10 +728,24 @@ impl Document {
         let mut tmp = mac_save::staging(dir, &dest, before.is_some())?;
         let head = if self.emit_bom { self.codec.bom().len() as u64 } else { 0 };
         let expected = self.codec.native().then(|| self.len() + head);
-        let staged = revision::Staged::new(tmp.as_file(), tmp.path(), expected);
-        let checkpoint = revision::stage(staged, |mut output| {
-            self.codec.write(self, &mut output, self.emit_bom)
-        })?;
+        // The checksum lets the next save tell with one read that the file is
+        // still this one. On the Mac a clone of the file tells that without
+        // a read, and the checksum, the slowest step of writing a large file,
+        // is left out where a clone can be had.
+        #[cfg(target_os = "macos")]
+        let plain = mac_save::clone_will_tell(tmp.as_file(), tmp.path(), expected);
+        #[cfg(not(target_os = "macos"))]
+        let plain = false;
+        let checkpoint = if plain {
+            let mut output = tmp.as_file();
+            self.codec.write(self, &mut output, self.emit_bom)?;
+            None
+        } else {
+            let staged = revision::Staged::new(tmp.as_file(), tmp.path(), expected);
+            Some(revision::stage(staged, |mut output| {
+                self.codec.write(self, &mut output, self.emit_bom)
+            })?)
+        };
         tmp.flush()?;
         tmp.as_file().sync_all()?;
         let checkpoint_stamp = Stamp::from(tmp.as_file())?;
@@ -770,7 +784,7 @@ impl Document {
         self.stamp = Some(checkpoint_stamp);
         drop(target_guard);
         self.path = Some(dest);
-        self.saved_disk_digest = Some(checkpoint);
+        self.saved_disk_digest = checkpoint;
         #[cfg(target_os = "macos")]
         {
             self.saved_clone = saved_clone;

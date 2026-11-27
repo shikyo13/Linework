@@ -55,6 +55,11 @@ const BLOCK: u64 = 1024 * 1024;
 /// length, place on the volume), adjoining runs joined. `None` when the
 /// volume does not say for every byte, as for a file with holes.
 fn placement(file: &File, size: u64) -> Option<Vec<(u64, u64, u64)>> {
+    placement_of(file, 0, size)
+}
+
+/// The same for the part of the file from `from` up to `to`.
+fn placement_of(file: &File, from: u64, to: u64) -> Option<Vec<(u64, u64, u64)>> {
     // <sys/fcntl.h> declares this structure with four-byte packing.
     #[repr(C, packed(4))]
     struct Run {
@@ -63,9 +68,10 @@ fn placement(file: &File, size: u64) -> Option<Vec<(u64, u64, u64)>> {
         place: i64,
     }
     let mut runs: Vec<(u64, u64, u64)> = Vec::new();
-    let mut at = 0;
-    while at < size {
-        let mut run = Run { flags: 0, bytes: (size - at) as i64, place: at as i64 };
+    // The system answers only for a place where a block begins.
+    let mut at = from & !4095;
+    while at < to {
+        let mut run = Run { flags: 0, bytes: (to - at) as i64, place: at as i64 };
         if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_LOG2PHYS_EXT, &mut run) } != 0 {
             return None;
         }
@@ -156,6 +162,12 @@ pub(crate) enum Examined {
 /// The most that is read part by part before reading the whole file is the
 /// plainer way to the same answer.
 const READ_APART: u64 = 64 * 1024 * 1024;
+
+/// Whether a file about to be written, `expected` bytes long, is one whose
+/// clone can stand in for its checksum: a large one on a volume that clones.
+pub(crate) fn clone_will_tell(file: &File, path: &Path, expected: Option<u64>) -> bool {
+    expected.is_some_and(|size| size > SMALL) && private_clone(file, path).is_some()
+}
 
 /// A private clone of a large file just written, kept to show at the next
 /// save that the file has not been changed since.
