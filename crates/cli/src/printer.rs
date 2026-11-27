@@ -891,6 +891,13 @@ impl<'a> FileOut<'a> {
         if self.look.mode != Mode::Lines || self.look.quiet {
             return;
         }
+        // grep's own wording, when lw is standing in for grep.
+        if crate::alias::name().is_some_and(|name| name.ends_with("grep")) {
+            self.out.extend_from_slice(b"Binary file ");
+            self.out.extend_from_slice(if self.path.is_empty() { b"(standard input)" } else { &self.path });
+            self.out.extend_from_slice(b" matches\n");
+            return;
+        }
         self.heading();
         self.message(&format!("binary file matches (found \"\\0\" byte around offset {offset})"));
     }

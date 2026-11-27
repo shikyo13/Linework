@@ -32,6 +32,8 @@ macro_rules! note {
 }
 
 fn note(text: String) {
+    // Standing in for another tool, lw words its messages as that tool does.
+    let text = alias::worded(text);
     match NOTES.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
         Some(kept) => kept.push(text),
         None => eprintln!("{text}"),
@@ -190,7 +192,17 @@ fn engine_options(s: &Settings, pattern: &str) -> SearchOptions {
 }
 
 fn run() -> Result<i32, String> {
-    let argv: Vec<String> = env::args().skip(1).collect();
+    let mut argv: Vec<String> = env::args().skip(1).collect();
+    // Called as rg or grep, lw answers as that tool would (see alias.rs).
+    if let Some(tool) = alias::called_as() {
+        match alias::translate(tool, &argv) {
+            Ok(own) => argv = own,
+            Err(alias::NotExact) => match alias::hand_over(tool, &argv) {
+                Some(code) => return Ok(code),
+                None => return Err("this needs the real program, and none was found to hand it to".into()),
+            },
+        }
+    }
     if argv.first().is_some_and(|c| c == "serve") {
         return serve::run().map(|()| 0).map_err(|e| e.to_string());
     }
@@ -733,6 +745,7 @@ fn code_places(s: &Settings, definitions: bool, name: &str, target: &str, began:
 }
 
 mod account;
+mod alias;
 mod chunks;
 mod cut;
 mod generate;
@@ -762,5 +775,5 @@ fn main() {
             2
         }
     };
-    std::process::exit(code);
+    std::process::exit(alias::exit_code(code));
 }
