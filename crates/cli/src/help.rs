@@ -94,7 +94,7 @@ WHICH FILES (lw help folders)
 WHAT IS SHOWN (lw help output)
   -A N, -B N, -C N  lines of context after, before, around each match
   -o              only the matched text      -r TEXT   show each match replaced
-  -n, -N          line numbers on (the default) or off
+  -n, -N          line numbers on or off (by default on in a console, as ripgrep)
   --column, -b    the column, the byte offset
   -c, --count-matches   matching lines, or matches, per file
   -l, --files-without-match   only the names of files with, or without, a match
@@ -581,7 +581,6 @@ WHAT lw ADDS
 
 WHERE lw DIFFERS ON PURPOSE
 
-  - Line numbers are on by default, also in a pipe (-N turns them off).
   - Paths use / between names; a folder's files come in path order, the
     same every run, not in the order threads happen to finish.
   - A line over 1,000 bytes shows the part around its match, unless -M or
@@ -706,7 +705,10 @@ folder also applies .gitignore files outside Git work trees and always skips
         body: r#"LINES
 Each line is printed as its fields and its text:  PATH:LINE:COLUMN:OFFSET:TEXT
   PATH     when several paths or a folder are searched (-H always, -I never)
-  LINE     on by default (-N off)       COLUMN with --column
+  LINE     as ripgrep: by default in a console when files are searched, not for
+           piped input alone or when the output is piped; always in JSON;
+           -n always, -N never (put -n in the configuration file to keep
+           them everywhere)                COLUMN with --column
   OFFSET   with -b: where the line (with -o, the match) starts, from 0
 A context line uses - instead of : (--field-match-separator and
 --field-context-separator change them), and groups of lines that are not next

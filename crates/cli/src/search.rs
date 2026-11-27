@@ -149,7 +149,8 @@ pub fn run(s: &Settings, out: &mut dyn Write) -> Result<i32, String> {
     let paths_shown = words.len() > 1 || any_folder;
     let console = io::stdout().is_terminal_console();
     let plan = Plan::new(s, patterns)?;
-    let look = Look::new(s, paths_shown, console)?;
+    let stdin_only = words.iter().all(|w| w == "-");
+    let look = Look::new(s, paths_shown, console, stdin_only)?;
     if let Some(pre) = &s.pre {
         input::find_program(pre)?;
     }
@@ -769,26 +770,31 @@ impl Run<'_> {
         // Set when the text read so far holds no line end past what was searched: read on, past a block.
         let mut grow = false;
         while !ended && !searcher.done() && !file.satisfied() {
-            // Read until a block of new text is in, or the stream ends; a line longer than that is read whole.
+            // One read per step, of up to a block: a file fills it, a pipe returns what its writer has sent so
+            // far, and that is searched at once, so a slow writer's lines are found as they arrive (as grep and
+            // ripgrep do) instead of waiting for a whole block or the end of the stream. A line longer than what
+            // is held is read on in the next step (`grow`).
             let target = if grow { buf.len() + BLOCK } else { searched + BLOCK };
-            while buf.len() < target {
+            loop {
                 let have = buf.len();
-                buf.resize(target, 0);
+                buf.resize(target.max(have + 1), 0);
                 match reader.read(&mut buf[have..]) {
                     Ok(0) => {
                         buf.truncate(have);
                         ended = true;
-                        break;
                     }
                     Ok(n) => buf.truncate(have + n),
-                    Err(e) if e.kind() == io::ErrorKind::Interrupted => buf.truncate(have),
+                    Err(e) if e.kind() == io::ErrorKind::Interrupted => {
+                        buf.truncate(have);
+                        continue;
+                    }
                     Err(e) => {
                         buf.truncate(have);
                         *failed = Some(e.to_string());
                         ended = true;
-                        break;
                     }
                 }
+                break;
             }
             // A zero byte in the first 64 KiB makes the whole stream binary; a later one stops lines printing at its line.
             if binary_at.is_none() && detect != Detect::None {

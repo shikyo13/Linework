@@ -324,7 +324,13 @@ pub fn scope_chains(path: &Path, text: &str, offsets: &[usize]) -> Vec<Vec<Scope
             // A node the tags query names twice (a method is also a function)
             // counts once, as the first name found for it.
             let mut around: Vec<&(usize, usize, Scope)> = Vec::new();
-            for definition in found.iter().filter(|(start, end, _)| *start <= at && at < *end) {
+            // A definition that starts later on the same line also contains it: the grammar's node for
+            // `export function f` starts at `function`, after the line's start (Rust's includes `pub`).
+            let bytes = text.as_bytes();
+            let contains = |start: usize, end: usize| {
+                at < end && (start <= at || (start <= bytes.len() && !bytes[at.min(start)..start].contains(&b'\n')))
+            };
+            for definition in found.iter().filter(|(start, end, _)| contains(*start, *end)) {
                 if !around.iter().any(|seen| seen.0 == definition.0 && seen.1 == definition.1) {
                     around.push(definition);
                 }

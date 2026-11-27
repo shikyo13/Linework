@@ -313,9 +313,10 @@ pub struct Look {
 
 impl Look {
     /// The look of a run from its settings; `paths` is whether paths are
-    /// shown by default (several paths or a folder) and `console` whether
-    /// output goes to a console.
-    pub fn new(s: &Settings, paths: bool, console: bool) -> Result<Self, String> {
+    /// shown by default (several paths or a folder), `console` whether
+    /// output goes to a console, and `stdin_only` whether the only input is
+    /// what is piped in.
+    pub fn new(s: &Settings, paths: bool, console: bool, stdin_only: bool) -> Result<Self, String> {
         let color = match s.color {
             crate::settings::Color::Always => true,
             crate::settings::Color::Never => false,
@@ -347,7 +348,11 @@ impl Look {
         let only = s.only_matching && !s.invert;
         let vimgrep = s.vimgrep;
         let column = (s.column || vimgrep) && !s.invert;
-        let numbers = s.line_number.unwrap_or(true) || ((s.column || vimgrep) && s.line_number != Some(false));
+        // ripgrep's rule: line numbers by default in a console when files are searched, never for
+        // piped input alone (so lw filters a pipe as grep does), always in JSON; -n and -N decide
+        // when given, and --column and --vimgrep bring them unless -N says otherwise.
+        let by_default = s.json || (console && !stdin_only);
+        let numbers = s.line_number.unwrap_or(by_default) || ((s.column || vimgrep) && s.line_number != Some(false));
         let end: &'static [u8] = if s.matcher.null_data { b"\0" } else if s.matcher.crlf { b"\r\n" } else { b"\n" };
         let replace = s.replace.as_deref().map(Template::new);
         let per_match = colors.is_some() || replace.is_some() || column;
