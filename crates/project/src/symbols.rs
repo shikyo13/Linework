@@ -252,7 +252,7 @@ pub fn places(path: &Path, text: &str, name: &str) -> Vec<Place> {
         }
         return found;
     }
-    let Some(Ok(grammar)) = grammars().get(key) else { return found };
+    let Some(Ok(grammar)) = grammar(key) else { return found };
     let mut parser = Parser::new();
     if parser.set_language(&grammar.lang).is_err() {
         return found;
@@ -390,7 +390,7 @@ fn definitions(path: &Path, text: &str) -> Option<Vec<(usize, usize, Scope)>> {
             let (end, end_line) = heads.get(i + 1).map_or((text.len() + 1, lines), |next| (next.0, next.1 - 1));
             found.push((*start, end, Scope { name: name.clone(), kind: kind.into(), line: *line, end_line }));
         }
-    } else if let Some(Ok(grammar)) = grammars().get(key) {
+    } else if let Some(Ok(grammar)) = grammar(key) {
         let mut parser = Parser::new();
         parser.set_language(&grammar.lang).ok()?;
         let tree = parser.parse(text, None)?;
@@ -442,10 +442,15 @@ struct Grammar {
     lang: Language,
     tags: Query,
 }
-static GRAMMARS: OnceLock<HashMap<&'static str, Result<Grammar, String>>> = OnceLock::new();
-fn grammars() -> &'static HashMap<&'static str, Result<Grammar, String>> {
-    GRAMMARS.get_or_init(|| {
-        let mut rows = HashMap::new();
+/// One language's grammar and tags query, built the first time a file in that
+/// language is met. Building all ten takes about 55 ms, most of it the larger
+/// queries, and a call that reads one file needs one.
+fn grammar(key: &str) -> Option<&'static Result<Grammar, String>> {
+    const NAMES: [&str; 10] = ["rust", "python", "javascript", "typescript", "tsx", "go", "c", "cpp", "csharp", "java"];
+    const UNBUILT: OnceLock<Result<Grammar, String>> = OnceLock::new();
+    static BUILT: [OnceLock<Result<Grammar, String>>; 10] = [UNBUILT; 10];
+    let at = NAMES.iter().position(|name| *name == key)?;
+    Some(BUILT[at].get_or_init(|| {
         // TypeScript's distributed query augments JavaScript. Stable common
         // node names are used here across TS/TSX grammar versions.
         let js_compatible = r#"
@@ -457,58 +462,21 @@ fn grammars() -> &'static HashMap<&'static str, Result<Grammar, String>> {
          (enum_declaration name: (identifier) @name) @definition.enum
         "#;
         let ts = format!("{}\n{}", tree_sitter_typescript::TAGS_QUERY, js_compatible);
-        let langs = [
-            (
-                "rust",
-                tree_sitter_rust::LANGUAGE,
-                tree_sitter_rust::TAGS_QUERY,
-            ),
-            (
-                "python",
-                tree_sitter_python::LANGUAGE,
-                tree_sitter_python::TAGS_QUERY,
-            ),
-            (
-                "javascript",
-                tree_sitter_javascript::LANGUAGE,
-                tree_sitter_javascript::TAGS_QUERY,
-            ),
-            (
-                "typescript",
-                tree_sitter_typescript::LANGUAGE_TYPESCRIPT,
-                ts.as_str(),
-            ),
-            ("tsx", tree_sitter_typescript::LANGUAGE_TSX, ts.as_str()),
-            ("go", tree_sitter_go::LANGUAGE, tree_sitter_go::TAGS_QUERY),
-            ("c", tree_sitter_c::LANGUAGE, tree_sitter_c::TAGS_QUERY),
-            (
-                "cpp",
-                tree_sitter_cpp::LANGUAGE,
-                tree_sitter_cpp::TAGS_QUERY,
-            ),
-            (
-                "csharp",
-                tree_sitter_c_sharp::LANGUAGE,
-                tree_sitter_c_sharp::TAGS_QUERY,
-            ),
-            (
-                "java",
-                tree_sitter_java::LANGUAGE,
-                tree_sitter_java::TAGS_QUERY,
-            ),
-        ];
-        for (name, language, source) in langs {
-            let language = language.into();
-            let tags = Query::new(&language, source)
-                .map(|tags| Grammar {
-                    lang: language,
-                    tags,
-                })
-                .map_err(|e| e.to_string());
-            rows.insert(name, tags);
-        }
-        rows
-    })
+        let (language, source) = match key {
+            "rust" => (tree_sitter_rust::LANGUAGE, tree_sitter_rust::TAGS_QUERY),
+            "python" => (tree_sitter_python::LANGUAGE, tree_sitter_python::TAGS_QUERY),
+            "javascript" => (tree_sitter_javascript::LANGUAGE, tree_sitter_javascript::TAGS_QUERY),
+            "typescript" => (tree_sitter_typescript::LANGUAGE_TYPESCRIPT, ts.as_str()),
+            "tsx" => (tree_sitter_typescript::LANGUAGE_TSX, ts.as_str()),
+            "go" => (tree_sitter_go::LANGUAGE, tree_sitter_go::TAGS_QUERY),
+            "c" => (tree_sitter_c::LANGUAGE, tree_sitter_c::TAGS_QUERY),
+            "cpp" => (tree_sitter_cpp::LANGUAGE, tree_sitter_cpp::TAGS_QUERY),
+            "csharp" => (tree_sitter_c_sharp::LANGUAGE, tree_sitter_c_sharp::TAGS_QUERY),
+            _ => (tree_sitter_java::LANGUAGE, tree_sitter_java::TAGS_QUERY),
+        };
+        let language: Language = language.into();
+        Query::new(&language, source).map(|tags| Grammar { lang: language, tags }).map_err(|e| e.to_string())
+    }))
 }
 fn outline_re(lang: &str) -> Option<&'static Regex> {
     static SIMPLE: OnceLock<HashMap<&str, Regex>> = OnceLock::new();
@@ -580,7 +548,7 @@ fn index_language(index: &mut Index, path: &Path, text: &str, key: &str, cancel:
         }
         return;
     }
-    let Some(grammar) = grammars().get(key) else {
+    let Some(grammar) = grammar(key) else {
         return;
     };
     let grammar = match grammar {
