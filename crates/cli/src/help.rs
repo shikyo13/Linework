@@ -381,7 +381,7 @@ EXAMPLES
     Topic {
         name: "show",
         summary: "Print each definition of one or more names whole, with line numbers",
-        usage: "lw show [-g GLOB] [-t TYPE] [--json] NAME... PATH",
+        usage: "lw show [-g GLOB] [-t TYPE] [--json] NAME... PATH...",
         body: r#"Finds where each NAME is defined, as lw defs does, and prints each definition
 from its first line to its last with the line numbers, under a line that names
 the file, the lines and the kind:
@@ -396,8 +396,9 @@ around what was found. PATH is a file or a folder; in a folder only the files
 that hold the name are parsed, and -g, -t and -T choose among them. Several
 definitions are separated by a line of --.
 
-Several names are answered in one call, in the order given; the last word is
-always PATH. A name that nothing defines (a constant, a field) is answered
+Several names are answered in one call, in the order given. The last word is
+always a PATH, and so is each word before it that is a file or folder that
+exists, so several files can be named. A name that nothing defines (a constant, a field) is answered
 with the lines that hold it as a whole word, up to 20 of them, so the call is
 not wasted. A name may be written with its owner (Type::name, Type.name,
 Type#name): the name is looked up, and where the file's outline shows a
@@ -412,6 +413,7 @@ Exit code 1 when none of the names is found in PATH at all.
 EXAMPLES
   lw show parse_header src
   lw show open save_as Document crates/storage/src
+  lw show Document::save Stamp src/lib.rs src/save.rs
   lw show -t rust Document crates
   lw show update src/engine.js"#,
     },

@@ -320,9 +320,10 @@ fn execute(argv: Vec<String>, mut out: &mut dyn Write) -> Result<i32, String> {
         }
         ("lines", words) if !words.is_empty() => read::lines(&s, words, out)?,
         ("outline", files) if !files.is_empty() => read::outline(&s, files, out)?,
-        ("show", [names @ .., target]) if !names.is_empty() => {
+        ("show", words) if words.len() > 1 => {
             let pick = linework_search::pick::Pick::new(&s.choices, &s.types, s.glob_fold)?;
-            read::show(&s, names, target, walk_options(&s, pick.as_ref()), out)?
+            let (names, targets) = read::names_and_paths(words);
+            read::show(&s, names, targets, walk_options(&s, pick.as_ref()), out)?
         }
         ("info", [file]) => {
             let doc = open(file).map_err(io)?;

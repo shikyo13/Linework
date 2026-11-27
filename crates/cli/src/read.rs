@@ -145,10 +145,10 @@ fn show_name(json: bool, name: &str, owner: Option<&str>, target: &str, walk: li
 /// How many of the lines that name a name are printed when nothing defines it.
 const MENTIONS: usize = 20;
 
-/// For a name nothing under `target` defines (a constant, a field, a name in another language): the lines that hold
+/// For a name nothing in `targets` defines (a constant, a field, a name in another language): the lines that hold
 /// it as a whole word, so that the call is not wasted and the next one can ask for the right lines. Returns whether
 /// there were any.
-fn mentions(name: &str, target: &str, walk: linework_search::walk::Options<'_>, part: &mut Vec<u8>) -> Result<bool, String> {
+fn mentions(name: &str, targets: &[String], walk: linework_search::walk::Options<'_>, part: &mut Vec<u8>) -> Result<bool, String> {
     use linework_search::sweep;
     let query = sweep::Query::new(name, true, false, true)?;
     let line = |path: &str, bytes: &[u8], hit: &sweep::LineHit, out: &mut Vec<u8>| {
@@ -157,47 +157,64 @@ fn mentions(name: &str, target: &str, walk: linework_search::walk::Options<'_>, 
         out.push(b'\n');
     };
     let mut found = Vec::new();
-    if Path::new(target).is_dir() {
-        let folder = target.trim_end_matches(['/', '\\']);
-        let format = |path: &str, bytes: &[u8], hits: &[sweep::LineHit], out: &mut Vec<u8>| -> u64 {
-            hits.iter().for_each(|hit| line(&format!("{folder}/{path}"), bytes, hit, out));
-            hits.len() as u64
-        };
-        let gathered = sweep::tree_with(Path::new(target), walk, &query, &format).map_err(io)?;
-        sweep::in_order(&gathered).iter().for_each(|(_, file)| found.extend_from_slice(file));
-    } else {
-        let bytes = std::fs::read(target).map_err(|e| format!("{target}: {e}"))?;
-        sweep::matching_lines(&query, &bytes, true, |hit| line(target, &bytes, &hit, &mut found));
+    for target in targets {
+        if Path::new(target).is_dir() {
+            let folder = target.trim_end_matches(['/', '\\']);
+            let format = |path: &str, bytes: &[u8], hits: &[sweep::LineHit], out: &mut Vec<u8>| -> u64 {
+                hits.iter().for_each(|hit| line(&format!("{folder}/{path}"), bytes, hit, out));
+                hits.len() as u64
+            };
+            let gathered = sweep::tree_with(Path::new(target), walk, &query, &format).map_err(io)?;
+            sweep::in_order(&gathered).iter().for_each(|(_, file)| found.extend_from_slice(file));
+        } else {
+            let bytes = std::fs::read(target).map_err(|e| format!("{target}: {e}"))?;
+            sweep::matching_lines(&query, &bytes, true, |hit| line(target, &bytes, &hit, &mut found));
+        }
     }
     let lines: Vec<&[u8]> = found.split_inclusive(|byte| *byte == b'\n').collect();
+    let places = targets.join(" ");
     if lines.is_empty() {
-        part.extend_from_slice(format!("{name}: not found in {target}\n").as_bytes());
+        part.extend_from_slice(format!("{name}: not found in {places}\n").as_bytes());
         return Ok(false);
     }
     part.extend_from_slice(format!("{name}: no definition found; the lines that name it:\n").as_bytes());
     lines.iter().take(MENTIONS).for_each(|line| part.extend_from_slice(line));
     if lines.len() > MENTIONS {
-        part.extend_from_slice(format!("... and {} more lines (lw find -w {name} {target})\n", lines.len() - MENTIONS).as_bytes());
+        part.extend_from_slice(format!("... and {} more lines (lw find -w {name} {places})\n", lines.len() - MENTIONS).as_bytes());
     }
     Ok(true)
 }
 
-/// `lw show NAME... PATH`: each definition of each name, whole.
-pub fn show(s: &Settings, names: &[String], target: &str, walk: linework_search::walk::Options<'_>, mut out: &mut dyn Write) -> Result<i32, String> {
+/// `lw show NAME... PATH...`: each definition of each name, whole.
+pub fn show(s: &Settings, names: &[String], targets: &[String], walk: linework_search::walk::Options<'_>, mut out: &mut dyn Write) -> Result<i32, String> {
     let mut budget = report::Budget::new(s.budget);
+    // One name's definitions in every target, in the order the targets were given.
+    let across = |name: &str, owner: Option<&str>, part: &mut Vec<u8>| -> Result<u64, String> {
+        let mut shown = 0;
+        for target in targets {
+            let mut one = Vec::new();
+            let count = show_name(s.json, name, owner, target, walk, &mut one)?;
+            if count > 0 && shown > 0 && !s.json {
+                part.extend_from_slice(b"--\n");
+            }
+            part.extend_from_slice(&one);
+            shown += count;
+        }
+        Ok(shown)
+    };
     // Whether any name was answered with a definition or with lines that hold it.
     let (mut answered, mut printed) = (false, false);
     for name in names {
         let mut part = Vec::new();
         // The name as written first: some languages have names with a dot or colons in them.
-        let mut shown = show_name(s.json, name, None, target, walk, &mut part)?;
+        let mut shown = across(name, None, &mut part)?;
         let (owner, bare) = qualified(name).map_or((None, name.as_str()), |(owner, bare)| (Some(owner), bare));
         if shown == 0 && owner.is_some() {
-            shown = show_name(s.json, bare, owner, target, walk, &mut part)?;
+            shown = across(bare, owner, &mut part)?;
         }
         answered |= shown > 0;
         if shown == 0 && !s.json {
-            answered |= mentions(bare, target, walk, &mut part)?;
+            answered |= mentions(bare, targets, walk, &mut part)?;
         }
         if part.is_empty() {
             continue;
@@ -214,6 +231,16 @@ pub fn show(s: &Settings, names: &[String], target: &str, walk: linework_search:
         crate::note(format!("lw: output cut at {} bytes (--budget)", budget.written));
     }
     Ok(i32::from(!answered))
+}
+
+/// The words after `lw show` as names and paths. The last word is a path; so is each word before it that is a
+/// file or folder that exists, as long as a name is left.
+pub fn names_and_paths(words: &[String]) -> (&[String], &[String]) {
+    let mut names = words.len() - 1;
+    while names > 1 && Path::new(&words[names - 1]).exists() {
+        names -= 1;
+    }
+    words.split_at(names)
 }
 
 /// One run of lines asked of `lw lines`: first and last, counted from 1; `None` for the last means to the end.
@@ -427,6 +454,12 @@ mod tests {
         let python = python.to_str().unwrap().to_owned();
         assert_eq!(run(&["show", "B.run", &python]), (0, format!("{python}:6-7  function run\n6:    def run(self):\n7:        return 2\n")));
         assert_eq!(run(&["show", "run", &python]).1.matches("function run").count(), 2);
+        // Several files after the names: each name is looked for in every one of them.
+        assert_eq!(
+            run(&["show", "run", "main", &python, &code]),
+            (0, format!("{python}:2-3  function run\n2:    def run(self):\n3:        return 1\n--\n{python}:6-7  function run\n6:    def run(self):\n7:        return 2\n--\n{code}:11-13  function main\n11:fn main() {{\n12:    println!(\"{{}}\", Circle {{ r: 1.0 }}.area());\n13:}}\n"))
+        );
+        assert_eq!(run(&["show", "nowhere", &python, &code]), (1, format!("nowhere: not found in {python} {code}\n")));
         assert_eq!(run(&["show", "area", dir.to_str().unwrap()]).1, format!("{code}:6-8  method area\n6:    fn area(&self) -> f64 {{\n7:        3.14 * self.r * self.r\n8:    }}\n"));
         assert_eq!(run(&["lines", &notes, "2", "3"]), (0, "two\nthree\n".to_owned()));
         assert_eq!(run(&["lines", "-n", &notes, "1-2", "4-"]), (0, "1:one\n2:two\n--\n4:four\n5:five\n".to_owned()));
