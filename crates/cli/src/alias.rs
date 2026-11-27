@@ -10,7 +10,8 @@
 //! applies: a script that pipes `rg -o x | sort` must get what ripgrep gives.
 //!
 //! What lw cannot give exactly as the tool would, it hands over to the real
-//! tool, found further along PATH (ripgrep) or in the system's place (grep).
+//! tool: ripgrep kept as `rg.real` beside the link or found further along
+//! PATH, grep in the system's place.
 //! So a stand-in is never worse than what it stands in for.
 use std::{
     env,
@@ -248,12 +249,24 @@ fn grep(syntax: &'static str, words: &[String]) -> Result<Vec<String>, NotExact>
     Ok(own)
 }
 
-/// The real tool, to hand a command over to: ripgrep further along PATH
-/// than this program, grep in the system's own place.
+/// The real tool, to hand a command over to. grep is in the system's own
+/// place. ripgrep is the file `rg.real` beside the link lw was called by,
+/// where whoever put lw in ripgrep's place kept the original, or else the
+/// first `rg` along PATH that is not this program.
 fn real(tool: Tool) -> Option<PathBuf> {
     let name = name()?;
     if matches!(tool, Tool::Grep(_)) {
         return [format!("/usr/bin/{name}"), format!("/bin/{name}")].into_iter().map(PathBuf::from).find(|path| path.is_file());
+    }
+    let kept = if cfg!(windows) { "rg.real.exe" } else { "rg.real" };
+    let called = env::args_os().next().map(PathBuf::from);
+    let beside = [called, env::current_exe().ok()]
+        .into_iter()
+        .flatten()
+        .filter_map(|path| Some(path.parent()?.join(kept)))
+        .find(|path| path.is_file());
+    if beside.is_some() {
+        return beside;
     }
     let own = env::current_exe().ok().and_then(|path| path.canonicalize().ok());
     env::split_paths(&env::var_os("PATH")?)
