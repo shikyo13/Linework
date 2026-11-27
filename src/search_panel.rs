@@ -227,6 +227,10 @@ impl App {
                 self.choose_result_order();
                 return true;
             }
+            "p:copyresults" => {
+                self.copy_results();
+                return true;
+            }
             _ => return false,
         }
         // A switch changed: search again now.
@@ -280,6 +284,21 @@ impl App {
     }
 
     /// Copies the lw command that finds the same lines.
+    /// Copies the matching lines as the results show them: in the chosen
+    /// order, with a count before lines that stand for several, and the
+    /// file's name before each line when several files matched.
+    fn copy_results(&mut self) {
+        let Some(text) = self.result_text() else {
+            self.notice("Search first, then copy its results");
+            return;
+        };
+        let lines = text.lines().count();
+        if copy_text(self.h, &text) {
+            self.notice(format!("Copied {lines} result lines"));
+        } else {
+            self.notice("The clipboard is in use by another program");
+        }
+    }
     fn copy_search_command(&mut self) {
         let Some(report) = self.report.as_ref() else {
             self.notice("Search first, then copy its command");

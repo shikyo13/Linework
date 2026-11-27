@@ -81,7 +81,9 @@ fn key<'a>(item: &Item<'a>, sort: &ResultSort) -> &'a str {
     let at = |r: Option<(usize, usize)>| r.filter(|r| r.1 <= item.text.len() && item.text.is_char_boundary(r.0) && item.text.is_char_boundary(r.1));
     match sort.order {
         Order::Matched => at(first).map_or(item.text, |r| &item.text[r.0..r.1]),
-        Order::FromMatch => at(first).map_or(item.text, |r| &item.text[r.0..]),
+        // Most frequent counts lines alike from the match on, so many hashes
+        // cracked to one password become one row.
+        Order::FromMatch | Order::Frequent => at(first).map_or(item.text, |r| &item.text[r.0..]),
         Order::Field => {
             let s = &sort.spec;
             if s.field == 0 {
@@ -161,13 +163,15 @@ mod tests {
             ("2b:CANDYCANES03", vec![(3, 12)]),
             ("ad:mrcandycane1", vec![(5, 14)]),
             ("8d:candycanees", vec![(3, 12)]),
+            ("ff:candycanees", vec![(3, 12)]),
         ];
         let mut sort = ResultSort { order: Order::FromMatch, ..Default::default() };
-        assert_eq!(texts(&lines, &sort), ["2b:CANDYCANES03", "e9:Candycane7", "ad:mrcandycane1", "8d:candycanees", "8d:candycanees"]);
+        assert_eq!(texts(&lines, &sort), ["2b:CANDYCANES03", "e9:Candycane7", "ad:mrcandycane1", "8d:candycanees", "8d:candycanees", "ff:candycanees"]);
         sort.spec.fold = true;
         assert_eq!(texts(&lines, &sort)[0], "ad:mrcandycane1");
         sort = ResultSort { order: Order::Frequent, ..Default::default() };
-        assert_eq!(texts(&lines, &sort)[0], "8d:candycanees x2");
+        // Different hashes, one password: one row, counted from the match on.
+        assert_eq!(texts(&lines, &sort)[0], "8d:candycanees x3");
         assert_eq!(texts(&lines, &sort).len(), 4);
         sort = ResultSort { order: Order::Length, ..Default::default() };
         assert_eq!(texts(&lines, &sort)[0], "e9:Candycane7");
@@ -180,7 +184,7 @@ mod tests {
         };
         assert_eq!(texts(&lines, &sort)[0], "2b:CANDYCANES03");
         sort.spec.unique = true;
-        assert_eq!(texts(&lines, &sort).len(), 4);
+        assert_eq!(texts(&lines, &sort).len(), 5);
         let nums = [("a:10", vec![]), ("a:9", vec![]), ("a:-1", vec![])];
         sort = ResultSort {
             order: Order::Field,

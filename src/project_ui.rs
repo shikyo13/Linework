@@ -322,6 +322,13 @@ impl App {
     /// no context, breaks or headings, each line led by its file's name when
     /// several files matched, and by its count when identical lines collapse.
     fn sorted_rows(&self, report: &SearchReport) -> (Vec<Row>, Vec<Rich>, Vec<std::ops::Range<usize>>) {
+        self.sorted_rows_with(report, &self.result_sort)
+    }
+    fn sorted_rows_with(
+        &self,
+        report: &SearchReport,
+        sort: &crate::result_order::ResultSort,
+    ) -> (Vec<Row>, Vec<Rich>, Vec<std::ops::Range<usize>>) {
         use crate::result_order::{arrange, Item};
         let multi = report.groups.len() > 1;
         let tab_name = |id: Option<u64>| id.and_then(|id| self.buffers.iter().find(|b| b.id == id)).map(|b| b.name.clone());
@@ -336,7 +343,7 @@ impl App {
             lines.extend(group.lines.iter().filter(|l| l.kind == LineKind::Match && !l.hits.is_empty()).map(|l| (g, l)));
         }
         let items: Vec<Item> = lines.iter().map(|(_, l)| Item { text: &l.text, ranges: &l.ranges }).collect();
-        let order = arrange(&items, &self.result_sort);
+        let order = arrange(&items, sort);
         let mut rows = Vec::with_capacity(order.len());
         let mut rich = Vec::with_capacity(order.len());
         let mut hits_of = Vec::with_capacity(order.len());
@@ -363,6 +370,25 @@ impl App {
             hits_of.push(line.hits.clone());
         }
         (rows, rich, hits_of)
+    }
+    /// The results as text, one line per row shown (see `copy_results`):
+    /// in file order, the matching lines without context or headings.
+    pub(super) fn result_text(&self) -> Option<String> {
+        let report = self.report.as_ref()?;
+        let sort = if self.preview_mode {
+            crate::result_order::ResultSort::default()
+        } else {
+            self.result_sort.clone()
+        };
+        let (_, rich, _) = self.sorted_rows_with(report, &sort);
+        let mut out = String::new();
+        for row in rich {
+            if let Rich::Line { text, .. } = row {
+                out.push_str(&text);
+                out.push(char::from(10));
+            }
+        }
+        Some(out)
     }
     /// The Sort button on the results: choose an order, or switch ignoring
     /// case or reversing; the field order asks which field in a dialog.

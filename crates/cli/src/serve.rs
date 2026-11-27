@@ -97,6 +97,11 @@ const FILE_BUDGET: Field = field("budget", Kind::Number, "", false, "Stop after 
 const THREADS: Field = field("threads", Kind::Number, "-j", false, "Threads to use (default: every processor)");
 const ZERO: Field = field("zero_terminated", Kind::Flag, "-z", false, "Lines end with a zero byte, not a line feed");
 const OUTPUT: Field = field("output", Kind::Text, "-o", false, "Write the result to this file instead of returning it (for results of any size)");
+/// find and count write to a file through the server (see `call`): the
+/// lines as the command line prints them, with no budget.
+const SINK: Field = field("output", Kind::Text, "", false, "Write the results to this file instead of returning them, as the command line prints them (plain lines, not JSON, no budget); the reply says only how much was written");
+const LINE_NUMBERS: Field = field("line_numbers", Kind::Flag, "-n", false, "With output: put each line's number before it");
+const NO_NAMES: Field = field("no_filename", Kind::Flag, "-I", false, "With output: leave out file names, which a folder search otherwise puts before each line");
 /// The commands that take GNU's options. None may read standard input here,
 /// which is the conversation with the client.
 const FILE_TOOLS: [&str; 4] = ["split", "cut", "sort", "look"];
@@ -115,7 +120,7 @@ const TOOLS: &[Tool] = &[
         fields: &[
             PATTERN, PATH, PATTERNS, IGNORE_CASE, SMART, FIXED, WORD, LINE, INVERT, MULTILINE, PCRE2, CONTEXT, BEFORE, AFTER, ONLY, MAX_LINES, SCOPE,
             NAMES_ONLY, WITHOUT, GLOB, TYPE, TYPE_NOT, NEAR, NEAR_BEFORE, NEAR_AFTER, AND, NOT, CHANGED, MARK, SINCE, UNTIL, HIDDEN, NO_IGNORE, FOLLOW,
-            DEPTH, MAX_SIZE, ENCODING, ZIP, SORT, WHOLE_LINES, BUDGET_FIELD,
+            DEPTH, MAX_SIZE, ENCODING, ZIP, SORT, WHOLE_LINES, BUDGET_FIELD, SINK, LINE_NUMBERS, NO_NAMES,
         ],
     },
     Tool {
@@ -123,7 +128,7 @@ const TOOLS: &[Tool] = &[
         fixed: &["--json"],
         fields: &[
             PATTERN, PATH, PATTERNS, IGNORE_CASE, SMART, FIXED, WORD, LINE, INVERT, MULTILINE, PCRE2, COUNT_MATCHES, GLOB, TYPE, TYPE_NOT, NEAR, NEAR_BEFORE,
-            NEAR_AFTER, AND, NOT, CHANGED, MARK, SINCE, UNTIL, HIDDEN, NO_IGNORE, FOLLOW, DEPTH, MAX_SIZE, ENCODING, ZIP, BUDGET_FIELD,
+            NEAR_AFTER, AND, NOT, CHANGED, MARK, SINCE, UNTIL, HIDDEN, NO_IGNORE, FOLLOW, DEPTH, MAX_SIZE, ENCODING, ZIP, BUDGET_FIELD, SINK, NO_NAMES,
         ],
     },
     Tool {
@@ -270,7 +275,8 @@ does and add what grep cannot, as follows.\n\n\
 Using the tools: start with find (lines matching a pattern in a file or folder) or count; read \
 a stretch of a file with lines; find code with defs and uses. Change files with replace: it \
 previews unless preview is false, records every edit, and undo reverses it. Results are JSON \
-lines ending with a summary, capped at 100,000 bytes unless budget is set. Each command-line \
+lines ending with a summary, capped at 100,000 bytes unless budget is set; for results of any \
+size, give find or count an output file and they write plain lines there instead. Each command-line \
 option below is a field of the tool: --near is near, --and is and, --dry-run is preview, \
 --since is since, -g is glob, -t is type, -T is type_not, -l is names_only. Messages such as \
 an output cut short come at the end of a result.\n\n\
@@ -352,8 +358,9 @@ fn argv(tool: &Tool, arguments: &Map<String, Value>) -> Result<Vec<String>, Stri
         // A replace previews unless the call says otherwise.
         let value = match (f.name, value) {
             ("preview", None) => Some(&Value::Bool(true)),
-            // The file tools' budget is applied by `call`, not given to the command.
-            ("budget", _) if f.option.is_empty() => continue,
+            // The file tools' budget, and find's and count's output file, are
+            // applied by `call`, not given to the command.
+            ("budget" | "output", _) if f.option.is_empty() => continue,
             ("budget", None) if f.option == "--budget" => {
                 options.push("--budget".into());
                 options.push(BUDGET.to_string());
@@ -424,6 +431,14 @@ fn call(name: &str, arguments: &Map<String, Value>) -> (String, bool) {
             return ("look needs a string or keys".into(), true);
         }
     }
+    if !file_tool {
+        if let Some(path) = arguments.get("output").filter(|v| !v.is_null()) {
+            let Some(path) = path.as_str() else {
+                return ("output must be text".into(), true);
+            };
+            return to_file(name, words, path);
+        }
+    }
     let limit = arguments.get("budget").and_then(Value::as_u64).unwrap_or(BUDGET) as usize;
     let mut out = Capped { kept: Vec::new(), limit: if file_tool { limit } else { usize::MAX }, cut: false };
     // lw's messages (an output cut short, a file left unchanged) come back with the result.
@@ -461,6 +476,73 @@ fn call(name: &str, arguments: &Map<String, Value>) -> (String, bool) {
         text.push('\n');
     }
     (text, failed)
+}
+
+/// Runs find or count with its lines written to `path`: plain, as the
+/// command line prints them, without JSON or a budget.
+fn to_file(name: &str, words: Vec<String>, path: &str) -> (String, bool) {
+    let words: Vec<String> = {
+        let mut skip = false;
+        words
+            .into_iter()
+            .filter(|w| {
+                if std::mem::take(&mut skip) {
+                    return false;
+                }
+                if w == "--budget" {
+                    skip = true;
+                    return false;
+                }
+                w != "--json"
+            })
+            .collect()
+    };
+    let file = match std::fs::File::create(path) {
+        Ok(f) => f,
+        Err(e) => return (format!("could not create {path}: {e}"), true),
+    };
+    let mut out = Counted { inner: io::BufWriter::with_capacity(8 << 20, file), bytes: 0, lines: 0 };
+    crate::keep_notes();
+    let result = crate::execute(words, &mut out);
+    let flushed = out.flush();
+    let notes = crate::kept_notes();
+    let (mut text, failed) = match (result, flushed) {
+        (Err(message), _) => (message, true),
+        (_, Err(e)) => (format!("could not write {path}: {e}"), true),
+        (Ok(1), _) if out.bytes == 0 => (format!("Nothing matched; {path} is empty."), false),
+        (Ok(code), _) => (
+            format!(
+                "{name}: wrote {} {}, {} bytes, to {path}.",
+                out.lines,
+                if out.lines == 1 { "line" } else { "lines" },
+                out.bytes
+            ),
+            code == 2,
+        ),
+    };
+    for note in notes {
+        text.push(char::from(10));
+        text.push_str(&note);
+    }
+    (text, failed)
+}
+
+/// A writer that counts what passes through it.
+struct Counted<W: Write> {
+    inner: W,
+    bytes: u64,
+    lines: u64,
+}
+impl<W: Write> Write for Counted<W> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let n = self.inner.write(bytes)?;
+        self.bytes += n as u64;
+        self.lines += bytes[..n].iter().filter(|b| **b == 10).count() as u64;
+        Ok(n)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
 }
 
 /// The output of a file tool, kept up to `limit` bytes. Past it the command is

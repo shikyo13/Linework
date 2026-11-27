@@ -146,6 +146,9 @@ fn label(hit: &Hit, f: &Frame) -> Option<String> {
                 "Open document preview"
             }.into(),
             "findprev" => "Previous match".into(),
+            "p:sort" => if f.sorted { "Sort the results, sorted" } else { "Sort the results" }.into(),
+            "p:copyresults" => "Copy the results as shown".into(),
+            "p:copy" => "Copy the lw command for this search".into(),
             "findnext" => "Next match".into(),
             "p:file" | "p:open" | "p:folder" => {
                 let (name, n) = match id.as_str() {

@@ -526,7 +526,10 @@ To add it to Codex, in ~/.codex/config.toml:
 
 Tool results are capped at 100,000 bytes unless a call asks for another
 budget, so a broad search cannot flood an agent's context; the summary says
-when output was cut.
+when output was cut. find and count take an output file instead: the lines
+go there as the command line prints them (plain, not JSON, no budget), with
+line_numbers (-n) and no_filename (-I) to shape them, and the reply says only
+how many lines and bytes were written.
 
 split, cut, sort and look are tools too, with their options as named fields
 (sort's -k is keys, -u is unique, -o is output). Through the server they read

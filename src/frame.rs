@@ -487,9 +487,10 @@ impl Shell<'_> {
         }
         let sy = panel_bottom(ps.more);
         s.fill(x - 2, sy - 4, avail + 4, 1, p.line);
-        s.small(x, sy, avail - 58, 26, &f.summary, p.dim);
+        s.small(x, sy, avail - 86, 26, &f.summary, p.dim);
         if !f.summary.is_empty() {
-            self.icon(x + avail - 54, sy, 26, 26, 0xE8CB, cmd("p:sort"), f.sorted, 12);
+            self.icon(x + avail - 82, sy, 26, 26, 0xE8CB, cmd("p:sort"), f.sorted, 12);
+            self.icon(x + avail - 54, sy, 26, 26, 0xE8FD, cmd("p:copyresults"), false, 12);
             self.icon(x + avail - 26, sy, 26, 26, 0xE8C8, cmd("p:copy"), false, 12);
         }
     }
