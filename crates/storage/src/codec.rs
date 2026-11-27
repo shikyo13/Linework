@@ -4,6 +4,14 @@ use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::sync::{OnceLock, RwLock};
 
+/// Documents from this size on are saved from several reading threads.
+#[cfg(not(test))]
+const PARALLEL_SAVE_FROM: u64 = 64 * 1024 * 1024;
+#[cfg(test)]
+const PARALLEL_SAVE_FROM: u64 = 2 * 1024 * 1024;
+/// Reading threads for a large save.
+const SAVE_READERS: usize = 4;
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Codec {
     Utf8,
@@ -384,6 +392,9 @@ impl Codec {
     pub fn write(self, d: &Document, w: &mut impl Write, bom: bool) -> io::Result<()> {
         if bom {
             w.write_all(self.bom())?;
+        }
+        if self.native() && d.len() >= PARALLEL_SAVE_FROM {
+            return crate::parallel::copy_out(d, SAVE_READERS, w);
         }
         let mut pos = 0;
         let mut buffer = vec![0; 1024 * 1024 + 4];
