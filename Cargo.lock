@@ -477,7 +477,7 @@ dependencies = [
 
 [[package]]
 name = "linework"
-version = "1.13.1"
+version = "1.13.2"
 dependencies = [
  "csv",
  "imara-diff",
