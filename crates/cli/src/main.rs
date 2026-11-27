@@ -365,6 +365,11 @@ fn execute(argv: Vec<String>, mut out: &mut dyn Write) -> Result<i32, String> {
             drop(records);
             #[cfg(any(windows, target_os = "macos"))]
             linework_storage::set_save_journal(Some(&profile.join("save-records")));
+            // Putting files back counts no lines: the count a file is given when
+            // it is opened would read all of it beside the save, for nothing.
+            // (Measured on the Mac; Windows is left as it was until measured there.)
+            #[cfg(target_os = "macos")]
+            linework_storage::set_line_indexing(false);
             // The files are restored on several threads; each is checked before it is touched.
             let undone = change::undo(&changes, rest.first().map(String::as_str), &|_| false)?;
             for path in &undone.restored {
@@ -494,6 +499,12 @@ fn replace(
     // file; one left by a crash is settled here before the file is opened.
     #[cfg(any(windows, target_os = "macos"))]
     linework_storage::set_save_journal(Some(&profile.join("save-records")));
+    // A replacement that is saved counts no lines; only the preview shows
+    // line numbers. The count a file is given when it is opened would read
+    // all of it beside the search and the save, for nothing. (Measured on
+    // the Mac; Windows is left as it was until measured there.)
+    #[cfg(target_os = "macos")]
+    linework_storage::set_line_indexing(s.dry_run);
     let searched = engine_options(s, old);
     let json = s.json;
     let widest = if s.whole_lines { 256 << 20 } else { 1 << 20 };
