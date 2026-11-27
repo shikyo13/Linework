@@ -222,6 +222,7 @@ pub const SPECS: &[Spec] = &[
     spec("scope", None, Nothing, Lw, "show the functions, classes or sections each line sits in"),
     spec("since", None, Value("TIME"), Lw, "in a time-ordered log, start at this time"),
     spec("until", None, Value("TIME"), Lw, "in a time-ordered log, end at this time"),
+    spec("last", None, Value("NUM"), Lw, "lw lines: the last NUM lines of each file"),
     spec("changed", None, Nothing, Lw, "search only files changed since lw changes last looked"),
     spec("mark", None, Value("NAME"), Lw, "the folder snapshot to use (default last)"),
     spec("budget", None, Value("BYTES"), Lw, "stop printing after this many bytes, at a line break"),

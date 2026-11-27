@@ -15,9 +15,9 @@ use std::{
 
 /// The commands lw has; any other first word is a pattern for `lw find`.
 #[cfg(not(target_os = "macos"))]
-const COMMANDS: &[&str] = &["find", "count", "lines", "info", "replace", "undo", "changes", "files", "defs", "uses", "open", "serve", "help", "split", "cut", "sort", "look"];
+const COMMANDS: &[&str] = &["find", "count", "lines", "info", "replace", "undo", "changes", "files", "defs", "uses", "outline", "show", "open", "serve", "help", "split", "cut", "sort", "look"];
 #[cfg(target_os = "macos")]
-const COMMANDS: &[&str] = &["find", "count", "lines", "info", "replace", "undo", "changes", "files", "defs", "uses", "open", "serve", "help", "split", "cut", "sort", "look", "kept"];
+const COMMANDS: &[&str] = &["find", "count", "lines", "info", "replace", "undo", "changes", "files", "defs", "uses", "outline", "show", "open", "serve", "help", "split", "cut", "sort", "look", "kept"];
 
 /// The commands that take the options of GNU's file tools (and BSD's look), not ripgrep's.
 const FILE_TOOLS: &[&str] = &["split", "cut", "sort", "look"];
@@ -318,37 +318,11 @@ fn execute(argv: Vec<String>, mut out: &mut dyn Write) -> Result<i32, String> {
             }
             i32::from(range.is_empty())
         }
-        ("lines", [file, from, rest @ ..]) if rest.len() <= 1 => {
-            let first: u64 = from.parse().map_err(|_| format!("FROM must be a line number, not {from}"))?;
-            let last: u64 = match rest.first() {
-                Some(to) => to.parse().map_err(|_| format!("TO must be a line number, not {to}"))?,
-                None => first,
-            };
-            if first == 0 || last < first {
-                return Err("lines are counted from 1, and TO must not be before FROM".into());
-            }
-            let doc = open(file).map_err(io)?;
-            counted(&doc).map_err(io)?;
-            let lines = doc.line_count();
-            if first > lines {
-                return Ok(1);
-            }
-            let mut at = doc.line_start(first - 1);
-            let end = if last < lines { doc.line_start(last) } else { doc.len() };
-            let mut block = vec![0; 1 << 20];
-            let mut budget = report::Budget::new(s.budget);
-            while at < end {
-                let n = (end - at).min(block.len() as u64) as usize;
-                doc.read_into(at, &mut block[..n]).map_err(io)?;
-                if !budget.write(&mut out, &block[..n]).map_err(io)? {
-                    break;
-                }
-                at += n as u64;
-            }
-            if budget.cut {
-                note!("lw: output cut at {} bytes (--budget)", budget.written);
-            }
-            0
+        ("lines", words) if !words.is_empty() => read::lines(&s, words, out)?,
+        ("outline", files) if !files.is_empty() => read::outline(&s, files, out)?,
+        ("show", [name, target]) => {
+            let pick = linework_search::pick::Pick::new(&s.choices, &s.types, s.glob_fold)?;
+            read::show(&s, name, target, walk_options(&s, pick.as_ref()), out)?
         }
         ("info", [file]) => {
             let doc = open(file).map_err(io)?;
@@ -754,6 +728,7 @@ mod help;
 mod look;
 mod marks;
 mod printer;
+mod read;
 mod report;
 #[cfg(windows)]
 mod sampler;

@@ -147,13 +147,24 @@ EXAMPLES
     Topic {
         name: "lines",
         summary: "Print lines by number, or the part of a log between two times",
-        usage: "lw lines FILE FROM [TO]\n       lw lines [--since TIME] [--until TIME] FILE",
-        body: r#"Prints a run of lines exactly as they are in the file, line breaks included.
+        usage: "lw lines [-n] FILE FROM [TO]\n       lw lines [-n] [--last N] FILE [FROM-TO ...] [FILE [FROM-TO ...] ...]\n       lw lines [--since TIME] [--until TIME] FILE",
+        body: r#"Prints lines exactly as they are in the file, line breaks included.
 
   lw lines FILE FROM [TO]   lines FROM to TO, counted from 1; TO defaults to FROM.
                             The first time a large file is read its lines are
                             counted; Linework keeps that count in its profile,
                             so the next time this takes milliseconds.
+
+  lw lines FILE 10-40 120-160 300-
+                            several runs of lines in one call, with a line of
+                            -- between them. A run is FROM-TO, FROM- (to the
+                            end of the file) or one line number. A file with
+                            no run is printed whole.
+
+  lw lines a.rs 1-30 b.rs 200-240
+                            several files in one call, each named before its
+                            runs, with ==> NAME <== above each file's lines
+                            as head and tail write it.
 
   lw lines --since TIME --until TIME FILE
                             the part of a time-ordered log between two times,
@@ -161,12 +172,20 @@ EXAMPLES
                             reads, even in a file of many gigabytes. Either end
                             may be left out. See lw help time.
 
-OPTIONS (for a time span)
+OPTIONS
+  -n           put each line's number before it, as 12:text
+  --last N     the last N lines of each file (with runs, after them)
   --budget N   stop after N bytes, at a line break
-  --stats      print where the span starts and ends on the error stream
+  --stats      for a time span: print where it starts and ends on the error stream
+
+Reading several runs or files in one call matters most to a program that
+works through a model: each call costs it a turn of the model.
 
 EXAMPLES
   lw lines app.log 80000000 80000010
+  lw lines -n src/engine.js 405-530
+  lw lines -n src/engine.js 10-40 405-530 src/main.js 1-60
+  lw lines --last 40 app.log
   lw lines --since 21:40 --until 21:45 app.log
   lw lines --since 2026-11-21 app.log"#,
     },
@@ -329,6 +348,64 @@ with the same name are both found.
 EXAMPLES
   lw uses parse_header src
   lw uses --scope -m 3 useState app"#,
+    },
+    Topic {
+        name: "outline",
+        summary: "List the functions, classes and sections of code files with the lines they span",
+        usage: "lw outline [--json] FILE...",
+        body: r#"Prints, for each file, how many lines it has and then every definition in
+it: the lines it spans, what kind it is and its name, with what lies inside
+another definition set in under it.
+
+  src/engine.js: 1310 lines
+     12-48    function buildBlock
+     50-410   class Engine
+     58-77      method constructor
+     79-140     method update
+
+So the lines worth reading can be asked for at once (lw lines -n FILE 79-140),
+where reading a file from the top a screenful at a time takes several calls.
+A Markdown file's outline is its headings, each reaching to the next.
+
+Code is recognised by the file's name, in the languages lw defs knows. A file
+of a kind that has no outline prints only its line count, with a note.
+
+OPTIONS
+  --json   one object for each definition: path, line, end_line, kind, name, depth
+
+EXAMPLES
+  lw outline src/engine.js
+  lw outline src/*.rs
+  lw outline --json README.md"#,
+    },
+    Topic {
+        name: "show",
+        summary: "Print each definition of a name whole, with line numbers",
+        usage: "lw show [-g GLOB] [-t TYPE] [--json] NAME PATH",
+        body: r#"Finds where NAME is defined, as lw defs does, and prints each definition
+from its first line to its last with the line numbers, under a line that names
+the file, the lines and the kind:
+
+  src/engine.js:79-140  method update
+  79:  update(dt) {
+  80:    this.crank += dt * this.rpm;
+  ...
+
+One call in place of two: searching for the name, then reading the lines
+around what was found. PATH is a file or a folder; in a folder only the files
+that hold the name are parsed, and -g, -t and -T choose among them. Several
+definitions are separated by a line of --.
+
+OPTIONS
+  --json       one object for each definition: path, name, kind, line, end_line, text
+  --budget N   stop after N bytes
+
+Exit code 1 when the name is defined nowhere in PATH.
+
+EXAMPLES
+  lw show parse_header src
+  lw show -t rust Document crates
+  lw show update src/engine.js"#,
     },
     Topic {
         name: "open",

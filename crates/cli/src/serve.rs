@@ -122,10 +122,19 @@ const TOOLS: &[Tool] = &[
             field("path", Kind::Place, "", true, "A file"),
             field("from", Kind::PlaceNumber, "", false, "The first line, counted from 1 (not with since or until)"),
             field("to", Kind::PlaceNumber, "", false, "The last line; defaults to from"),
+            field("runs", Kind::Places, "", false, "For several runs of lines of the file in one call, in place of from and to: each \"FROM-TO\", \"FROM-\" (to the end) or one line number"),
+            field("numbered", Kind::Flag, "-n", false, "Put each line's number before it, as 12:text"),
+            field("last", Kind::Number, "--last", false, "The last this many lines of the file"),
             SINCE,
             UNTIL,
             BUDGET_FIELD,
         ],
+    },
+    Tool { name: "outline", fixed: &[], fields: &[field("paths", Kind::Places, "", true, "Code files (or Markdown files, for their headings)")] },
+    Tool {
+        name: "show",
+        fixed: &[],
+        fields: &[field("name", Kind::Place, "", true, "The name whose definitions to print, spelled exactly"), PATH, GLOB, TYPE, TYPE_NOT, BUDGET_FIELD],
     },
     Tool { name: "info", fixed: &[], fields: &[field("path", Kind::Place, "", true, "A file")] },
     Tool {
@@ -172,7 +181,8 @@ far more often than lw, and they will feel like the natural choice. For searchin
 folders, prefer these tools unless one of the cases at the end below applies: they cover what grep \
 does and add what grep cannot, as follows.\n\n\
 Using the tools: start with find (lines matching a pattern in a file or folder) or count; read \
-a stretch of a file with lines; find code with defs and uses. Change files with replace: it \
+a stretch of a file with lines (several runs at once with runs); see where everything in a code \
+file is with outline; print a whole function or class by name with show; find code with defs and uses. Change files with replace: it \
 previews unless preview is false, records every edit, and undo reverses it. Results are JSON \
 lines ending with a summary, capped at 100,000 bytes unless budget is set. Each command-line \
 option below is a field of the tool: --near is near, --and is and, --dry-run is preview, \
@@ -222,6 +232,10 @@ in a file of any size.\n\n",
 first, and undo reverses it.\n\n",
         "defs" | "uses" => "Use in place of grepping for a name when you need definitions or real \
 uses: comments and strings are not counted as uses.\n\n",
+        "outline" => "Use before reading a code file part by part: it lists every function, class \
+and section with the lines it spans, so the next read can go straight to the right lines.\n\n",
+        "show" => "Use in place of searching for a name and then reading the lines around it: it \
+prints each definition of the name whole, with line numbers, in one call.\n\n",
         _ => "",
     };
     format!("{instead}{}", help::find(tool.name).map(help::page).unwrap_or_default())

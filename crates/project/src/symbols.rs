@@ -305,6 +305,30 @@ pub struct Scope {
     pub end_line: u64,
 }
 
+/// Every definition in a file in the order it starts, each with how many
+/// other definitions it lies inside: the file's outline, with the lines each
+/// part spans. Empty for languages without an outline and for text over the
+/// outline's size limit.
+pub fn outline(path: &Path, text: &str) -> Vec<(usize, Scope)> {
+    let Some(mut found) = definitions(path, text) else { return Vec::new() };
+    // Outer before inner where two start together. A node the tags query
+    // names twice (a method is also a function) counts once, under the
+    // first name found for it.
+    found.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)));
+    found.dedup_by(|later, first| later.0 == first.0 && later.1 == first.1);
+    let mut open: Vec<usize> = Vec::new();
+    found
+        .into_iter()
+        .map(|(start, end, scope)| {
+            while open.last().is_some_and(|&ends| ends <= start) {
+                open.pop();
+            }
+            open.push(end);
+            (open.len() - 1, scope)
+        })
+        .collect()
+}
+
 /// For each byte offset into `text`, the innermost definition that contains
 /// it, found as the editor's outline finds definitions. A heading of a line
 /// outline reaches until the next one. None outside every definition, for
