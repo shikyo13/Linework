@@ -380,9 +380,9 @@ EXAMPLES
     },
     Topic {
         name: "show",
-        summary: "Print each definition of a name whole, with line numbers",
-        usage: "lw show [-g GLOB] [-t TYPE] [--json] NAME PATH",
-        body: r#"Finds where NAME is defined, as lw defs does, and prints each definition
+        summary: "Print each definition of one or more names whole, with line numbers",
+        usage: "lw show [-g GLOB] [-t TYPE] [--json] NAME... PATH",
+        body: r#"Finds where each NAME is defined, as lw defs does, and prints each definition
 from its first line to its last with the line numbers, under a line that names
 the file, the lines and the kind:
 
@@ -396,14 +396,20 @@ around what was found. PATH is a file or a folder; in a folder only the files
 that hold the name are parsed, and -g, -t and -T choose among them. Several
 definitions are separated by a line of --.
 
+Several names are answered in one call, in the order given; the last word is
+always PATH. A name that nothing defines (a constant, a field) is answered
+with the lines that hold it as a whole word, up to 20 of them, so the call is
+not wasted.
+
 OPTIONS
   --json       one object for each definition: path, name, kind, line, end_line, text
   --budget N   stop after N bytes
 
-Exit code 1 when the name is defined nowhere in PATH.
+Exit code 1 when none of the names is defined in PATH.
 
 EXAMPLES
   lw show parse_header src
+  lw show open save_as Document crates/storage/src
   lw show -t rust Document crates
   lw show update src/engine.js"#,
     },

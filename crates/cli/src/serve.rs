@@ -134,7 +134,7 @@ const TOOLS: &[Tool] = &[
     Tool {
         name: "show",
         fixed: &[],
-        fields: &[field("name", Kind::Place, "", true, "The name whose definitions to print, spelled exactly"), PATH, GLOB, TYPE, TYPE_NOT, BUDGET_FIELD],
+        fields: &[field("names", Kind::Places, "", true, "The names whose definitions to print, each spelled exactly"), PATH, GLOB, TYPE, TYPE_NOT, BUDGET_FIELD],
     },
     Tool { name: "info", fixed: &[], fields: &[field("path", Kind::Place, "", true, "A file")] },
     Tool {
@@ -234,8 +234,8 @@ first, and undo reverses it.\n\n",
 uses: comments and strings are not counted as uses.\n\n",
         "outline" => "Use before reading a code file part by part: it lists every function, class \
 and section with the lines it spans, so the next read can go straight to the right lines.\n\n",
-        "show" => "Use in place of searching for a name and then reading the lines around it: it \
-prints each definition of the name whole, with line numbers, in one call.\n\n",
+        "show" => "Use in place of searching for names and then reading the lines around them: it \
+prints each definition of each name whole, with line numbers, in one call.\n\n",
         _ => "",
     };
     format!("{instead}{}", help::find(tool.name).map(help::page).unwrap_or_default())
