@@ -361,7 +361,7 @@ pub fn run() -> io::Result<()> {
                 Ok(json!({
                     "protocolVersion": version,
                     "capabilities": {"tools": {}},
-                    "serverInfo": {"name": "linework", "title": "Linework (lw)", "version": env!("CARGO_PKG_VERSION")},
+                    "serverInfo": {"name": "linework", "title": "Linework (lw)", "version": env!("LINEWORK_VERSION")},
                     "instructions": instructions(),
                 }))
             }

@@ -126,7 +126,7 @@ fn execute(argv: Vec<String>, mut out: &mut dyn Write) -> Result<i32, String> {
     }
     let mut s =Settings::read(rest, |e| note!("lw: {e}"))?;
     if s.version {
-        writeln!(out, "lw {}", env!("CARGO_PKG_VERSION")).map_err(io)?;
+        writeln!(out, "lw {}", env!("LINEWORK_VERSION")).map_err(io)?;
         return Ok(0);
     }
     if let Some(kind) = &s.generate {
