@@ -32,6 +32,8 @@ enum Kind {
     Texts,
     /// A list of {pattern, lines}, each given as --near PATTERN LINES.
     Near,
+    /// An option whose value is optional, given as OPTION=VALUE.
+    Joined,
 }
 
 struct Field {
@@ -89,6 +91,15 @@ const SORT: Field = field("sort", Kind::Text, "--sort", false, "Order files by p
 const NEAR_BEFORE: Field = field("near_before", Kind::Near, "--near-before", false, "Like near, looking only before the line");
 const NEAR_AFTER: Field = field("near_after", Kind::Near, "--near-after", false, "Like near, looking only after the line");
 const WHOLE_LINES: Field = field("whole_lines", Kind::Flag, "--whole-lines", false, "Show lines over 1,000 bytes whole, not as the part around the match");
+/// The file tools take GNU's options, which have no --budget: their output is
+/// cut by the server instead (see `call`).
+const FILE_BUDGET: Field = field("budget", Kind::Number, "", false, "Stop after this many bytes of output (default 100000); for more, write to a file with output");
+const THREADS: Field = field("threads", Kind::Number, "-j", false, "Threads to use (default: every processor)");
+const ZERO: Field = field("zero_terminated", Kind::Flag, "-z", false, "Lines end with a zero byte, not a line feed");
+const OUTPUT: Field = field("output", Kind::Text, "-o", false, "Write the result to this file instead of returning it (for results of any size)");
+/// The commands that take GNU's options. None may read standard input here,
+/// which is the conversation with the client.
+const FILE_TOOLS: [&str; 4] = ["split", "cut", "sort", "look"];
 
 struct Tool {
     name: &'static str,
@@ -164,6 +175,91 @@ const TOOLS: &[Tool] = &[
         fields: &[field("name", Kind::Place, "", true, "The name to look for, spelled exactly"), PATH, MAX_LINES, SCOPE, GLOB, TYPE, TYPE_NOT, WHOLE_LINES, BUDGET_FIELD],
     },
     Tool { name: "open", fixed: &[], fields: &[field("targets", Kind::Places, "", true, "Files to show in the Linework editor, each FILE, FILE:LINE or FILE:LINE:COLUMN")] },
+    Tool {
+        name: "split",
+        fixed: &[],
+        fields: &[
+            field("file", Kind::Place, "", true, "The file to cut into pieces"),
+            field("prefix", Kind::Place, "", false, "The start of each piece's name, a path (default x, in the folder lw serve was started in)"),
+            field("lines", Kind::Number, "-l", false, "This many lines a piece (the default, 1000, when no way of cutting is given)"),
+            field("bytes", Kind::Text, "-b", false, "This many bytes a piece: 10K, 5M, 2G (powers of 1024) or KB, MB, GB (powers of 1000)"),
+            field("line_bytes", Kind::Text, "-C", false, "At most this many bytes of whole lines a piece; a longer line is cut"),
+            field("number", Kind::Text, "-n", false, "N pieces of about equal size; l/N without cutting lines; r/N lines dealt in turn; K/N, l/K/N or r/K/N returns only piece K"),
+            field("numeric_suffixes", Kind::Flag, "-d", false, "Suffixes 00, 01, ... instead of aa, ab, ..."),
+            field("numeric_from", Kind::Joined, "--numeric-suffixes", false, "Numeric suffixes starting from this number"),
+            field("hex_suffixes", Kind::Flag, "-x", false, "Suffixes 00 ... 0f, 10, ..."),
+            field("hex_from", Kind::Joined, "--hex-suffixes", false, "Hexadecimal suffixes starting from this number"),
+            field("suffix_length", Kind::Number, "-a", false, "Suffixes of this many characters"),
+            field("additional_suffix", Kind::Text, "--additional-suffix", false, "Text after each suffix, such as .txt"),
+            field("elide_empty", Kind::Flag, "-e", false, "No empty pieces with number"),
+            field("separator", Kind::Text, "-t", false, "Lines end with this byte instead of a line feed (\\0 for a zero byte)"),
+            THREADS,
+            FILE_BUDGET,
+        ],
+    },
+    Tool {
+        name: "cut",
+        fixed: &[],
+        fields: &[
+            field("files", Kind::Places, "", true, "The files whose lines to cut, in order"),
+            field("fields", Kind::Text, "-f", false, "Fields to print, separated by delimiter: 3, 1-4, 7- (to the end), -2 (from the start), comma-separated"),
+            field("delimiter", Kind::Text, "-d", false, "The field separator, one byte (default a tab)"),
+            field("only_delimited", Kind::Flag, "-s", false, "Leave out lines without the delimiter"),
+            field("bytes", Kind::Text, "-b", false, "Bytes to print, as a list like fields"),
+            field("characters", Kind::Text, "-c", false, "Characters to print (bytes, as GNU cut counts them), as a list like fields"),
+            field("complement", Kind::Flag, "--complement", false, "Print everything but the list"),
+            field("output_delimiter", Kind::Text, "--output-delimiter", false, "Text between the fields or byte ranges printed"),
+            ZERO,
+            OUTPUT,
+            THREADS,
+            FILE_BUDGET,
+        ],
+    },
+    Tool {
+        name: "sort",
+        fixed: &[],
+        fields: &[
+            field("files", Kind::Places, "", true, "The files whose lines to sort together"),
+            field("ignore_leading_blanks", Kind::Flag, "-b", false, "Ignore blanks at the start of each key"),
+            field("dictionary_order", Kind::Flag, "-d", false, "Only letters, digits and blanks count"),
+            field("ignore_case", Kind::Flag, "-f", false, "Letter case does not count"),
+            field("general_numeric", Kind::Flag, "-g", false, "Numbers as C's strtod reads them (1e3, 0x10, inf)"),
+            field("numeric", Kind::Flag, "-n", false, "Plain decimal numbers (quicker than general_numeric)"),
+            field("human_numeric", Kind::Flag, "-h", false, "Sizes such as 2K and 1G"),
+            field("month", Kind::Flag, "-M", false, "Months: JAN < FEB < ... < DEC"),
+            field("version", Kind::Flag, "-V", false, "Version numbers within text: file2 < file10"),
+            field("random", Kind::Flag, "-R", false, "A random order that keeps equal keys together"),
+            field("random_source", Kind::Text, "--random-source", false, "A file whose bytes seed the random order"),
+            field("reverse", Kind::Flag, "-r", false, "Reverse the order"),
+            field("keys", Kind::Texts, "-k", false, "Keys to sort by, in order of importance: F[.C][OPTS][,F[.C][OPTS]], fields F and characters C from 1, OPTS any of bdfghiMnRrV; 2,2 is the second field alone"),
+            field("separator", Kind::Text, "-t", false, "Fields are separated by this character (default: blanks begin a field)"),
+            field("stable", Kind::Flag, "-s", false, "Lines with equal keys keep their order"),
+            field("unique", Kind::Flag, "-u", false, "Only the first of lines that are equal (by their keys)"),
+            field("merge", Kind::Flag, "-m", false, "Merge files that are each sorted already"),
+            field("check", Kind::Flag, "-c", false, "Check that the file is sorted and name the first line out of order"),
+            field("check_quiet", Kind::Flag, "-C", false, "Check that the file is sorted, answering only sorted or not"),
+            field("output", Kind::Text, "-o", false, "Write the sorted lines to this file, which may be one of the inputs (replaced only when the sort succeeds)"),
+            field("buffer_size", Kind::Text, "-S", false, "Memory to use: KiB, or with b, K, M, G, T or % (default half the memory available)"),
+            field("temporary_directory", Kind::Texts, "-T", false, "Folders for temporary files (default the Windows temporary folder)"),
+            ZERO,
+            THREADS,
+            FILE_BUDGET,
+        ],
+    },
+    Tool {
+        name: "look",
+        fixed: &[],
+        fields: &[
+            field("string", Kind::Place, "", false, "Print the lines that begin with this (or give keys)"),
+            field("file", Kind::Place, "", true, "A sorted file (sorted with dictionary_order and ignore_case to match those options)"),
+            field("keys", Kind::Text, "--keys", false, "A file of keys, one a line: print every line of the file that begins with any of them, once, in the file's order (the file need not be sorted when there are many keys)"),
+            field("dictionary_order", Kind::Flag, "-d", false, "Only letters, digits and blanks count, in the string and the lines"),
+            field("ignore_case", Kind::Flag, "-f", false, "Letter case does not count"),
+            field("terminate", Kind::Text, "-t", false, "Compare the string only up to and including its first occurrence of this character"),
+            THREADS,
+            FILE_BUDGET,
+        ],
+    },
 ];
 
 const INSTRUCTIONS: &str = "lw searches, reads and changes text files of any size, \
@@ -177,7 +273,12 @@ previews unless preview is false, records every edit, and undo reverses it. Resu
 lines ending with a summary, capped at 100,000 bytes unless budget is set. Each command-line \
 option below is a field of the tool: --near is near, --and is and, --dry-run is preview, \
 --since is since, -g is glob, -t is type, -T is type_not, -l is names_only. Messages such as \
-an output cut short come at the end of a result.\n\n";
+an output cut short come at the end of a result.\n\n\
+For very large data files (word lists, hash lists, dumps), split, cut, sort and look take GNU \
+split's, cut's and sort's and util-linux look's options as named fields, work on every thread on \
+files larger than memory, and give byte-identical results to those tools; look finds lines by \
+bisection in a sorted file of any size in milliseconds. Give their results an output file when \
+they may be large.\n\n";
 
 /// What an agent is told when it connects: how to use the tools, then the
 /// comparison with grep and ripgrep from `lw help compared`.
@@ -195,6 +296,7 @@ fn schema(tool: &Tool) -> Value {
             Kind::PlaceNumber | Kind::Number => json!({"type": "integer", "minimum": 0, "description": f.about}),
             Kind::Flag => json!({"type": "boolean", "description": f.about}),
             Kind::Places | Kind::Texts => json!({"type": "array", "items": {"type": "string"}, "description": f.about}),
+            Kind::Joined => json!({"type": "string", "description": f.about}),
             Kind::Near => json!({
                 "type": "array",
                 "description": f.about,
@@ -212,6 +314,12 @@ fn schema(tool: &Tool) -> Value {
 /// A tool's description: which familiar tool it stands in for, then its help page.
 fn description(tool: &Tool) -> String {
     let instead = match tool.name {
+        "split" => "Use in place of split to cut a file of any size into pieces by lines, bytes or count.\n\n",
+        "cut" => "Use in place of cut or awk -F to take fields or bytes from every line of a file of any size.\n\n",
+        "sort" => "Use in place of sort to sort, deduplicate (unique), merge or check files of any size, \
+larger than memory.\n\n",
+        "look" => "Use in place of searching a sorted file for lines that start with a string: finds them \
+by bisection, in milliseconds on any size.\n\n",
         "find" => "Use in place of grep, ripgrep or a built-in Grep tool to search files and folders: \
 the same matches with line numbers, as JSON with a summary, plus near/and/not conditions and the \
 enclosing function (scope).\n\n",
@@ -244,6 +352,8 @@ fn argv(tool: &Tool, arguments: &Map<String, Value>) -> Result<Vec<String>, Stri
         // A replace previews unless the call says otherwise.
         let value = match (f.name, value) {
             ("preview", None) => Some(&Value::Bool(true)),
+            // The file tools' budget is applied by `call`, not given to the command.
+            ("budget", _) if f.option.is_empty() => continue,
             ("budget", None) if f.option == "--budget" => {
                 options.push("--budget".into());
                 options.push(BUDGET.to_string());
@@ -271,6 +381,7 @@ fn argv(tool: &Tool, arguments: &Map<String, Value>) -> Result<Vec<String>, Stri
                 }
             }
             Kind::Text => options.extend([f.option.to_owned(), text(value, f.name)?]),
+            Kind::Joined => options.push(format!("{}={}", f.option, text(value, f.name)?)),
             Kind::Number => options.extend([f.option.to_owned(), number(value, f.name)?]),
             Kind::Texts => {
                 for v in value.as_array().ok_or(format!("{} must be a list", f.name))? {
@@ -301,22 +412,47 @@ fn call(name: &str, arguments: &Map<String, Value>) -> (String, bool) {
         Ok(words) => words,
         Err(e) => return (e, true),
     };
-    let mut out = Vec::new();
+    let file_tool = FILE_TOOLS.contains(&name);
+    if file_tool {
+        // "-" would read standard input, which here is the conversation itself.
+        let piped = words.iter().skip_while(|w| *w != "--").skip(1).any(|w| w == "-")
+            || arguments.get("keys").and_then(Value::as_str) == Some("-");
+        if piped {
+            return (format!("{name} cannot read piped input here; give a file"), true);
+        }
+        if name == "look" && arguments.get("string").is_none() && arguments.get("keys").is_none() {
+            return ("look needs a string or keys".into(), true);
+        }
+    }
+    let limit = arguments.get("budget").and_then(Value::as_u64).unwrap_or(BUDGET) as usize;
+    let mut out = Capped { kept: Vec::new(), limit: if file_tool { limit } else { usize::MAX }, cut: false };
     // lw's messages (an output cut short, a file left unchanged) come back with the result.
     crate::keep_notes();
     let result = crate::execute(words, &mut out);
     let notes = crate::kept_notes();
+    let cut = out.cut;
     let (mut text, failed) = match result {
         Ok(code) => {
-            let text = String::from_utf8_lossy(&out).into_owned();
+            let text = String::from_utf8_lossy(&out.kept).into_owned();
             if text.is_empty() && code == 1 {
-                ("Nothing matched.".into(), false)
+                // sort's check answers 1 for a file out of order; the others for no match.
+                (if name == "sort" { "Not sorted." } else { "Nothing matched." }.into(), false)
+            } else if text.is_empty() && name == "sort" && ["check", "check_quiet"].iter().any(|k| arguments.get(*k) == Some(&Value::Bool(true))) {
+                ("Sorted.".into(), false)
             } else {
                 (text, code == 2)
             }
         }
+        // The cap below ended the command; what it wrote before that is the answer.
+        Err(_) if cut => (String::from_utf8_lossy(&out.kept).into_owned(), false),
         Err(message) => (message, true),
     };
+    if cut {
+        if !text.ends_with('\n') {
+            text.push('\n');
+        }
+        text.push_str(&format!("lw: output cut at {limit} bytes (budget); give output a file for all of it, or a larger budget\n"));
+    }
     for note in notes {
         if !text.is_empty() && !text.ends_with('\n') {
             text.push('\n');
@@ -325,6 +461,29 @@ fn call(name: &str, arguments: &Map<String, Value>) -> (String, bool) {
         text.push('\n');
     }
     (text, failed)
+}
+
+/// The output of a file tool, kept up to `limit` bytes. Past it the command is
+/// told its output has closed, as when a pipe's reader stops, and ends.
+struct Capped {
+    kept: Vec<u8>,
+    limit: usize,
+    cut: bool,
+}
+impl Write for Capped {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let room = self.limit - self.kept.len();
+        if bytes.len() <= room {
+            self.kept.extend_from_slice(bytes);
+            return Ok(bytes.len());
+        }
+        self.kept.extend_from_slice(&bytes[..room]);
+        self.cut = true;
+        Err(io::ErrorKind::BrokenPipe.into())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 fn answer(id: &Value, result: Result<Value, (i64, String)>) -> Value {
