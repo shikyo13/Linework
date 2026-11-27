@@ -637,6 +637,7 @@ impl App {
                     }
                     "comment" | "indent" | "outdent" | "sortlines" | "sortdesc" | "dedup"
                     | "trimlines" => self.line_action(id),
+                    "sortby" => self.sort_by_field(),
                     "managesnippets" => self.manage_snippets(),
                     "complete" => {
                         if !self.edit().complete() {

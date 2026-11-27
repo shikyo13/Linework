@@ -150,6 +150,18 @@ impl App {
             d.line_start(d.line_of(from))..d.line_start(d.line_of(to - 1) + 1).max(to).min(d.len())
         };
         let count = r.end - r.start;
+        let many_lines = d.indexed_bytes() >= r.end
+            && d.line_of(r.end) - d.line_of(r.start) > 1_000_000;
+        if (id == "sortlines" || id == "sortdesc")
+            && (count > super::sort_lines::IN_MEMORY || many_lines)
+        {
+            let spec = crate::sort_spec::SortSpec {
+                reverse: id == "sortdesc",
+                ..Default::default()
+            };
+            self.start_lw_sort(i, r, &spec);
+            return Ok(());
+        }
         if count > 32 * 1024 * 1024 {
             return Err("Select up to 32 MiB of lines for this transformation".into());
         }

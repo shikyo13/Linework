@@ -223,6 +223,10 @@ impl App {
                 self.copy_search_command();
                 return true;
             }
+            "p:sort" => {
+                self.choose_result_order();
+                return true;
+            }
             _ => return false,
         }
         // A switch changed: search again now.

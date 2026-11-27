@@ -218,6 +218,8 @@ pub enum Worker {
         Result<(), String>,
     ),
     Info(String),
+    /// A sort through lw finished: the job, document, revision, sorted range and result.
+    Sorted(u64, u64, u64, Range<u64>, sort_lines::SortResult),
     Recoded(u64, u64, Result<Document, String>),
     Eol(
         u64,
@@ -305,6 +307,8 @@ pub struct App {
     pub review_next: bool,
     /// The last folder search's totals and its lw command, as the panel shows them.
     pub search_summary: String,
+    /// The order the search results are shown in.
+    pub result_sort: crate::result_order::ResultSort,
     status_left: H,
     status_right: H,
     pane_headers: [H; 2],
@@ -485,6 +489,7 @@ impl App {
             search_view: false,
             review_next: false,
             search_summary: String::new(),
+            result_sort: Default::default(),
             status_left,
             status_right,
             pane_headers,
@@ -1377,6 +1382,8 @@ pub(crate) mod global_edit;
 mod lifecycle;
 #[path = "line_tools.rs"]
 mod line_tools;
+#[path = "sort_lines.rs"]
+mod sort_lines;
 #[path = "npp_app.rs"]
 mod npp_app;
 #[path = "polish.rs"]

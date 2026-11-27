@@ -597,6 +597,23 @@ impl Document {
         }
         self.commit(root)
     }
+    /// Replace `delete` bytes at `offset` with the whole of `file`, without
+    /// reading it into memory: the document reads the new text from the file,
+    /// which stays open for as long as any version refers to it. One undo step.
+    pub fn replace_from_file(&mut self, offset: u64, delete: u64, file: File) -> io::Result<()> {
+        let len = self.len();
+        if offset > len || delete > len - offset {
+            return Err(invalid("Edit outside document"));
+        }
+        let n = file.metadata()?.len();
+        let add = if n == 0 {
+            None
+        } else {
+            tree::leaf(Source::file(Arc::new(file), 0, n)?, 0, n)?
+        };
+        let next = tree::replace(self.root.clone(), offset, delete, add)?;
+        self.commit(next)
+    }
     /// Apply one edit computed on a read snapshot to the original history.
     pub fn apply_snapshot(&mut self, edited: Self) -> io::Result<()> {
         if edited.undo.len() != 1 || !tree::same(&self.root, &edited.undo[0]) {

@@ -238,6 +238,13 @@ impl App {
         if !report.errors.is_empty() {
             caption.push_str(&format!(" · {} issues", report.errors.len()));
         }
+        if self.result_sort.order != crate::result_order::Order::File && !self.preview_mode {
+            caption.push_str(&format!(" · sorted by {}", self.result_sort.order.caption()));
+            let (rows, rich, hits_of) = self.sorted_rows(report);
+            self.search_summary = caption;
+            self.show_rich_rows(String::new(), rows, rich, hits_of);
+            return;
+        }
         let mut rows = Vec::with_capacity(n * 2 + report.groups.len());
         let mut rich = Vec::with_capacity(rows.capacity());
         let mut hits_of = Vec::with_capacity(rows.capacity());
@@ -310,6 +317,109 @@ impl App {
         }
         self.search_summary = caption.clone();
         self.show_rich_rows(String::new(), rows, rich, hits_of);
+    }
+    /// The matching lines of every file in one list, in the chosen order:
+    /// no context, breaks or headings, each line led by its file's name when
+    /// several files matched, and by its count when identical lines collapse.
+    fn sorted_rows(&self, report: &SearchReport) -> (Vec<Row>, Vec<Rich>, Vec<std::ops::Range<usize>>) {
+        use crate::result_order::{arrange, Item};
+        let multi = report.groups.len() > 1;
+        let tab_name = |id: Option<u64>| id.and_then(|id| self.buffers.iter().find(|b| b.id == id)).map(|b| b.name.clone());
+        let mut names = Vec::new();
+        let mut lines = Vec::new();
+        for (g, group) in report.groups.iter().enumerate() {
+            names.push(
+                tab_name(group.buffer_id)
+                    .filter(|_| group.path.parent().is_none_or(|p| p.as_os_str().is_empty()))
+                    .unwrap_or_else(|| group.path.file_name().unwrap_or_default().to_string_lossy().into_owned()),
+            );
+            lines.extend(group.lines.iter().filter(|l| l.kind == LineKind::Match && !l.hits.is_empty()).map(|l| (g, l)));
+        }
+        let items: Vec<Item> = lines.iter().map(|(_, l)| Item { text: &l.text, ranges: &l.ranges }).collect();
+        let order = arrange(&items, &self.result_sort);
+        let mut rows = Vec::with_capacity(order.len());
+        let mut rich = Vec::with_capacity(order.len());
+        let mut hits_of = Vec::with_capacity(order.len());
+        for (index, count) in order {
+            let (g, line) = lines[index];
+            let mut prefix = String::new();
+            if count > 1 {
+                prefix.push_str(&format!("×{count}  "));
+            }
+            if multi {
+                prefix.push_str(&names[g]);
+                prefix.push_str("  ");
+            }
+            let text = format!("{prefix}{}", line.text);
+            rows.push(Row { label: format!("{}: {}", line.line, text.trim()), target: Target::Hit(line.hits.start) });
+            rich.push(Rich::Line {
+                number: line.line,
+                text,
+                ranges: line.ranges.iter().map(|(a, b)| (a + prefix.len(), b + prefix.len())).collect(),
+                context: false,
+                replaced: None,
+                checked: None,
+            });
+            hits_of.push(line.hits.clone());
+        }
+        (rows, rich, hits_of)
+    }
+    /// The Sort button on the results: choose an order, or switch ignoring
+    /// case or reversing; the field order asks which field in a dialog.
+    pub(super) fn choose_result_order(&mut self) {
+        use crate::result_order::Order;
+        use crate::win::{PopupItem, hwnd, menu_at};
+        let Some(report) = self.report.as_ref() else {
+            self.notice("Search first, then sort its results");
+            return;
+        };
+        if self.preview_mode {
+            self.notice("Replacements are reviewed in file order");
+            return;
+        }
+        let matching = || report.groups.iter().flat_map(|g| g.lines.iter()).filter(|l| l.kind == LineKind::Match);
+        let sample = matching().next().map(|l| l.text.clone()).unwrap_or_default();
+        let head = matching().take(200).map(|l| l.text.as_str()).collect::<Vec<_>>().join("
+");
+        let sort = &self.result_sort;
+        let mut items: Vec<PopupItem> = Order::ALL
+            .iter()
+            .enumerate()
+            .map(|(i, o)| PopupItem { id: (i + 1) as u16, label: o.label(), shortcut: String::new(), checked: *o == sort.order })
+            .collect();
+        items.push(PopupItem { id: 20, label: "Ignore letter case", shortcut: String::new(), checked: sort.spec.fold });
+        items.push(PopupItem { id: 21, label: "Reverse the order", shortcut: String::new(), checked: sort.spec.reverse });
+        let mut pt = windows_sys::Win32::Foundation::POINT { x: 0, y: 0 };
+        unsafe {
+            windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos(&mut pt);
+            windows_sys::Win32::Graphics::Gdi::ScreenToClient(hwnd(self.h), &mut pt);
+        }
+        match menu_at(self.h, &items, pt.x, pt.y) {
+            0 => return,
+            20 => self.result_sort.spec.fold = !self.result_sort.spec.fold,
+            21 => self.result_sort.spec.reverse = !self.result_sort.spec.reverse,
+            n => {
+                let order = Order::ALL[(n as usize - 1).min(Order::ALL.len() - 1)];
+                if order == Order::Field {
+                    let spec = &self.result_sort.spec;
+                    let separator = if spec.field > 0 { spec.separator } else { crate::sort_spec::guess_separator(&head) };
+                    match forms::sort_form(self.h, &sample, separator, spec.field) {
+                        None => return,
+                        Some(Err(e)) => {
+                            self.notice(e);
+                            return;
+                        }
+                        Some(Ok(spec)) => self.result_sort.spec = spec,
+                    }
+                } else {
+                    self.result_sort.spec.numeric = false;
+                    self.result_sort.spec.unique = false;
+                }
+                self.result_sort.order = order;
+            }
+        }
+        self.project_refresh_rows();
+        self.refresh();
     }
     /// Checks or unchecks the replacements on one row of the preview.
     pub(super) fn project_toggle_row(&mut self, row: usize) {

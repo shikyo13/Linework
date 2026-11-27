@@ -24,6 +24,8 @@ mod sci;
 mod selection;
 mod sidebar_grip;
 mod snippet_ui;
+mod sort_spec;
+mod result_order;
 mod state;
 mod sublime;
 mod surface;

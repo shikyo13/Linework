@@ -100,7 +100,7 @@ unsafe extern "system" fn proc(h: HWND, m: u32, w: usize, l: isize) -> isize {
                 PostMessageW(h, FINISH, 1, 0);
                 0
             }
-            WM_COMMAND if w & 65535 == 500 && w >> 16 == EN_CHANGE as usize => {
+            WM_COMMAND if (w & 65535 == 500 || w & 65535 == 503) && w >> 16 == EN_CHANGE as usize => {
                 PostMessageW(h, FILTER_CHANGED, 0, 0);
                 0
             }
@@ -653,6 +653,99 @@ pub fn pick(owner: H, title: &str, choices: &[String], query: &str) -> Option<us
     } else {
         None
     };
+    destroy(h);
+    result
+}
+/// The "Sort lines by" dialog: a separator box, the fields of `line` to pick
+/// from (listed again as the separator changes), and the ordering options.
+pub fn sort_form(
+    owner: H,
+    line: &str,
+    separator: Option<u8>,
+    field: usize,
+) -> Option<Result<crate::sort_spec::SortSpec, String>> {
+    use crate::sort_spec::*;
+    let h = dialog(owner, "Sort lines by", 600, 520);
+    if h == 0 {
+        return None;
+    }
+    control(h, 0, "STATIC", "Separator (empty for blanks, \t for a tab)", 0, 18, 12, 560, 20);
+    let edit = control(
+        h,
+        503,
+        "EDIT",
+        &separator_text(separator),
+        WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL as u32,
+        18,
+        35,
+        150,
+        31,
+    );
+    control(h, 0, "STATIC", "Sort by (fields of the line at the cursor)", 0, 18, 78, 560, 20);
+    let list = control(
+        h,
+        501,
+        "LISTBOX",
+        "",
+        WS_VSCROLL
+            | WS_TABSTOP
+            | (LBS_OWNERDRAWFIXED | LBS_HASSTRINGS | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT) as u32,
+        14,
+        101,
+        570,
+        231,
+    );
+    msg(list, LB_SETITEMHEIGHT, 0, size(h, 33) as isize);
+    let labels = ["Ignore letter case", "Compare as numbers", "Reverse the order", "Keep one line per value"];
+    let mut checks = Vec::new();
+    for (i, label) in labels.iter().enumerate() {
+        checks.push(control(
+            h,
+            210 + i as i32,
+            "BUTTON",
+            label,
+            BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
+            18,
+            344 + i as i32 * 26,
+            560,
+            24,
+        ));
+    }
+    control(h, 1, "BUTTON", "Sort", BS_DEFPUSHBUTTON as u32 | WS_TABSTOP, 371, 456, 108, 30);
+    control(h, 2, "BUTTON", "Cancel", WS_TABSTOP, 487, 456, 97, 30);
+    let mut shown = None::<String>;
+    let mut count = 0usize;
+    let mut want = field;
+    let mut fill = || {
+        let typed = text(edit);
+        if shown.as_ref() == Some(&typed) {
+            return;
+        }
+        if shown.is_some() {
+            want = selected(list).unwrap_or(want);
+        }
+        let rows = field_labels(line, parse_separator(&typed).unwrap_or(None));
+        count = rows.len() - 1;
+        list_set(list, rows.iter().map(|s| s.as_str()), Some(want.min(count)));
+        shown = Some(typed);
+    };
+    fill();
+    let ok = run(owner, h, edit, list, fill);
+    let result = ok.then(|| {
+        let separator = parse_separator(&text(edit))?;
+        let fields = split(line, separator).len();
+        let field = selected(list).unwrap_or(0).min(fields);
+        let on = |i: usize| msg(checks[i], BM_GETCHECK, 0, 0) != 0;
+        Ok(SortSpec {
+            separator,
+            field,
+            to_end: field > 0 && field == fields,
+            fold: on(0),
+            numeric: on(1),
+            reverse: on(2),
+            unique: on(3),
+        })
+    });
     destroy(h);
     result
 }

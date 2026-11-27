@@ -185,6 +185,7 @@ pub const COMMANDS: &[Command] = cmds![
     ("outdent", "Outdent selection", "Edit", ""),
     ("sortlines", "Sort lines ascending", "Edit", ""),
     ("sortdesc", "Sort lines descending", "Edit", ""),
+    ("sortby", "Sort lines by field…", "Edit", ""),
     ("dedup", "Remove duplicate lines", "Edit", ""),
     ("trimlines", "Trim trailing spaces", "Edit", ""),
     (
@@ -230,7 +231,7 @@ pub const COMMANDS: &[Command] = cmds![
 /// The menu bar, left to right: each menu's commands in order, "-" for a separator.
 pub const MENUS: &[(&str, &[&str])] = &[
     ("File", &["new", "open", "folder", "-", "save", "saveas", "saveall", "-", "reload", "reopen", "-", "close", "-", "exit"]),
-    ("Edit", &["undo", "redo", "-", "cut", "copy", "paste", "-", "dup", "moveup", "movedown", "comment", "indent", "outdent", "-", "upper", "lower", "sortlines", "sortdesc", "dedup", "trimlines", "columnfill", "-", "complete", "snippets", "mdbold", "mditalic", "-", "spell", "correct"]),
+    ("Edit", &["undo", "redo", "-", "cut", "copy", "paste", "-", "dup", "moveup", "movedown", "comment", "indent", "outdent", "-", "upper", "lower", "sortlines", "sortdesc", "sortby", "dedup", "trimlines", "columnfill", "-", "complete", "snippets", "mdbold", "mditalic", "-", "spell", "correct"]),
     ("Selection", &["selall", "selnext", "selmatches", "selskipped", "undoselect", "-", "sellines", "caretup", "caretdown", "rectangle"]),
     ("Search", &["find", "replace", "findnext", "findprev", "replaceone", "replaceall", "findselection", "-", "findproject", "replaceproject", "findopen", "replaceopen", "-", "applypreview", "togglehit", "toggleall", "previewhit", "undofolder", "-", "markcolor", "clearmarks", "-", "findoptions"]),
     ("View", &["palette", "-", "sidebar", "minimap", "docpreview", "-", "split", "single", "splitbelow", "other", "openother", "syncscroll", "-", "nexttab", "prevtab", "-", "wrap", "whitespace", "currentline", "markmatches", "paragraphfocus", "follow", "-", "fold", "foldall", "unfold", "-", "zoom+", "zoom-", "zoom0", "-", "previewshow", "previewsync", "previewfollow", "previewsource"]),

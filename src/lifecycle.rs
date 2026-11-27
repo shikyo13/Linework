@@ -862,6 +862,7 @@ impl App {
                 selection: self.selection_search_active(),
             },
             summary: self.search_summary.clone(),
+            sorted: self.result_sort.order != crate::result_order::Order::File && !self.preview_mode,
             zeros: self.zeros_caption(),
         };
         let (tab_state_changed, frame_changed, preview_changed) = frame::FRAME.with_borrow(|old|
@@ -1607,6 +1608,7 @@ impl App {
             | Worker::Found(j, ..)
             | Worker::Replaced(j, ..)
             | Worker::Eol(j, ..)
+            | Worker::Sorted(j, ..)
             | Worker::Lines(j, ..) => Some(*j),
             _ => None,
         };
@@ -2011,6 +2013,9 @@ impl App {
             }
             Worker::Found(j, id, rev, r, replace) if self.current_job("find", j) => {
                 self.finish_find(j, id, rev, r, replace)
+            }
+            Worker::Sorted(j, id, rev, range, r) if self.current_job("sort", j) => {
+                self.finish_sort(id, rev, range, r)
             }
             Worker::Replaced(j, id, rev, r) if self.current_job("replace", j) => {
                 self.finish_replace(id, rev, r)

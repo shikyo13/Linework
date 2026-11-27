@@ -44,6 +44,8 @@ pub struct Frame {
     pub panel: PanelState,
     /// The last folder search's totals, and the lw command that finds the same lines.
     pub summary: String,
+    /// The results are shown in an order other than file order.
+    pub sorted: bool,
     /// The bar about a long run of zero bytes in the active pane, and whether its ends are known.
     pub zeros: Option<(String, bool)>,
 }
@@ -485,8 +487,9 @@ impl Shell<'_> {
         }
         let sy = panel_bottom(ps.more);
         s.fill(x - 2, sy - 4, avail + 4, 1, p.line);
-        s.small(x, sy, avail - 30, 26, &f.summary, p.dim);
+        s.small(x, sy, avail - 58, 26, &f.summary, p.dim);
         if !f.summary.is_empty() {
+            self.icon(x + avail - 54, sy, 26, 26, 0xE8CB, cmd("p:sort"), f.sorted, 12);
             self.icon(x + avail - 26, sy, 26, 26, 0xE8C8, cmd("p:copy"), false, 12);
         }
     }
