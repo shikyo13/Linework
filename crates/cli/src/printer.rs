@@ -368,7 +368,9 @@ impl Look {
             trim: s.trim,
             max_columns: s.max_columns,
             preview: s.max_columns_preview,
-            window: s.max_columns.is_none() && !s.whole_lines,
+            // Lines over 1,000 bytes show the part around the match when files are searched; piped input
+            // alone passes through whole, as a filter should (Zero: "Whole lines for piped input only").
+            window: s.max_columns.is_none() && !s.whole_lines && !stdin_only,
             vimgrep,
             heading: !vimgrep && s.heading.unwrap_or(console) && s.mode == Mode::Lines,
             paths: vimgrep || s.with_filename.unwrap_or(paths),

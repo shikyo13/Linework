@@ -1,8 +1,8 @@
 # Linework user guide
 
-This guide covers Linework 1.12.0 in full. For a quick tour with pictures, see the README in the project repository.
+This guide covers Linework 1.12.1 in full. For a quick tour with pictures, see the README in the project repository.
 
-Linework is a Windows x64 text editor for code, notes and multi-gigabyte text files. Run **Linework-Setup-1.12.0-x64.msi** to install it for your Windows account. The installer adds Linework to Start, Windows Default Apps and Explorer’s **Edit with Linework** menu. To change file associations, choose **Choose Linework file defaults** in Start. Files opened from Explorer join your existing Linework window. Use **Settings → Apps → Installed apps** to remove the installation. Your documents and editor preferences are stored separately.
+Linework is a Windows x64 text editor for code, notes and multi-gigabyte text files. Run **Linework-Setup-1.12.1-x64.msi** to install it for your Windows account. The installer adds Linework to Start, Windows Default Apps and Explorer’s **Edit with Linework** menu. To change file associations, choose **Choose Linework file defaults** in Start. Files opened from Explorer join your existing Linework window. Use **Settings → Apps → Installed apps** to remove the installation. Your documents and editor preferences are stored separately.
 
 For a portable copy, keep **Linework.exe** beside its **runtime** folder and launch it from there. Both editions accept files and folders dropped onto the window or passed on the command line.
 
@@ -147,7 +147,7 @@ Options in the file named by the `LW_CONFIG_PATH` environment variable, one per 
 - `--scope` groups lines under the functions, methods, classes or types around them, outermost first, found with the same Tree-sitter grammars as the editor's outline, or under the Markdown heading of their section; with `--json` it adds a `scope` object with `name`, `kind`, `line` and `end_line`, and under `within` the whole chain, outermost first, ending with that same innermost one. It parses every file with a match, so it costs more: 1.5 s instead of 0.11 s for 52,558 lines in 9,848 files.
 - Conditions, each of which may repeat: `--near PATTERN N` keeps a line only when PATTERN matches within N lines before or after it (`--near-before` and `--near-after` look one way), `--and PATTERN` keeps only files that also contain PATTERN, and `--not PATTERN` keeps only files that do not.
 - `--budget BYTES` stops printing at a line break once that much output is written, and says so.
-- A line over 1,000 bytes, such as minified code or a source map, is shown as about 800 bytes around its first match, with the number of bytes left out on each side (`omitted_before` and `omitted_after` in JSON). `-M`, `--max-columns` or `--whole-lines` change that.
+- In a search of files or folders, a line over 1,000 bytes, such as minified code or a source map, is shown as about 800 bytes around its first match (piped input alone is printed whole, as grep prints it, so a filter never changes the lines it passes on), with the number of bytes left out on each side (`omitted_before` and `omitted_after` in JSON). `-M`, `--max-columns` or `--whole-lines` change that.
 - Line numbers follow ripgrep: shown by default in a console when files are searched, not for piped input alone or when the output goes to a pipe, and always in `--json`; `-n` turns them on everywhere (put it in the configuration file to keep them), `-N` off. Piped text is searched as it arrives, so a running job's matches show while it runs. Paths use `/`; the files of a folder search are printed in path order, so the same search gives the same output each time.
 - A file is binary when its first 64 KiB holds a zero byte, and a later zero byte stops the search there with a warning, so the answer does not depend on how the file happened to be read.
 
