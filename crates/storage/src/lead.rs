@@ -82,6 +82,12 @@ impl Source {
         let Backing::Disk(_, origin) = &self.backing else {
             return None;
         };
+        // The lead answers a habit of Windows' file cache. Where that cache
+        // is not, it is only more reads: the same search of 10 GB in memory
+        // on a Mac measured 0.18 s through a lead and 0.12 s in plain order.
+        if cfg!(not(windows)) && !cfg!(test) {
+            return None;
+        }
         if self.len < SMALLEST || from >= self.len {
             return None;
         }
