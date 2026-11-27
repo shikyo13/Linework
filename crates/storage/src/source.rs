@@ -145,6 +145,19 @@ struct Page {
     data: Box<[u8]>,
     ends: std::sync::OnceLock<Vec<u32>>,
 }
+/// What reading from the original file, in place of its clone, goes by.
+#[cfg(target_os = "macos")]
+#[derive(Default)]
+struct Warm {
+    /// How many more times a read from the original may turn out to have
+    /// been for nothing before the clone is read for good. None at the start:
+    /// reading from the original begins when the snapshot is a clone.
+    left: std::sync::atomic::AtomicU32,
+    /// The original's size and date when it was last known to hold nothing
+    /// but the clone's text and what this document itself wrote into it.
+    known: Mutex<Option<super::Stamp>>,
+    view: std::sync::OnceLock<Option<crate::mac_save::View>>,
+}
 struct External {
     path: PathBuf,
     snapshot: std::sync::OnceLock<File>,
@@ -154,7 +167,7 @@ struct External {
     /// Whether text may be read from the original where its blocks show it
     /// to hold what the snapshot, a clone of it, holds.
     #[cfg(target_os = "macos")]
-    warm: std::sync::atomic::AtomicBool,
+    warm: Warm,
     copy_lock: Mutex<()>,
     #[cfg(windows)]
     lease: Mutex<Option<crate::write_lease::Lease>>,
@@ -332,26 +345,66 @@ impl Source {
     /// that file alone, so a clone of a file that is in memory is read from
     /// the drive. The original holds the clone's text wherever its blocks
     /// are still the clone's: any write to it, by anyone, moves the written
-    /// part to new blocks. Asked after the read, that settles what was read.
+    /// part to new blocks. Asked after the read, with what other programs
+    /// changed through memory maps written out first, that settles what was
+    /// read. It is only asked while the original's size and date are the
+    /// ones last known: a program writing to the file in the ordinary way
+    /// changes them, and beside such a program the system was found not to
+    /// write out every mapped change it is asked for.
     #[cfg(target_os = "macos")]
     fn read_warm(&self, original: &File, clone: &File, origin: u64, pos: u64, dst: &mut [u8]) -> bool {
-        // Asking costs three calls to the system, about as much as copying
+        // Asking costs a few calls to the system, about as much as copying
         // a hundred kilobytes that are in memory. A small read gains nothing
         // from it and is left to the clone, which holds what it has read.
         const WORTH_ASKING: usize = 256 * 1024;
         let Some(external) = &self.external else { return false };
-        if dst.len() < WORTH_ASKING || !external.warm.load(Ordering::Acquire) || self.private_origin() != origin {
+        let warm = &external.warm;
+        if dst.len() < WORTH_ASKING || warm.left.load(Ordering::Acquire) == 0 || self.private_origin() != origin {
             return false;
         }
+        let spend = |strikes: u32| {
+            let _ = warm.left.fetch_update(Ordering::AcqRel, Ordering::Acquire, |left| Some(left.saturating_sub(strikes)));
+        };
+        let Some(view) = warm.view.get_or_init(|| crate::mac_save::View::of(original)) else {
+            spend(u32::MAX);
+            return false;
+        };
         if read_at(original, origin + pos, dst).is_err() {
+            spend(1);
             return false;
         }
-        match crate::mac_save::same_blocks(original, clone, origin + pos, dst.len() as u64) {
-            Some(same) => same,
+        let began = std::time::Instant::now();
+        let same = crate::mac_save::same_blocks(original, view, clone, origin + pos, dst.len() as u64);
+        // Writing out a busy writer's changes at every read would cost more
+        // than the clone, and the other program too. That takes milliseconds;
+        // many threads asking at once take some hundreds of microseconds.
+        if began.elapsed() > std::time::Duration::from_millis(3) {
+            spend(8);
+        }
+        match same {
+            // A part this document or another program has written to.
+            Some(false) => false,
+            Some(true) => {
+                let unwritten = super::Stamp::from(original).ok() == *warm.known.lock().unwrap();
+                if !unwritten {
+                    spend(1);
+                }
+                unwritten
+            }
+            // A volume that will not say: no use asking again.
             None => {
-                // A volume that will not say: no use asking again.
-                external.warm.store(false, Ordering::Release);
+                spend(u32::MAX);
                 false
+            }
+        }
+    }
+    /// This document has written into the original itself, which now has
+    /// this size and date.
+    #[cfg(target_os = "macos")]
+    pub(crate) fn wrote_in_place(&self, now: &super::Stamp) {
+        if let Some(external) = &self.external {
+            if self.recorded.as_ref().is_some_and(|was| was.id == now.id && was.volume == now.volume) {
+                *external.warm.known.lock().unwrap() = Some(now.clone());
             }
         }
     }
@@ -499,7 +552,8 @@ impl Source {
                 return Err(super::conflict());
             }
             external.snapshot_origin.store(*origin, Ordering::Release);
-            external.warm.store(true, Ordering::Release);
+            *external.warm.known.lock().unwrap() = Some(expected.clone());
+            external.warm.left.store(64, Ordering::Release);
             let _ = external.snapshot.set(clone);
             return Ok(());
         }

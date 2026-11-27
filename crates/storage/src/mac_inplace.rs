@@ -492,6 +492,14 @@ impl Document {
                 }
             }
         };
+        // The pieces that read this file where it lies are told it was this
+        // document that wrote to it, and what it looks like now.
+        for root in [&self.saved, &self.root].into_iter().flatten() {
+            root.pieces(&mut |source, _, _| {
+                source.wrote_in_place(&next);
+                Ok(())
+            })?;
+        }
         self.stamp = Some(next);
         self.saved_disk_digest = None;
         self.saved = self.root.clone();

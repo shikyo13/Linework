@@ -68,7 +68,8 @@ fn placement_of(file: &File, from: u64, to: u64) -> Option<Vec<(u64, u64, u64)>>
         place: i64,
     }
     let mut runs: Vec<(u64, u64, u64)> = Vec::new();
-    // The system answers only for a place where a block begins.
+    // Asked from where a block begins: from a place inside one the system
+    // was seen to refuse.
     let mut at = from & !4095;
     while at < to {
         let mut run = Run { flags: 0, bytes: (to - at) as i64, place: at as i64 };
@@ -89,15 +90,49 @@ fn placement_of(file: &File, from: u64, to: u64) -> Option<Vec<(u64, u64, u64)>>
     Some(runs)
 }
 
+/// A read-only view of a whole file, never read through. It is there to
+/// have the system write out, for a part of the file, what other programs
+/// changed through views of their own: such a change is seen by every read
+/// at once but is in no block until it is written out. `fsync` is meant to
+/// do that for the whole file and was found to leave such a page behind
+/// while another program was writing elsewhere in the file; asked for the
+/// part itself, through a view, the system wrote it.
+pub(crate) struct View {
+    at: *mut libc::c_void,
+    length: usize,
+}
+unsafe impl Send for View {}
+unsafe impl Sync for View {}
+
+impl View {
+    pub(crate) fn of(file: &File) -> Option<Self> {
+        let length = usize::try_from(file.metadata().ok()?.len()).ok().filter(|length| *length != 0)?;
+        let at = unsafe { libc::mmap(std::ptr::null_mut(), length, libc::PROT_READ, libc::MAP_SHARED, file.as_raw_fd(), 0) };
+        (at != libc::MAP_FAILED).then_some(Self { at, length })
+    }
+
+    fn write_out(&self, from: u64, length: u64) -> bool {
+        // Whole pages, of the largest size the system uses.
+        const PAGE: u64 = 16 * 1024;
+        let start = from & !(PAGE - 1);
+        let end = (from + length).next_multiple_of(PAGE).min(self.length as u64);
+        start < end && unsafe { libc::msync(self.at.add(start as usize), (end - start) as usize, libc::MS_SYNC) } == 0
+    }
+}
+
+impl Drop for View {
+    fn drop(&mut self) {
+        unsafe { libc::munmap(self.at, self.length) };
+    }
+}
+
 /// Whether `length` bytes of `file` from `at` on are in the blocks its clone
 /// has them in, and so hold what the clone holds there. What the system has
 /// of a file in memory is kept for that file alone: a clone of a file that
 /// is in memory is read from the drive. So text is read from the file it was
 /// cloned from, which is in memory, and this is asked of what was read.
-pub(crate) fn same_blocks(file: &File, clone: &File, at: u64, length: u64) -> Option<bool> {
-    // What another program changed through a memory map is seen by a read
-    // at once, but is in no block until it is pushed out.
-    if unsafe { libc::fsync(file.as_raw_fd()) } != 0 {
+pub(crate) fn same_blocks(file: &File, view: &View, clone: &File, at: u64, length: u64) -> Option<bool> {
+    if !view.write_out(at, length) || unsafe { libc::fsync(file.as_raw_fd()) } != 0 {
         return None;
     }
     Some(placement_of(file, at, at + length)? == placement_of(clone, at, at + length)?)
