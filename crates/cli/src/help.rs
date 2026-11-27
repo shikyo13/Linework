@@ -407,6 +407,8 @@ thread and written in order.
   -o FILE       write to FILE instead of the output (faster than a
                 redirection for many gigabytes; a failed run leaves no FILE)
   -j N          threads (default: every processor)
+  --decode-hex  print $HEX[...], hashcat's form for a password it cannot
+                print, as the bytes it stands for
 
 LIST is positions and ranges from 1, separated by commas: 3, 1-4, 7-
 (to the end), -2 (from the start). They are printed in the line's order.
@@ -470,6 +472,9 @@ WHERE AND HOW MUCH
   -z            lines end with a zero byte
   --files0-from=F   the input names, separated by zero bytes, from F
   --random-source=F   the seed for -R from F
+  --decode-hex  compare keys with $HEX[...] (hashcat's form for a password it
+                cannot print) decoded to its bytes; lines are written as they
+                are, so the file stays as hashcat reads it
 
 Not provided: --debug and --compress-program.
 
@@ -751,6 +756,12 @@ input alone is printed whole, so lw filters a pipe without changing its lines):
 --whole-lines prints it whole. -M NUM instead replaces lines over NUM bytes
 with [Omitted long matching line] (as ripgrep), and with --max-columns-preview
 shows their first NUM characters.
+
+HASHCAT'S $HEX[...]
+hashcat writes a password it cannot print plainly as $HEX[...], its bytes in
+hexadecimal. --decode-hex prints each one as those bytes (lw find, lw lines
+and lw cut; not with --json). The search itself still matches the text as it
+is in the file.
 
 JSON
 --json prints one object per line:

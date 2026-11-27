@@ -139,6 +139,8 @@ pub struct Order {
     pub plain: bool,
     /// Salt for -R, so its order changes from run to run.
     pub salt: (u64, u64),
+    /// --decode-hex: keys are compared with $HEX[...] decoded.
+    pub decode_hex: bool,
 }
 
 fn blank(b: u8) -> bool {
@@ -157,7 +159,17 @@ impl Order {
             keys.push(Key { start_field: 0, start_char: 0, end_field: None, end_char: 0, opts: global });
         }
         let plain = keys.is_empty() || (keys.len() == 1 && keys[0].start_field == 0 && keys[0].start_char == 0 && keys[0].end_field.is_none() && keys[0].opts.plain());
-        Self { keys, global, tab, stable, unique, plain, salt }
+        Self { keys, global, tab, stable, unique, plain, salt, decode_hex: false }
+    }
+
+    /// Compare keys with hashcat's $HEX[...] decoded to the bytes it stands
+    /// for (lines are written as they are). The whole line is then a key.
+    pub fn decode_hex(&mut self) {
+        if self.keys.is_empty() {
+            self.keys.push(Key { start_field: 0, start_char: 0, end_field: None, end_char: 0, opts: self.global });
+        }
+        self.plain = false;
+        self.decode_hex = true;
     }
 
     pub fn reversed(&self) -> bool {
@@ -194,7 +206,11 @@ impl Order {
         for key in &self.keys {
             let ka = self.key_text(a, key);
             let kb = self.key_text(b, key);
-            let o = compare_key(ka, kb, &key.opts, self.salt);
+            let o = if self.decode_hex {
+                compare_key(&linework_search::hexcode::decode(ka), &linework_search::hexcode::decode(kb), &key.opts, self.salt)
+            } else {
+                compare_key(ka, kb, &key.opts, self.salt)
+            };
             if o != Ordering::Equal {
                 return if key.opts.reverse { o.reverse() } else { o };
             }

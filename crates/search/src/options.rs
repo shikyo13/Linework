@@ -176,6 +176,7 @@ pub const SPECS: &[Spec] = &[
     spec("max-columns-preview", None, Nothing, Output, "with -M, show the start of a long line instead"),
     spec("no-max-columns-preview", None, Nothing, Output, "undo --max-columns-preview"),
     spec("whole-lines", None, Nothing, Output, "show lines over 1,000 bytes whole, not just the part around the match"),
+    spec("decode-hex", None, Nothing, Output, "print $HEX[...], hashcat's form for a password it cannot print, as the bytes it stands for"),
     spec("vimgrep", None, Nothing, Output, "every match on its own line as path:line:column:text"),
     spec("heading", None, Nothing, Output, "each file's name once, above its lines"),
     spec("no-heading", None, Nothing, Output, "the file's name on every line"),

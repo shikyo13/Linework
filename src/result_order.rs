@@ -81,9 +81,17 @@ fn key<'a>(item: &Item<'a>, sort: &ResultSort) -> &'a str {
     let at = |r: Option<(usize, usize)>| r.filter(|r| r.1 <= item.text.len() && item.text.is_char_boundary(r.0) && item.text.is_char_boundary(r.1));
     match sort.order {
         Order::Matched => at(first).map_or(item.text, |r| &item.text[r.0..r.1]),
-        // Most frequent counts lines alike from the match on, so many hashes
-        // cracked to one password become one row.
-        Order::FromMatch | Order::Frequent => at(first).map_or(item.text, |r| &item.text[r.0..]),
+        Order::FromMatch => at(first).map_or(item.text, |r| &item.text[r.0..]),
+        // Most frequent counts by the field holding the match, from the
+        // separator before it to the end of the line: many hashes cracked to
+        // one password become one row, and mrcandycane7 stays apart from
+        // candycane7.
+        Order::Frequent => at(first).map_or(item.text, |r| {
+            let start = item.text[..r.0]
+                .rfind([':', char::from(9), ',', ';', '|', ' '])
+                .map_or(0, |p| p + 1);
+            &item.text[start..]
+        }),
         Order::Field => {
             let s = &sort.spec;
             if s.field == 0 {
@@ -110,7 +118,18 @@ pub fn arrange(items: &[Item<'_>], sort: &ResultSort) -> Vec<(usize, usize)> {
     if sort.order == Order::File {
         return (0..items.len()).map(|i| (i, 1)).collect();
     }
-    let keys: Vec<String> = items.iter().map(|it| folded(key(it, sort), spec.fold)).collect();
+    let keys: Vec<String> = items
+        .iter()
+        .map(|it| {
+            let k = key(it, sort);
+            let k = if spec.decode_hex {
+                String::from_utf8_lossy(&linework_search::hexcode::decode(k.as_bytes())).into_owned()
+            } else {
+                k.to_owned()
+            };
+            folded(&k, spec.fold)
+        })
+        .collect();
     let collapse = sort.order == Order::Frequent || spec.unique;
     let mut rows: Vec<(usize, usize)> = if collapse {
         let mut first: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
@@ -170,9 +189,11 @@ mod tests {
         sort.spec.fold = true;
         assert_eq!(texts(&lines, &sort)[0], "ad:mrcandycane1");
         sort = ResultSort { order: Order::Frequent, ..Default::default() };
-        // Different hashes, one password: one row, counted from the match on.
+        // Different hashes, one password: one row, counted by the field.
         assert_eq!(texts(&lines, &sort)[0], "8d:candycanees x3");
         assert_eq!(texts(&lines, &sort).len(), 4);
+        let near = [("a1:candycane7", vec![(3, 12)]), ("a2:mrcandycane7", vec![(5, 14)]), ("a3:candycane7", vec![(3, 12)])];
+        assert_eq!(texts(&near, &sort), ["a1:candycane7 x2", "a2:mrcandycane7"]);
         sort = ResultSort { order: Order::Length, ..Default::default() };
         assert_eq!(texts(&lines, &sort)[0], "e9:Candycane7");
         sort.spec.reverse = true;
@@ -185,6 +206,11 @@ mod tests {
         assert_eq!(texts(&lines, &sort)[0], "2b:CANDYCANES03");
         sort.spec.unique = true;
         assert_eq!(texts(&lines, &sort).len(), 5);
+        let hexes = [("h1:$HEX[7a6170]", vec![(3, 15)]), ("h2:yes", vec![(3, 6)])];
+        sort = ResultSort { order: Order::FromMatch, ..Default::default() };
+        assert_eq!(texts(&hexes, &sort)[0], "h1:$HEX[7a6170]");
+        sort.spec.decode_hex = true;
+        assert_eq!(texts(&hexes, &sort)[0], "h2:yes");
         let nums = [("a:10", vec![]), ("a:9", vec![]), ("a:-1", vec![])];
         sort = ResultSort {
             order: Order::Field,

@@ -93,7 +93,8 @@ impl App {
         let host = self.h;
         let span = range.clone();
         std::thread::spawn(move || {
-            let r = sort_with_lw(doc, span.clone(), &args, unique, &cancel)
+            let r = beside_linework()
+                .and_then(|lw| sort_with_lw(&lw, doc, span.clone(), &args, unique, &cancel))
                 .map(|(doc, n)| (doc, n, layout));
             let r = if cancel.load(Ordering::Relaxed) { Err("Sort canceled".into()) } else { r };
             let _ = tx.send(Worker::Sorted(job, id, rev, span, r));
@@ -166,21 +167,25 @@ impl Drop for Cleanup {
     }
 }
 
+/// The lw.exe shipped beside Linework.
+fn beside_linework() -> Result<PathBuf, String> {
+    let lw = std::env::current_exe().map_err(|e| e.to_string())?.with_file_name("lw.exe");
+    if !lw.is_file() {
+        return Err(format!("Sorting this needs lw.exe beside Linework ({})", lw.display()));
+    }
+    Ok(lw)
+}
+
 /// Sort the lines of `range` of `doc` with `lw sort ARGS`, and return the
 /// document with that range replaced (one undo step) and the new range length.
 pub(super) fn sort_with_lw(
+    lw: &Path,
     mut doc: Document,
     range: Range<u64>,
     args: &[String],
     unique: bool,
     cancel: &AtomicBool,
 ) -> Result<(Document, u64), String> {
-    let lw = std::env::current_exe()
-        .map_err(|e| e.to_string())?
-        .with_file_name("lw.exe");
-    if !lw.is_file() {
-        return Err(format!("Sorting this needs lw.exe beside Linework ({})", lw.display()));
-    }
     let len = range.end - range.start;
     if len == 0 {
         return Err("There are no lines to sort".into());
@@ -253,7 +258,7 @@ pub(super) fn sort_with_lw(
     let mut cleanup = Cleanup(Some(out.clone()));
     use std::os::windows::process::CommandExt;
     use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
-    let mut child = Command::new(&lw)
+    let mut child = Command::new(lw)
         .arg("sort")
         .args(args)
         .arg("-o")
@@ -330,35 +335,27 @@ pub(super) fn sort_with_lw(
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn lw_beside_tests() -> bool {
-        std::env::current_exe().is_ok_and(|p| {
-            p.parent().and_then(|d| d.parent()).is_some_and(|d| d.join("lw.exe").is_file())
-        })
-    }
     #[test]
     fn a_range_sorts_by_its_second_field_through_lw_and_undoes() -> Result<(), String> {
-        // Test binaries live in target/<profile>/deps; lw.exe sits one level up.
-        if !lw_beside_tests() {
+        // Test binaries live in target/<profile>/deps; lw.exe is built one level up.
+        let exe = std::env::current_exe().unwrap();
+        let lw = exe.parent().unwrap().parent().unwrap().join("lw.exe");
+        if !lw.is_file() {
             eprintln!("lw.exe not built beside the tests; skipped");
             return Ok(());
         }
-        let exe = std::env::current_exe().unwrap();
-        let lw = exe.parent().unwrap().parent().unwrap().join("lw.exe");
-        let here = exe.with_file_name("lw.exe");
-        fs::copy(&lw, &here).map_err(|e| e.to_string())?;
         let mut d = Document::empty();
         d.replace(0, 0, b"keep\nh3:b:c\nh1:a\nh2:B\nend").map_err(|e| e.to_string())?;
         let spec = SortSpec { separator: Some(b':'), field: 2, to_end: true, ..Default::default() };
         let cancel = AtomicBool::new(false);
-        let (mut sorted, n) = sort_with_lw(d.clone(), 5..22, &sort_spec::lw_args(&spec), false, &cancel)?;
+        let (mut sorted, n) = sort_with_lw(&lw, d.clone(), 5..22, &sort_spec::lw_args(&spec), false, &cancel)?;
         assert_eq!(n, 17);
         assert_eq!(sorted.read(0, 99).unwrap(), b"keep\nh2:B\nh1:a\nh3:b:c\nend");
         // Without a final newline, the last line stays without one.
-        let (tail, _) = sort_with_lw(d.clone(), 17..25, &[], false, &cancel)?;
+        let (tail, _) = sort_with_lw(&lw, d.clone(), 17..25, &[], false, &cancel)?;
         assert_eq!(tail.read(0, 99).unwrap(), b"keep\nh3:b:c\nh1:a\nend\nh2:B");
         assert!(sorted.undo());
         assert_eq!(sorted.read(0, 99).unwrap(), d.read(0, 99).unwrap());
-        let _ = fs::remove_file(here);
         Ok(())
     }
 }

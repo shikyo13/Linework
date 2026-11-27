@@ -45,6 +45,7 @@ pub const SPECS: &[Spec] = &[
     flag(Some('u'), "unique"),
     flag(Some('z'), "zero-terminated"),
     valued(Some('j'), "threads"),
+    flag(None, "decode-hex"),
 ];
 
 /// One line of a part in memory: the first 8 bytes for quick comparison, then where it is.
@@ -165,7 +166,10 @@ pub fn run(args: &[String], stdout: &mut dyn Write) -> Result<i32, String> {
         }
     };
     let unique = g.has("unique");
-    let order = Order::new(keys, global, tab, g.has("stable"), unique, salt);
+    let mut order = Order::new(keys, global, tab, g.has("stable"), unique, salt);
+    if g.has("decode-hex") {
+        order.decode_hex();
+    }
     let end = if g.has("zero-terminated") { 0 } else { b'\n' };
     let threads = gnu_args::threads(&g)?;
     let budget = match g.last("buffer-size") {

@@ -94,7 +94,7 @@ fn run() -> Result<i32, String> {
 }
 
 /// Runs one lw command, given as its words after `lw`, writing its output to `out`.
-fn execute(argv: Vec<String>, mut out: &mut dyn Write) -> Result<i32, String> {
+fn execute(argv: Vec<String>, out: &mut dyn Write) -> Result<i32, String> {
     let began = std::time::Instant::now();
     let io = |e: io::Error| e.to_string();
     // Help: lw, lw help [NAME | --markdown], lw COMMAND --help, lw -h.
@@ -133,6 +133,17 @@ fn execute(argv: Vec<String>, mut out: &mut dyn Write) -> Result<i32, String> {
         out.write_all(generate::generate(kind).as_bytes()).map_err(io)?;
         return Ok(0);
     }
+    // --decode-hex rewrites the lines printed, which JSON would carry escaped.
+    let mut decoder;
+    let mut out: &mut dyn Write = if s.decode_hex {
+        if s.json {
+            return Err("--decode-hex prints plain lines; leave out --json".into());
+        }
+        decoder = hexcode::Decoder::new(out);
+        &mut decoder
+    } else {
+        out
+    };
     // Set for every command, since a server runs many in one process.
     linework_search::sweep::set_clipping(!s.whole_lines);
     let profile = profile();
@@ -622,6 +633,7 @@ mod cut;
 mod generate;
 mod gnu_args;
 mod help;
+mod hexcode;
 mod look;
 mod marks;
 mod printer;

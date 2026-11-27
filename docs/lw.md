@@ -505,6 +505,8 @@ thread and written in order.
   -o FILE       write to FILE instead of the output (faster than a
                 redirection for many gigabytes; a failed run leaves no FILE)
   -j N          threads (default: every processor)
+  --decode-hex  print $HEX[...], hashcat's form for a password it cannot
+                print, as the bytes it stands for
 
 LIST is positions and ranges from 1, separated by commas: 3, 1-4, 7-
 (to the end), -2 (from the start). They are printed in the line's order.
@@ -574,6 +576,9 @@ WHERE AND HOW MUCH
   -z            lines end with a zero byte
   --files0-from=F   the input names, separated by zero bytes, from F
   --random-source=F   the seed for -R from F
+  --decode-hex  compare keys with $HEX[...] (hashcat's form for a password it
+                cannot print) decoded to its bytes; lines are written as they
+                are, so the file stays as hashcat reads it
 
 Not provided: --debug and --compress-program.
 
@@ -643,7 +648,10 @@ To add it to Codex, in ~/.codex/config.toml:
 
 Tool results are capped at 100,000 bytes unless a call asks for another
 budget, so a broad search cannot flood an agent's context; the summary says
-when output was cut.
+when output was cut. find and count take an output file instead: the lines
+go there as the command line prints them (plain, not JSON, no budget), with
+line_numbers (-n) and no_filename (-I) to shape them, and the reply says only
+how many lines and bytes were written.
 
 split, cut, sort and look are tools too, with their options as named fields
 (sort's -k is keys, -u is unique, -o is output). Through the server they read
@@ -900,6 +908,12 @@ input alone is printed whole, so lw filters a pipe without changing its lines):
 with [Omitted long matching line] (as ripgrep), and with --max-columns-preview
 shows their first NUM characters.
 
+HASHCAT'S $HEX[...]
+hashcat writes a password it cannot print plainly as $HEX[...], its bytes in
+hexadecimal. --decode-hex prints each one as those bytes (lw find, lw lines
+and lw cut; not with --json). The search itself still matches the text as it
+is in the file.
+
 JSON
 --json prints one object per line:
   {"path": "src/server.rs", "line": 52, "column": 9, "byte": 1834,
@@ -1155,6 +1169,7 @@ HOW MATCHES ARE SHOWN
   --max-columns-preview       with -M, show the start of a long line instead
   --no-max-columns-preview    undo --max-columns-preview
   --whole-lines               show lines over 1,000 bytes whole, not just the part around the match
+  --decode-hex                print $HEX[...], hashcat's form for a password it cannot print, as the bytes it stands for
   --vimgrep                   every match on its own line as path:line:column:text
   --heading                   each file's name once, above its lines
   --no-heading                the file's name on every line

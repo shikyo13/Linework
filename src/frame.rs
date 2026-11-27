@@ -84,7 +84,7 @@ pub enum Rich {
     /// A line: its number, its text, its matches as byte ranges, whether it
     /// is context, the replacements of its matches when previewing, and
     /// whether its replacements are checked.
-    Line { number: u64, text: String, ranges: Vec<(usize, usize)>, context: bool, replaced: Option<Vec<String>>, checked: Option<bool> },
+    Line { number: u64, text: String, ranges: Vec<(usize, usize)>, context: bool, replaced: Option<Vec<String>>, checked: Option<bool>, lead: String },
     /// Between lines that are not next to each other.
     Break,
     Note(String),
@@ -877,13 +877,19 @@ fn rich_row(s: &Surface, f: &Frame, row: &Rich, selected: bool, bounds: [i32; 4]
             s.glyph(x + 10, y, 18, ht, 0xE943, p.accent, 10);
             s.text(x + 30, y, w - 34, ht, chain, p.dim, 11, 500, 0);
         }
-        Rich::Line { number, text, ranges, context, replaced, checked } => {
+        Rich::Line { number, text, ranges, context, replaced, checked, lead } => {
             let gutter = 44;
             s.draw_text(x + 2, y, gutter - 10, ht, &number.to_string(), p.dim, 11, 400, true, DT_RIGHT);
             let mut tx = x + gutter;
             if let Some(on) = checked {
                 s.text(tx, y, 18, ht, if *on { "☑" } else { "☐" }, if *on { p.accent } else { p.dim }, 13, 400, 0);
                 tx += 20;
+            }
+            // A sorted row's count and file name come first and are never cut.
+            if !lead.is_empty() {
+                let lead_w = s.measure(lead, 11, 600, true).min((w - gutter) / 2);
+                s.draw_text(tx, y, lead_w + 2, ht, lead, p.accent, 11, 600, true, 0);
+                tx += lead_w + 8;
             }
             let limit = x + w - 4;
             // Tabs and stray carriage returns show as spaces: one byte each, so the match ranges still hold.

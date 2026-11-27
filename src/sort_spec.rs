@@ -18,6 +18,8 @@ pub struct SortSpec {
     pub numeric: bool,
     pub reverse: bool,
     pub unique: bool,
+    /// Compare with hashcat's $HEX[...] decoded to the bytes it stands for.
+    pub decode_hex: bool,
 }
 
 /// Read what was typed in the separator box: empty means blanks, `\t` or
@@ -140,6 +142,9 @@ pub fn lw_args(spec: &SortSpec) -> Vec<String> {
     if spec.unique {
         args.push("-u".into());
     }
+    if spec.decode_hex {
+        args.push("--decode-hex".into());
+    }
     args
 }
 
@@ -173,6 +178,8 @@ mod tests {
         assert_eq!(lw_args(&spec), ["-f", "-r"]);
         let spec = SortSpec { field: 2, ..Default::default() };
         assert_eq!(lw_args(&spec), ["-k", "2b,2b"]);
+        let spec = SortSpec { separator: Some(b':'), field: 2, to_end: true, decode_hex: true, ..Default::default() };
+        assert_eq!(lw_args(&spec), ["-t", ":", "-k", "2", "--decode-hex"]);
         assert_eq!(parse_separator("\\t"), Ok(Some(b'\t')));
         assert_eq!(parse_separator(""), Ok(None));
         assert!(parse_separator("::").is_err());

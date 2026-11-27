@@ -100,6 +100,7 @@ const OUTPUT: Field = field("output", Kind::Text, "-o", false, "Write the result
 /// find and count write to a file through the server (see `call`): the
 /// lines as the command line prints them, with no budget.
 const SINK: Field = field("output", Kind::Text, "", false, "Write the results to this file instead of returning them, as the command line prints them (plain lines, not JSON, no budget); the reply says only how much was written");
+const DECODE_HEX: Field = field("decode_hex", Kind::Flag, "--decode-hex", false, "Print $HEX[...], hashcat's form for a password it cannot print, as the bytes it stands for (find: with output only)");
 const LINE_NUMBERS: Field = field("line_numbers", Kind::Flag, "-n", false, "With output: put each line's number before it");
 const NO_NAMES: Field = field("no_filename", Kind::Flag, "-I", false, "With output: leave out file names, which a folder search otherwise puts before each line");
 /// The commands that take GNU's options. None may read standard input here,
@@ -120,7 +121,7 @@ const TOOLS: &[Tool] = &[
         fields: &[
             PATTERN, PATH, PATTERNS, IGNORE_CASE, SMART, FIXED, WORD, LINE, INVERT, MULTILINE, PCRE2, CONTEXT, BEFORE, AFTER, ONLY, MAX_LINES, SCOPE,
             NAMES_ONLY, WITHOUT, GLOB, TYPE, TYPE_NOT, NEAR, NEAR_BEFORE, NEAR_AFTER, AND, NOT, CHANGED, MARK, SINCE, UNTIL, HIDDEN, NO_IGNORE, FOLLOW,
-            DEPTH, MAX_SIZE, ENCODING, ZIP, SORT, WHOLE_LINES, BUDGET_FIELD, SINK, LINE_NUMBERS, NO_NAMES,
+            DEPTH, MAX_SIZE, ENCODING, ZIP, SORT, WHOLE_LINES, BUDGET_FIELD, SINK, LINE_NUMBERS, NO_NAMES, DECODE_HEX,
         ],
     },
     Tool {
@@ -140,6 +141,7 @@ const TOOLS: &[Tool] = &[
             field("to", Kind::PlaceNumber, "", false, "The last line; defaults to from"),
             SINCE,
             UNTIL,
+            DECODE_HEX,
             BUDGET_FIELD,
         ],
     },
@@ -217,6 +219,7 @@ const TOOLS: &[Tool] = &[
             ZERO,
             OUTPUT,
             THREADS,
+            field("decode_hex", Kind::Flag, "--decode-hex", false, "Print $HEX[...], hashcat's form for a password it cannot print, as the bytes it stands for"),
             FILE_BUDGET,
         ],
     },
@@ -246,6 +249,7 @@ const TOOLS: &[Tool] = &[
             field("output", Kind::Text, "-o", false, "Write the sorted lines to this file, which may be one of the inputs (replaced only when the sort succeeds)"),
             field("buffer_size", Kind::Text, "-S", false, "Memory to use: KiB, or with b, K, M, G, T or % (default half the memory available)"),
             field("temporary_directory", Kind::Texts, "-T", false, "Folders for temporary files (default the Windows temporary folder)"),
+            field("decode_hex", Kind::Flag, "--decode-hex", false, "Compare keys with $HEX[...] (hashcat's form for a password it cannot print) decoded to its bytes; lines are written as they are"),
             ZERO,
             THREADS,
             FILE_BUDGET,
@@ -430,6 +434,9 @@ fn call(name: &str, arguments: &Map<String, Value>) -> (String, bool) {
         if name == "look" && arguments.get("string").is_none() && arguments.get("keys").is_none() {
             return ("look needs a string or keys".into(), true);
         }
+    }
+    if name == "find" && arguments.get("decode_hex") == Some(&Value::Bool(true)) && arguments.get("output").is_none_or(Value::is_null) {
+        return ("decode_hex writes plain lines, so find needs an output file with it".into(), true);
     }
     if !file_tool {
         if let Some(path) = arguments.get("output").filter(|v| !v.is_null()) {

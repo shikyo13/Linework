@@ -16,6 +16,7 @@ pub const SPECS: &[Spec] = &[
     flag(Some('n'), "no-split-multibyte"),
     valued(Some('o'), "output"),
     valued(Some('j'), "threads"),
+    flag(None, "decode-hex"),
 ];
 
 /// Which positions (fields or bytes, from 1) are kept.
@@ -244,26 +245,39 @@ pub fn run(args: &[String], stdout: &mut dyn Write) -> Result<i32, String> {
         None => None,
     };
     let to_file = output.is_some();
-    let out: &mut dyn Write = match output.as_mut() {
-        Some(o) => o,
-        None => stdout,
-    };
-    let mut failed = false;
-    for input in &inputs {
-        let result = if input == "-" { piped(io::stdin().lock(), &cutter, out) } else { from_file(input, &cutter, threads, out) };
-        if let Err(e) = result {
-            if e.kind() == io::ErrorKind::BrokenPipe {
-                return Ok(0);
-            }
-            crate::note(format!("lw: {input}: {e}"));
-            failed = true;
-            if to_file {
-                // A partial output file is not left behind.
-                return Ok(2);
+    let decode = g.has("decode-hex");
+    // The decoder writes what is left of a last line when dropped, before the
+    // output file is finished.
+    let failed = {
+        let raw: &mut dyn Write = match output.as_mut() {
+            Some(o) => o,
+            None => stdout,
+        };
+        let mut decoder;
+        let out: &mut dyn Write = if decode {
+            decoder = crate::hexcode::Decoder::new(raw);
+            &mut decoder
+        } else {
+            raw
+        };
+        let mut failed = false;
+        for input in &inputs {
+            let result = if input == "-" { piped(io::stdin().lock(), &cutter, out) } else { from_file(input, &cutter, threads, out) };
+            if let Err(e) = result {
+                if e.kind() == io::ErrorKind::BrokenPipe {
+                    return Ok(0);
+                }
+                crate::note(format!("lw: {input}: {e}"));
+                failed = true;
+                if to_file {
+                    // A partial output file is not left behind.
+                    return Ok(2);
+                }
             }
         }
-    }
-    out.flush().map_err(io)?;
+        out.flush().map_err(io)?;
+        failed
+    };
     if let Some(o) = output {
         o.finish().map_err(io)?;
     }

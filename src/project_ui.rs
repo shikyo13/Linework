@@ -304,6 +304,7 @@ impl App {
                             context: kind == LineKind::Context,
                             replaced,
                             checked,
+                            lead: String::new(),
                         });
                         hits_of.push(line.hits.clone());
                     }
@@ -349,23 +350,26 @@ impl App {
         let mut hits_of = Vec::with_capacity(order.len());
         for (index, count) in order {
             let (g, line) = lines[index];
-            let mut prefix = String::new();
+            let mut lead = String::new();
             if count > 1 {
-                prefix.push_str(&format!("×{count}  "));
+                lead.push_str(&format!("×{count}"));
             }
             if multi {
-                prefix.push_str(&names[g]);
-                prefix.push_str("  ");
+                if !lead.is_empty() {
+                    lead.push_str("  ");
+                }
+                lead.push_str(&names[g]);
             }
-            let text = format!("{prefix}{}", line.text);
-            rows.push(Row { label: format!("{}: {}", line.line, text.trim()), target: Target::Hit(line.hits.start) });
+            let spoken = if lead.is_empty() { String::new() } else { format!("{lead}  ") };
+            rows.push(Row { label: format!("{}: {spoken}{}", line.line, line.text.trim()), target: Target::Hit(line.hits.start) });
             rich.push(Rich::Line {
                 number: line.line,
-                text,
-                ranges: line.ranges.iter().map(|(a, b)| (a + prefix.len(), b + prefix.len())).collect(),
+                text: line.text.clone(),
+                ranges: line.ranges.clone(),
                 context: false,
                 replaced: None,
                 checked: None,
+                lead,
             });
             hits_of.push(line.hits.clone());
         }
@@ -383,7 +387,11 @@ impl App {
         let (_, rich, _) = self.sorted_rows_with(report, &sort);
         let mut out = String::new();
         for row in rich {
-            if let Rich::Line { text, .. } = row {
+            if let Rich::Line { text, lead, .. } = row {
+                if !lead.is_empty() {
+                    out.push_str(&lead);
+                    out.push_str("  ");
+                }
                 out.push_str(&text);
                 out.push(char::from(10));
             }
@@ -415,6 +423,7 @@ impl App {
             .collect();
         items.push(PopupItem { id: 20, label: "Ignore letter case", shortcut: String::new(), checked: sort.spec.fold });
         items.push(PopupItem { id: 21, label: "Reverse the order", shortcut: String::new(), checked: sort.spec.reverse });
+        items.push(PopupItem { id: 22, label: "Decode $HEX[...] (hashcat)", shortcut: String::new(), checked: sort.spec.decode_hex });
         let mut pt = windows_sys::Win32::Foundation::POINT { x: 0, y: 0 };
         unsafe {
             windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos(&mut pt);
@@ -424,6 +433,7 @@ impl App {
             0 => return,
             20 => self.result_sort.spec.fold = !self.result_sort.spec.fold,
             21 => self.result_sort.spec.reverse = !self.result_sort.spec.reverse,
+            22 => self.result_sort.spec.decode_hex = !self.result_sort.spec.decode_hex,
             n => {
                 let order = Order::ALL[(n as usize - 1).min(Order::ALL.len() - 1)];
                 if order == Order::Field {

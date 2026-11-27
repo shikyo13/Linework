@@ -665,7 +665,7 @@ pub fn sort_form(
     field: usize,
 ) -> Option<Result<crate::sort_spec::SortSpec, String>> {
     use crate::sort_spec::*;
-    let h = dialog(owner, "Sort lines by", 600, 520);
+    let h = dialog(owner, "Sort lines by", 600, 546);
     if h == 0 {
         return None;
     }
@@ -696,7 +696,13 @@ pub fn sort_form(
         231,
     );
     msg(list, LB_SETITEMHEIGHT, 0, size(h, 33) as isize);
-    let labels = ["Ignore letter case", "Compare as numbers", "Reverse the order", "Keep one line per value"];
+    let labels = [
+        "Ignore letter case",
+        "Compare as numbers",
+        "Reverse the order",
+        "Keep one line per value",
+        "Decode $HEX[...] (hashcat) before comparing",
+    ];
     let mut checks = Vec::new();
     for (i, label) in labels.iter().enumerate() {
         checks.push(control(
@@ -711,8 +717,8 @@ pub fn sort_form(
             24,
         ));
     }
-    control(h, 1, "BUTTON", "Sort", BS_DEFPUSHBUTTON as u32 | WS_TABSTOP, 371, 456, 108, 30);
-    control(h, 2, "BUTTON", "Cancel", WS_TABSTOP, 487, 456, 97, 30);
+    control(h, 1, "BUTTON", "Sort", BS_DEFPUSHBUTTON as u32 | WS_TABSTOP, 371, 482, 108, 30);
+    control(h, 2, "BUTTON", "Cancel", WS_TABSTOP, 487, 482, 97, 30);
     let mut shown = None::<String>;
     let mut count = 0usize;
     let mut want = field;
@@ -744,6 +750,7 @@ pub fn sort_form(
             numeric: on(1),
             reverse: on(2),
             unique: on(3),
+            decode_hex: on(4),
         })
     });
     destroy(h);
