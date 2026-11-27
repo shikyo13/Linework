@@ -193,7 +193,7 @@ mod tests {
                 .collect()
         })
     }
-    /// The entry is written by the indexing thread just after the index is usable.
+    /// The entry is written by the indexing thread; other entries are pruned after it.
     fn eventually(mut done: impl FnMut() -> bool) -> bool {
         for _ in 0..2000 {
             if done() {

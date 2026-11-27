@@ -701,15 +701,17 @@ impl Source {
                     .collect();
                 source.counts.write().unwrap().extend(directory);
                 let done = ((batch + 1) as u64 * BATCH as u64).min(source.len);
+                // The finished count is kept before it is said to be finished: a program that
+                // only waited for the count ends then, and would end this thread in the keeping.
+                if done == source.len {
+                    source.store_index();
+                }
                 source.prefix.store(done, Ordering::Release);
                 Ok(false)
             },
         );
-        if let Some(source) = weak.upgrade() {
-            match result {
-                Ok(_) => source.store_index(),
-                Err(e) => *source.error.lock().unwrap() = Some(e.to_string()),
-            }
+        if let (Some(source), Err(e)) = (weak.upgrade(), result) {
+            *source.error.lock().unwrap() = Some(e.to_string());
         }
     }
     fn index_alone(weak: Weak<Source>) {
@@ -718,7 +720,6 @@ impl Source {
         let mut count_total = 0;
         while let Some(s) = weak.upgrade() {
             if pos == s.len {
-                s.store_index();
                 return;
             }
             let length = (s.len - pos).min(BATCH as u64) as usize;
@@ -735,6 +736,10 @@ impl Source {
             }
             s.counts.write().unwrap().extend(directory);
             pos += length as u64;
+            // Kept before it is said to be finished, as in `index`.
+            if pos == s.len {
+                s.store_index();
+            }
             s.prefix.store(pos, Ordering::Release);
         }
     }
