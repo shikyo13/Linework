@@ -63,6 +63,8 @@ struct Totals {
     listed: u64,
     errors: bool,
     searching: f64,
+    /// Bytes of ripgrep JSON messages, the end and summary messages apart: what ripgrep calls printed.
+    messages: u64,
 }
 
 /// What one search run needs, shared by every file.
@@ -74,6 +76,8 @@ struct Run<'a> {
     input: input::Config,
     /// Stop everything at the first match (-q).
     stop_all: AtomicBool,
+    /// Bytes of ripgrep JSON messages written by all files, on whichever thread.
+    messages: std::sync::atomic::AtomicU64,
 }
 
 /// Where output goes: the writer, the --budget allowance, and whether a file has printed before.
@@ -164,7 +168,7 @@ pub fn run(s: &Settings, out: &mut dyn Write) -> Result<i32, String> {
     if let Some(pre) = &s.pre {
         input::find_program(pre)?;
     }
-    let run = Run { s, plan, look, input: s.input()?, stop_all: AtomicBool::new(false) };
+    let run = Run { s, plan, look, input: s.input()?, stop_all: AtomicBool::new(false), messages: Default::default() };
     let mut output = Output {
         out,
         budget: crate::report::Budget::new(s.budget),
@@ -193,7 +197,10 @@ pub fn run(s: &Settings, out: &mut dyn Write) -> Result<i32, String> {
     // As ripgrep counts it: nothing is printed by -c, -l and -q.
     totals.bytes_printed = if s.mode == Mode::Lines && !s.quiet { output.printed } else { 0 };
     let mut tail = Vec::new();
-    if s.json {
+    if run.look.ripgrep {
+        totals.messages = run.messages.load(Ordering::Relaxed);
+        tail.extend_from_slice(ripgrep_summary(&totals, began).as_bytes());
+    } else if s.json {
         let summary = json_summary(&totals, &output.budget, began);
         tail.extend_from_slice(summary.as_bytes());
     } else if s.stats {
@@ -236,6 +243,22 @@ fn stats(t: &Totals, began: Instant) -> String {
     format!(
         "\n{} matches\n{} matched lines\n{} files contained matches\n{} files searched\n{} bytes printed\n{} bytes searched\n{:.6} seconds spent searching\n{:.6} seconds total\n",
         t.matches, t.lines, t.files_matched, t.files_searched, t.bytes_printed, t.bytes_searched, t.searching, began.elapsed().as_secs_f64()
+    )
+}
+
+/// The last message of ripgrep's JSON output.
+fn ripgrep_summary(t: &Totals, began: Instant) -> String {
+    use crate::printer::ripgrep_elapsed;
+    format!(
+        "{{\"data\":{{\"elapsed_total\":{},\"stats\":{{\"bytes_printed\":{},\"bytes_searched\":{},\"elapsed\":{},\"matched_lines\":{},\"matches\":{},\"searches\":{},\"searches_with_match\":{}}}}},\"type\":\"summary\"}}\n",
+        ripgrep_elapsed(began.elapsed(), true),
+        t.messages,
+        t.bytes_searched,
+        ripgrep_elapsed(std::time::Duration::from_secs_f64(t.searching), true),
+        t.lines,
+        t.matches,
+        t.files_searched,
+        t.files_matched
     )
 }
 
@@ -710,6 +733,7 @@ impl Run<'_> {
             Mode::WithoutMatch => file.found.lines == 0,
             _ => false,
         };
+        self.messages.fetch_add(file.ripgrep_printed(), Ordering::Relaxed);
         FileOutcome { lines: file.found.lines, matches: file.found.matches, listed, bytes: 0 }
     }
 

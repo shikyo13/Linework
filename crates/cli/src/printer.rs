@@ -316,6 +316,8 @@ pub struct Look {
     pub track: bool,
     /// lw's JSON objects instead of lines, counts and names.
     pub json: bool,
+    /// JSON as ripgrep writes it (begin, match, context, end messages), when lw answers as rg.
+    pub ripgrep: bool,
     /// Each match is followed on its own (colours, -r, --column, --vimgrep), which -M's texts report.
     pub per_match: bool,
     pub include_zero: bool,
@@ -391,7 +393,8 @@ impl Look {
             path_separator: s.path_separator,
             field_match: s.field_match.clone(),
             field_context: s.field_context.clone(),
-            separator: s.context_separator.clone(),
+            // ripgrep's JSON has no line between groups of context.
+            separator: if s.json && crate::alias::name() == Some("rg") { None } else { s.context_separator.clone() },
             context: (before > 0 || after > 0) && !s.passthru,
             colors,
             links,
@@ -400,6 +403,7 @@ impl Look {
             scope: s.scope,
             track,
             json: s.json,
+            ripgrep: s.json && crate::alias::name() == Some("rg"),
             per_match,
             include_zero: s.include_zero,
             stats: s.stats,
@@ -459,6 +463,42 @@ pub struct FileOut<'a> {
     deferred: Option<Vec<Deferred>>,
     /// Bytes printed for this file.
     pub printed: u64,
+    /// For ripgrep's JSON: whether the file's begin message is out, the bytes of its messages so far, where a zero
+    /// byte was found, the file's size, and when its search began.
+    begun: bool,
+    messages: u64,
+    binary_at: Option<u64>,
+    size: u64,
+    since: std::time::Instant,
+}
+
+/// A text as ripgrep's JSON gives it: as text when it is UTF-8, else its bytes in base64.
+fn ripgrep_text(bytes: &[u8]) -> String {
+    match std::str::from_utf8(bytes) {
+        Ok(text) => format!("{{\"text\":{}}}", serde_json::to_string(text).expect("a string")),
+        Err(_) => {
+            const LETTERS: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+            let mut out = String::with_capacity(bytes.len() / 3 * 4 + 16);
+            for three in bytes.chunks(3) {
+                let n = (three[0] as u32) << 16 | (*three.get(1).unwrap_or(&0) as u32) << 8 | *three.get(2).unwrap_or(&0) as u32;
+                out.push(LETTERS[(n >> 18) as usize & 63] as char);
+                out.push(LETTERS[(n >> 12) as usize & 63] as char);
+                out.push(if three.len() > 1 { LETTERS[(n >> 6) as usize & 63] as char } else { '=' });
+                out.push(if three.len() > 2 { LETTERS[n as usize & 63] as char } else { '=' });
+            }
+            format!("{{\"bytes\":\"{out}\"}}")
+        }
+    }
+}
+
+/// A length of time as ripgrep's JSON gives it.
+pub fn ripgrep_elapsed(time: std::time::Duration, sorted: bool) -> String {
+    let human = format!("{:.6}s", time.as_secs_f64());
+    if sorted {
+        format!("{{\"human\":\"{human}\",\"nanos\":{},\"secs\":{}}}", time.subsec_nanos(), time.as_secs())
+    } else {
+        format!("{{\"secs\":{},\"nanos\":{},\"human\":\"{human}\"}}", time.as_secs(), time.subsec_nanos())
+    }
 }
 
 struct Deferred {
@@ -488,6 +528,11 @@ impl<'a> FileOut<'a> {
             groups: Groups::new(),
             deferred: (look.scope && look.mode == Mode::Lines).then(Vec::new),
             printed: 0,
+            begun: false,
+            messages: 0,
+            binary_at: None,
+            size: size.unwrap_or(0),
+            since: std::time::Instant::now(),
         }
     }
 
@@ -797,6 +842,57 @@ impl<'a> FileOut<'a> {
         self.finish_line(ended);
     }
 
+    /// One line as a ripgrep JSON message, after the file's begin message.
+    fn ripgrep_line(&mut self, matched: bool, number: u64, offset: u64, text: &[u8], ended: bool) {
+        let before = self.out.len();
+        let path = ripgrep_text(&self.path);
+        if !self.begun {
+            self.begun = true;
+            self.out.extend_from_slice(format!("{{\"type\":\"begin\",\"data\":{{\"path\":{path}}}}}\n").as_bytes());
+        }
+        let mut ranges = Vec::new();
+        if matched {
+            self.matches_in(text, &mut ranges);
+        }
+        let mut line = text.to_vec();
+        if ended {
+            line.push(b'\n');
+        }
+        let found: Vec<String> =
+            ranges.iter().map(|&(s, e)| format!("{{\"match\":{},\"start\":{s},\"end\":{e}}}", ripgrep_text(&text[s..e]))).collect();
+        self.out.extend_from_slice(
+            format!(
+                "{{\"type\":\"{}\",\"data\":{{\"path\":{path},\"lines\":{},\"line_number\":{number},\"absolute_offset\":{offset},\"submatches\":[{}]}}}}\n",
+                if matched { "match" } else { "context" },
+                ripgrep_text(&line),
+                found.join(",")
+            )
+            .as_bytes(),
+        );
+        self.messages += (self.out.len() - before) as u64;
+    }
+
+    /// The file's end message, with what ripgrep counts for it.
+    fn ripgrep_end(&mut self) {
+        if !self.begun {
+            return;
+        }
+        let binary = self.binary_at.map_or("null".to_owned(), |at| at.to_string());
+        self.out.extend_from_slice(
+            format!(
+                "{{\"type\":\"end\",\"data\":{{\"path\":{},\"binary_offset\":{binary},\"stats\":{{\"elapsed\":{},\"searches\":1,\"searches_with_match\":{},\"bytes_searched\":{},\"bytes_printed\":{},\"matched_lines\":{},\"matches\":{}}}}}}}\n",
+                ripgrep_text(&self.path),
+                ripgrep_elapsed(self.since.elapsed(), false),
+                u8::from(self.found.lines > 0),
+                self.size,
+                self.messages,
+                self.found.lines,
+                self.found.matches
+            )
+            .as_bytes(),
+        );
+    }
+
     fn json_line(&mut self, matched: bool, number: u64, offset: u64, text: &[u8], scope: Option<&[linework_project::Scope]>) {
         let look: &'a Look = self.look;
         let bare = text.strip_suffix(b"\r").unwrap_or(text);
@@ -898,6 +994,10 @@ impl<'a> FileOut<'a> {
         if self.look.mode != Mode::Lines || self.look.quiet {
             return;
         }
+        if self.look.ripgrep {
+            self.binary_at = Some(offset);
+            return;
+        }
         // grep's own wording, when lw is standing in for grep.
         if crate::alias::name().is_some_and(|name| name.ends_with("grep")) {
             self.out.extend_from_slice(b"Binary file ");
@@ -912,6 +1012,10 @@ impl<'a> FileOut<'a> {
     /// `PATH: WARNING: stopped searching binary file after match (found "\0" byte around offset N)`.
     pub fn binary_stopped(&mut self, offset: u64) {
         if self.look.mode != Mode::Lines || self.look.quiet {
+            return;
+        }
+        if self.look.ripgrep {
+            self.binary_at = Some(offset);
             return;
         }
         self.message(&format!("WARNING: stopped searching binary file after match (found \"\\0\" byte around offset {offset})"));
@@ -1000,7 +1104,15 @@ impl<'a> FileOut<'a> {
             self.path_out();
             self.out.extend_from_slice(if look.null { b"\0" } else { look.end });
         }
+        if look.ripgrep {
+            self.ripgrep_end();
+        }
         self.printed = self.out.len() as u64;
+    }
+
+    /// The bytes of this file's ripgrep JSON messages, the end message apart.
+    pub fn ripgrep_printed(&self) -> u64 {
+        self.messages
     }
 
     fn path_out(&mut self) {
@@ -1063,6 +1175,10 @@ impl Sink for FileOut<'_> {
             deferred.push(Deferred { matched: true, ended, number, offset, text: text.to_vec(), after_break: false });
             return true;
         }
+        if look.ripgrep {
+            self.ripgrep_line(true, number, offset, text, ended);
+            return true;
+        }
         if look.json {
             self.json_line(true, number, offset, text, None);
             return true;
@@ -1079,6 +1195,10 @@ impl Sink for FileOut<'_> {
         }
         if let Some(deferred) = &mut self.deferred {
             deferred.push(Deferred { matched: false, ended, number, offset, text: text.to_vec(), after_break: false });
+            return true;
+        }
+        if look.ripgrep {
+            self.ripgrep_line(false, number, offset, text, ended);
             return true;
         }
         if look.json {

@@ -86,10 +86,59 @@ fn options(words: &[String]) -> impl Iterator<Item = &String> {
 }
 
 fn ripgrep(words: &[String]) -> Result<Vec<String>, NotExact> {
-    // ripgrep's JSON messages are another format than lw's, and its help
-    // and version are its own.
-    if options(words).any(|word| matches!(word.as_str(), "--json" | "--help" | "-h" | "--version" | "-V" | "--pcre2-version")) {
+    // ripgrep's help and version are its own.
+    if options(words).any(|word| matches!(word.as_str(), "--help" | "-h" | "--version" | "-V" | "--pcre2-version")) {
         return Err(NotExact);
+    }
+    // ripgrep's JSON messages are written for a plain search: lines, with or without context. With an option that
+    // changes what a message holds or leaves the messages out (counts, names only, replacements, matches across
+    // lines), ripgrep itself answers.
+    if options(words).any(|word| word == "--json") {
+        // A file with zero bytes that is named outright: ripgrep prints its lines with the zero bytes turned into
+        // line ends, which lw does not do.
+        let binary = |path: &String| {
+            use std::io::Read;
+            let mut head = Vec::new();
+            std::fs::File::open(path).is_ok_and(|file| file.take(65_536).read_to_end(&mut head).is_ok() && head.contains(&0))
+        };
+        if words.iter().filter(|word| !word.starts_with('-') && Path::new(word).is_file()).any(binary) {
+            return Err(NotExact);
+        }
+        const PLAIN: &[&str] = &[
+            "--json", "--line-buffered", "--no-config", "--fixed-strings", "--smart-case", "--ignore-case", "--case-sensitive", "--word-regexp",
+            "--hidden", "--no-follow", "--follow", "--no-ignore", "--no-ignore-dot", "--no-ignore-vcs", "--no-ignore-parent", "--no-messages",
+            "--line-number", "--no-line-number", "--no-heading", "--color=never", "--no-require-git", "--sort-files",
+        ];
+        const VALUED: &[&str] = &[
+            "--max-filesize", "--glob", "--iglob", "--regexp", "--context", "--after-context", "--before-context", "--sort", "--sortr", "--threads",
+            "--type", "--type-not", "--max-count", "--max-depth", "--color",
+        ];
+        let mut rest = options(words);
+        while let Some(word) = rest.next() {
+            let long = word.split('=').next().unwrap_or(word);
+            if PLAIN.contains(&word.as_str()) || (word.contains('=') && VALUED.contains(&long)) {
+                continue;
+            }
+            if VALUED.contains(&word.as_str()) {
+                rest.next();
+                continue;
+            }
+            // Short options: only those whose meaning is in the lists above, each taking no value or one.
+            let Some(letters) = word.strip_prefix('-').filter(|rest| !rest.starts_with('-') && !rest.is_empty()) else { continue };
+            let mut letters = letters.chars();
+            while let Some(letter) = letters.next() {
+                match letter {
+                    'F' | 'S' | 'i' | 's' | 'w' | 'n' | 'N' | 'L' | 'u' | '.' => {}
+                    'g' | 'e' | 'C' | 'A' | 'B' | 'j' | 't' | 'T' | 'm' | 'd' => {
+                        if letters.as_str().is_empty() {
+                            rest.next();
+                        }
+                        break;
+                    }
+                    _ => return Err(NotExact),
+                }
+            }
+        }
     }
     let mut own = vec!["find".to_owned(), "--whole-lines".to_owned()];
     // ripgrep numbers lines for a person at a console and not for a pipe,
