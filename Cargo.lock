@@ -561,6 +561,7 @@ dependencies = [
 name = "linework-storage"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "chardetng",
  "encoding_rs",
  "flate2",

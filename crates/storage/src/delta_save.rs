@@ -1,7 +1,6 @@
 //! Identify a small physical change from immutable piece-tree ranges. UTF-16,
 //! Save As, and edits that shift a large suffix use the ordinary staged save.
-use crate::{conflict, inplace, save_journal, source::read_at, transactional, Document, Source, Stamp};
-use sha2::{Digest, Sha256};
+use crate::{conflict, hash, inplace, save_journal, source::read_at, transactional, Document, Source, Stamp};
 use std::{fs::File, io, path::Path, sync::Arc};
 
 use crate::tree::{shared_bytes, Leaves};
@@ -14,8 +13,8 @@ fn verify_and_hash(
     pinned: Option<&File>, writer: &File, stamp: &Stamp, prior_digest: Option<[u8; 32]>,
     offset: u64, removed: u64, replacement: &[u8],
 ) -> io::Result<[u8; 32]> {
-    let mut prior = prior_digest.map(|_| Sha256::new());
-    let mut next = Sha256::new();
+    let mut prior = prior_digest.map(|_| hash::Hasher::new());
+    let mut next = hash::Hasher::new();
     let mut disk = vec![0; 1024 * 1024];
     let mut original = vec![0; disk.len()];
     let mut replaced = false;
@@ -40,9 +39,9 @@ fn verify_and_hash(
         at += n as u64;
     }
     if let (Some(hash), Some(expected)) = (prior, prior_digest) {
-        if <[u8; 32]>::from(hash.finalize()) != expected { return Err(conflict()); }
+        if hash::finish(&hash) != expected { return Err(conflict()); }
     }
-    Ok(next.finalize().into())
+    Ok(hash::finish(&next))
 }
 
 impl Document {
@@ -164,9 +163,9 @@ mod tests {
             assert!(fs::read(&file)? == expected);
             assert_eq!(old_view.read(at as u64, count)?, input[at..at + count]);
             // A version-certified save can authenticate the immutable saved tree
-            // directly. A byte-verified fallback also records its SHA-256.
+            // directly. A byte-verified fallback also records its BLAKE3 digest.
             if let Some(digest) = doc.saved_disk_digest {
-                assert_eq!(digest, <[u8; 32]>::from(Sha256::digest(&expected)));
+                assert_eq!(digest, hash::of(&expected));
             }
             doc.verify_disk_revision(&file, doc.stamp.as_ref().unwrap())?;
             assert!(doc.undo());

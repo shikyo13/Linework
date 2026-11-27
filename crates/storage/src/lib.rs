@@ -8,6 +8,7 @@ pub use selection_set::{SelectionSet,SelectionBuilder};
 mod folds;
 pub use folds::{Fold,FoldMap};
 mod eol;
+mod hash;
 mod recovery;
 mod recovery_blocks;
 #[cfg(windows)]

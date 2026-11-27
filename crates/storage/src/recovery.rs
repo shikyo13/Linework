@@ -1,8 +1,7 @@
 use super::recovery_blocks::{self, Packed};
-use super::{codec::Codec, invalid, tree, Document, Source, Stamp};
+use super::{codec::Codec, hash, invalid, tree, Document, Source, Stamp};
 use flate2::{read::DeflateDecoder, write::DeflateEncoder, Compression};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::{
     collections::HashMap,
@@ -19,6 +18,8 @@ struct Base {
     bytes: u64,
     digest: [u8; 32],
     #[serde(default)]
+    hash: hash::Kind,
+    #[serde(default)]
     format: Format,
 }
 #[derive(Serialize, Deserialize, Default, Clone, Copy)]
@@ -33,6 +34,8 @@ enum Format {
 #[derive(Serialize, Deserialize, Clone)]
 struct SavedPatch {
     digest: [u8; 32],
+    #[serde(default)]
+    hash: hash::Kind,
     #[serde(flatten)]
     plan: PatchPlan,
 }
@@ -129,7 +132,7 @@ impl SavedPatch {
                 result
             }
         };
-        if digest_root(&saved, io::sink(), &AtomicBool::new(false))? != self.digest {
+        if digest_root(&saved, io::sink(), &AtomicBool::new(false), self.hash)? != self.digest {
             return Err(invalid("Saved revision failed its integrity check"));
         }
         Ok(saved)
@@ -252,8 +255,9 @@ fn digest_root(
     root: &tree::Root,
     mut out: impl Write,
     cancel: &AtomicBool,
+    kind: hash::Kind,
 ) -> io::Result<[u8; 32]> {
-    let mut hash = Sha256::new();
+    let mut hash = hash::Any::new(kind);
     let mut buf = vec![0; 512 * 1024];
     if let Some(root) = root {
         root.pieces(&mut |src, mut at, size| {
@@ -271,7 +275,7 @@ fn digest_root(
             Ok(())
         })?;
     }
-    Ok(hash.finalize().into())
+    Ok(hash.finish())
 }
 impl Base {
     fn path(&self, checkpoint: &Path) -> io::Result<PathBuf> {
@@ -300,14 +304,14 @@ impl Base {
         };
         if let Some(source) = source {
             let root = tree::leaf(source, 0, self.bytes)?;
-            if digest_root(&root, io::sink(), &AtomicBool::new(false))? != self.digest {
+            if digest_root(&root, io::sink(), &AtomicBool::new(false), self.hash)? != self.digest {
                 return Err(invalid("Recovery base failed its integrity check"));
             }
             return Ok(root);
         }
         let mut input = DeflateDecoder::new(&*file);
         let mut tmp = tempfile::tempfile()?;
-        let mut hash = Sha256::new();
+        let mut hash = hash::Any::new(self.hash);
         let mut block = vec![0; 512 * 1024];
         let mut total = 0u64;
         loop {
@@ -322,7 +326,7 @@ impl Base {
             hash.update(&block[..n]);
             tmp.write_all(&block[..n])?;
         }
-        if total != self.bytes || <[u8; 32]>::from(hash.finalize()) != self.digest {
+        if total != self.bytes || hash.finish() != self.digest {
             return Err(invalid("Recovery base failed its integrity check"));
         }
         tree::leaf(Source::file(Arc::new(tmp), 0, total)?, 0, total)
@@ -374,7 +378,7 @@ impl Archive {
         let file = tmp.as_file_mut();
         let (format, digest) = if bytes < recovery_blocks::BLOCK as u64 {
             let mut encoder = DeflateEncoder::new(&mut *file, Compression::fast());
-            let digest = digest_root(&root, &mut encoder, cancel)?;
+            let digest = digest_root(&root, &mut encoder, cancel, hash::Kind::Blake3)?;
             encoder.finish()?;
             (Format::Deflate, digest)
         } else {
@@ -406,6 +410,7 @@ impl Archive {
             file: path.file_name().unwrap().to_string_lossy().into_owned(),
             bytes,
             digest,
+            hash: hash::Kind::Blake3,
             format,
         };
         Ok(Self {
@@ -457,9 +462,9 @@ impl Archive {
             doc.saved_disk_digest,
         ) {
             (true, false, Some(digest)) => digest,
-            _ => digest_root(&doc.saved, io::sink(), cancel)?,
+            _ => digest_root(&doc.saved, io::sink(), cancel, hash::Kind::Blake3)?,
         };
-        let patch = SavedPatch { plan, digest };
+        let patch = SavedPatch { plan, digest, hash: hash::Kind::Blake3 };
         self.patch = Some((doc.saved.clone(), patch.clone()));
         Ok(Some(patch))
     }
@@ -690,12 +695,12 @@ impl Document {
                 }
                 fresh.protect_edit_base()?;
                 if let Some(base) = &h.base {
-                    let (length, digest) = match &h.saved_patch {
-                        Some(patch) => (patch.length(base.bytes)?, patch.digest),
-                        None => (base.bytes, base.digest),
+                    let (length, digest, kind) = match &h.saved_patch {
+                        Some(patch) => (patch.length(base.bytes)?, patch.digest, patch.hash),
+                        None => (base.bytes, base.digest, base.hash),
                     };
                     if fresh.len() != length
-                        || digest_root(&fresh.root, io::sink(), &AtomicBool::new(false))? != digest
+                        || digest_root(&fresh.root, io::sink(), &AtomicBool::new(false), kind)? != digest
                     {
                         return Err(invalid("The original has changed"));
                     }

@@ -2,7 +2,7 @@
 //! Equal blocks share a payload, and incompressible payloads are stored raw.
 use crate::{invalid, source::read_at, tree};
 use flate2::{bufread::DeflateDecoder, write::DeflateEncoder, Compression};
-use sha2::{Digest, Sha256};
+use crate::hash;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom, Write};
@@ -34,7 +34,7 @@ pub(super) fn write(
     file.seek(SeekFrom::Start(data_start(len)))?;
     let mut unique = HashMap::new();
     let mut index = Vec::new();
-    let mut digest = Sha256::new();
+    let mut digest = hash::Hasher::new();
     let mut buf = vec![0; BLOCK];
     let mut previous = vec![0; BLOCK];
     let mut last: Option<(usize, Entry)> = None;
@@ -55,8 +55,8 @@ pub(super) fn write(
             {
                 entry
             } else {
-                let hash: [u8; 32] = Sha256::digest(&*block).into();
-                match unique.entry((hash, block.len())) {
+                let key = hash::of(block);
+                match unique.entry((key, block.len())) {
                     std::collections::hash_map::Entry::Occupied(existing) => *existing.get(),
                     std::collections::hash_map::Entry::Vacant(slot) => {
                         compressed.clear();
@@ -88,7 +88,7 @@ pub(super) fn write(
     file.write_all(MAGIC)?;
     file.write_all(&len.to_le_bytes())?;
     file.write_all(&index)?;
-    Ok(digest.finalize().into())
+    Ok(hash::finish(&digest))
 }
 
 pub(crate) struct Packed {
@@ -197,7 +197,7 @@ mod tests {
         let root = tree::leaf(Source::memory(&original), 0, original.len() as u64)?;
         let mut f = tempfile::tempfile()?;
         let hash = write(&mut f, &root, &AtomicBool::new(false))?;
-        assert_eq!(hash, <[u8; 32]>::from(Sha256::digest(&original)));
+        assert_eq!(hash, hash::of(&original));
         assert!(f.metadata()?.len() < (BLOCK + BLOCK / 16) as u64);
         let packed = Packed::open(f.try_clone()?, original.len() as u64)?;
         for (at, n) in [

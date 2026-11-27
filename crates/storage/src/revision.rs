@@ -1,5 +1,4 @@
-use crate::{Document, Stamp, conflict};
-use sha2::{Digest, Sha256};
+use crate::{hash, Document, Stamp, conflict};
 use std::{
     fs::{File, OpenOptions},
     io::{self, Read, Write},
@@ -27,7 +26,7 @@ impl Document {
         }
         let mut buffer = vec![0; 1024 * 1024];
         if let Some(expected) = self.saved_disk_digest {
-            let mut digest = Sha256::new();
+            let mut digest = hash::Hasher::new();
             loop {
                 let got = file.read(&mut buffer)?;
                 if got == 0 {
@@ -35,7 +34,7 @@ impl Document {
                 }
                 digest.update(&buffer[..got]);
             }
-            if <[u8; 32]>::from(digest.finalize()) != expected {
+            if hash::finish(&digest) != expected {
                 return Err(conflict());
             }
         } else {
@@ -241,7 +240,7 @@ impl Write for Blocks {
 
 /// Stage an atomic save: `produce` writes the encoded document, which is
 /// hashed and written to `out` by two further threads, so reading, hashing
-/// and writing overlap. Returns the SHA-256 of exactly the bytes written. A
+/// and writing overlap. Returns the BLAKE3 digest of exactly the bytes written. A
 /// later Save can verify this checkpoint with one sequential destination read.
 pub(crate) fn stage(
     out: impl Write + Send,
@@ -252,14 +251,14 @@ pub(crate) fn stage(
         let (hashed, to_write) = sync_channel::<Vec<u8>>(DEPTH);
         let (recycle, spare) = channel();
         let hasher = scope.spawn(move || {
-            let mut digest = Sha256::new();
+            let mut digest = hash::Hasher::new();
             for block in to_hash {
                 digest.update(&block);
                 if hashed.send(block).is_err() {
                     return None;
                 }
             }
-            Some(<[u8; 32]>::from(digest.finalize()))
+            Some(hash::finish(&digest))
         });
         let writer = scope.spawn(move || -> io::Result<()> {
             let mut out = out;
@@ -300,11 +299,8 @@ mod tests {
             Ok(())
         })?;
         assert!(written == bytes);
-        assert_eq!(digest, <[u8; 32]>::from(Sha256::digest(&bytes)));
-        assert_eq!(
-            stage(&mut Vec::new(), |_| Ok(()))?,
-            <[u8; 32]>::from(Sha256::digest(b""))
-        );
+        assert_eq!(digest, hash::of(&bytes));
+        assert_eq!(stage(&mut Vec::new(), |_| Ok(()))?, hash::of(b""));
         Ok(())
     }
 
@@ -318,7 +314,7 @@ mod tests {
             let out = Staged::new(staged.as_file(), staged.path(), Some(size as u64));
             assert_eq!(out.direct.is_some(), cfg!(windows) && size as u64 >= DIRECT_FROM);
             let digest = stage(out, |out| out.write_all(&bytes))?;
-            assert_eq!(digest, <[u8; 32]>::from(Sha256::digest(&bytes)));
+            assert_eq!(digest, hash::of(&bytes));
             assert_eq!(staged.as_file().metadata()?.len(), size as u64);
             assert!(std::fs::read(staged.path())? == bytes);
         }

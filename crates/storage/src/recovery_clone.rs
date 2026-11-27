@@ -1,6 +1,5 @@
 //! Capture a read-only recovery base using filesystem copy-on-write where available.
 use crate::{source::read_at, Document, Stamp};
-use sha2::{Digest, Sha256};
 use std::{
     fs::File,
     io::{self, Seek, SeekFrom, Write},
@@ -127,7 +126,7 @@ pub(super) fn capture(
     }
     let mut disk = vec![0; super::recovery_blocks::BLOCK];
     let mut saved = vec![0; disk.len()];
-    let mut hash = Sha256::new();
+    let mut hash = crate::hash::Hasher::new();
     for offset in (0..root.len).step_by(disk.len()) {
         if cancel.load(Ordering::Relaxed) {
             return Err(io::ErrorKind::Interrupted.into());
@@ -140,5 +139,5 @@ pub(super) fn capture(
         }
         hash.update(&disk[..n]);
     }
-    Ok(Some((head, hash.finalize().into())))
+    Ok(Some((head, crate::hash::finish(&hash))))
 }

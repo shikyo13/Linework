@@ -1,6 +1,5 @@
 use super::{invalid, Document};
 use encoding_rs::{CoderResult, Encoding, UTF_16BE, UTF_16LE, WINDOWS_1252};
-use sha2::{Digest, Sha256};
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::sync::{OnceLock, RwLock};
@@ -300,7 +299,7 @@ impl Codec {
     }
     pub fn decode(self, mut file: File, prefix: &[u8]) -> io::Result<(File, [u8; 32])> {
         file.seek(SeekFrom::Start(prefix.len() as u64))?;
-        let mut digest = Sha256::new();
+        let mut digest = crate::hash::Hasher::new();
         digest.update(prefix);
         let mut dest = io::BufWriter::with_capacity(1024 * 1024, tempfile::tempfile()?);
         let mut bytes = vec![0; 128 * 1024];
@@ -380,7 +379,7 @@ impl Codec {
             }
         }
         let dest = dest.into_inner().map_err(|e| e.into_error())?;
-        Ok((dest, digest.finalize().into()))
+        Ok((dest, crate::hash::finish(&digest)))
     }
     pub fn write(self, d: &Document, w: &mut impl Write, bom: bool) -> io::Result<()> {
         if bom {
