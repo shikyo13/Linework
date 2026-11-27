@@ -3,7 +3,9 @@ use std::{
     fs::{File, OpenOptions},
     io::{self, Read, Write},
     path::Path,
+    collections::BTreeMap,
     sync::mpsc::{channel, sync_channel, Receiver, SyncSender},
+    sync::Mutex,
     thread,
 };
 
@@ -277,35 +279,68 @@ impl Write for Blocks {
     }
 }
 
+/// Threads hashing blocks. One BLAKE3 thread (about 9 GB/s) limits a large
+/// save once the write takes no copy; two or three keep ahead of the disk.
+const HASHERS: usize = 3;
+
+/// A block on its way to the writer: its place in the file and its piece of
+/// the digest (see `hash::piece`).
+type Hashed = (usize, Block, Option<([u8; 32], Option<[u8; 32]>)>);
+
 /// Stage an atomic save: `produce` writes the encoded document, which is
-/// hashed and written to `out` by two further threads, so reading, hashing
-/// and writing overlap. Returns the BLAKE3 digest of exactly the bytes written. A
-/// later Save can verify this checkpoint with one sequential destination read.
+/// hashed on `HASHERS` threads and written to `out` in order by one more, so
+/// reading, hashing and writing overlap. Returns the BLAKE3 digest of exactly
+/// the bytes written, the same as hashing them in one pass. A later Save can
+/// verify this checkpoint with one sequential destination read.
 pub(crate) fn stage(
     out: impl Write + Send,
     produce: impl FnOnce(&mut dyn Write) -> io::Result<()>,
 ) -> io::Result<[u8; 32]> {
+    let (filled, to_hash) = sync_channel::<Block>(DEPTH);
+    let (hashed, to_write) = sync_channel::<Hashed>(DEPTH);
+    let (recycle, spare) = channel();
+    // Blocks are numbered as they are taken, under the same lock. A hashing
+    // thread that finds the writer gone closes the queue, which ends the
+    // producer's wait to hand over a block.
+    let to_hash = Mutex::new((0usize, Some(to_hash)));
     thread::scope(|scope| {
-        let (filled, to_hash) = sync_channel::<Block>(DEPTH);
-        let (hashed, to_write) = sync_channel::<Block>(DEPTH);
-        let (recycle, spare) = channel();
-        let hasher = scope.spawn(move || {
-            let mut digest = hash::Hasher::new();
-            for block in to_hash {
-                digest.update(block.bytes());
-                if hashed.send(block).is_err() {
-                    return None;
+        for _ in 0..HASHERS {
+            let (to_hash, hashed) = (&to_hash, hashed.clone());
+            scope.spawn(move || loop {
+                let (index, block) = {
+                    let mut queue = to_hash.lock().unwrap_or_else(|e| e.into_inner());
+                    let Some(Ok(block)) = queue.1.as_ref().map(Receiver::recv) else { return };
+                    queue.0 += 1;
+                    (queue.0 - 1, block)
+                };
+                let piece = hash::piece(index, BLOCK, block.bytes());
+                if hashed.send((index, block, piece)).is_err() {
+                    to_hash.lock().unwrap_or_else(|e| e.into_inner()).1 = None;
+                    return;
+                }
+            });
+        }
+        drop(hashed);
+        let writer = scope.spawn(move || -> io::Result<[u8; 32]> {
+            let mut out = out;
+            let mut early = BTreeMap::new();
+            let (mut next, mut total) = (0usize, 0u64);
+            let (mut values, mut first) = (Vec::new(), None);
+            for (index, block, piece) in to_write {
+                early.insert(index, (block, piece));
+                while let Some((block, piece)) = early.remove(&next) {
+                    out.write_all(block.bytes())?;
+                    if let Some((value, root)) = piece {
+                        values.push(value);
+                        first = first.or(root);
+                    }
+                    total += block.len as u64;
+                    next += 1;
+                    let _ = recycle.send(block);
                 }
             }
-            Some(hash::finish(&digest))
-        });
-        let writer = scope.spawn(move || -> io::Result<()> {
-            let mut out = out;
-            for block in to_write {
-                out.write_all(block.bytes())?;
-                let _ = recycle.send(block);
-            }
-            out.flush()
+            out.flush()?;
+            Ok(hash::join(&values, BLOCK, total, first))
         });
         let mut blocks = Blocks {
             block: Block::new(),
@@ -313,12 +348,11 @@ pub(crate) fn stage(
             spare,
         };
         let produced = produce(&mut blocks).and_then(|()| blocks.send());
-        // Closing the first channel ends the hashing thread, which ends the writer.
+        // Closing the first channel ends the hashing threads, which ends the writer.
         drop(blocks);
-        let digest = hasher.join().expect("hashing thread");
-        writer.join().expect("writing thread")?;
+        let digest = writer.join().expect("writing thread")?;
         produced?;
-        digest.ok_or_else(|| io::ErrorKind::BrokenPipe.into())
+        Ok(digest)
     })
 }
 
