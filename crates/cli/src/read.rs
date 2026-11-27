@@ -60,27 +60,38 @@ pub fn outline(s: &Settings, files: &[String], out: &mut dyn Write) -> Result<i3
     Ok(i32::from(!any))
 }
 
-/// The definitions of `name` in one file's text: (kind, first line, last line), in order.
-fn definitions_of(path: &str, text: &str, name: &str) -> Vec<(String, u64, u64)> {
+/// The definitions of `name` in one file's text: (kind, first line, last line), in order. With an `owner`, only
+/// those inside a definition of that name, where the file has any such; all of them where it has none (the outline
+/// does not name every enclosing block, a Rust `impl` among them).
+fn definitions_of(path: &str, text: &str, name: &str, owner: Option<&str>) -> Vec<(String, u64, u64)> {
     let places: Vec<_> = linework_project::places(Path::new(path), text, name).into_iter().filter(|place| place.definition.is_some()).collect();
     let offsets: Vec<usize> = places.iter().map(|place| place.offset).collect();
-    let mut found: Vec<(String, u64, u64)> = Vec::new();
-    for (place, scope) in places.iter().zip(linework_project::scopes(Path::new(path), text, &offsets)) {
+    let mut found: Vec<(bool, String, u64, u64)> = Vec::new();
+    for (place, chain) in places.iter().zip(linework_project::scope_chains(Path::new(path), text, &offsets)) {
         // The definition around the name where the outline knows its extent, else the line it is on.
-        let (first, last) = match scope {
+        let (first, last) = match chain.last() {
             Some(scope) if scope.name == name => (scope.line, scope.end_line),
             _ => (place.line, place.line),
         };
-        if !found.iter().any(|known| known.1 == first && known.2 == last) {
-            found.push((place.definition.clone().unwrap_or_default(), first, last));
+        let owned = owner.is_some_and(|owner| chain.iter().rev().skip(1).any(|scope| scope.name == owner));
+        if !found.iter().any(|known| known.2 == first && known.3 == last) {
+            found.push((owned, place.definition.clone().unwrap_or_default(), first, last));
         }
     }
-    found
+    let narrow = found.iter().any(|known| known.0);
+    found.into_iter().filter(|known| known.0 || !narrow).map(|(_, kind, first, last)| (kind, first, last)).collect()
+}
+
+/// `Type::name`, `Type.name` and `Type#name` as (the owner, the name): how code and people write a method.
+fn qualified(name: &str) -> Option<(&str, &str)> {
+    let at = name.rfind(|c| matches!(c, ':' | '.' | '#'))?;
+    let owner = name[..at].trim_end_matches(':').rsplit(|c| matches!(c, ':' | '.' | '#')).next()?;
+    (!owner.is_empty() && at + 1 < name.len()).then(|| (owner, &name[at + 1..]))
 }
 
 /// One file's definitions of `name`, written whole with their line numbers. Returns how many.
-fn show_file(out: &mut Vec<u8>, json: bool, shown: &str, text: &str, name: &str) -> u64 {
-    let found = definitions_of(shown, text, name);
+fn show_file(out: &mut Vec<u8>, json: bool, shown: &str, text: &str, name: &str, owner: Option<&str>) -> u64 {
+    let found = definitions_of(shown, text, name, owner);
     let lines: Vec<&str> = text.split_inclusive('\n').collect();
     for (kind, first, last) in &found {
         let body = &lines[(*first as usize - 1).min(lines.len())..(*last as usize).min(lines.len())];
@@ -104,10 +115,10 @@ fn show_file(out: &mut Vec<u8>, json: bool, shown: &str, text: &str, name: &str)
 }
 
 /// One name's definitions under `target`, each whole, appended to `part`. Returns how many.
-fn show_name(json: bool, name: &str, target: &str, walk: linework_search::walk::Options<'_>, part: &mut Vec<u8>) -> Result<u64, String> {
+fn show_name(json: bool, name: &str, owner: Option<&str>, target: &str, walk: linework_search::walk::Options<'_>, part: &mut Vec<u8>) -> Result<u64, String> {
     use linework_search::sweep;
     if !Path::new(target).is_dir() {
-        return Ok(show_file(part, json, target, &code(target)?, name));
+        return Ok(show_file(part, json, target, &code(target)?, name, owner));
     }
     // Only files holding the name as a whole word are parsed.
     let query = sweep::Query::new(name, true, false, true)?;
@@ -115,7 +126,7 @@ fn show_name(json: bool, name: &str, target: &str, walk: linework_search::walk::
     let format = |path: &str, bytes: &[u8], _: &[sweep::LineHit], out: &mut Vec<u8>| -> u64 {
         let Ok(text) = std::str::from_utf8(bytes) else { return 0 };
         let mut file = Vec::new();
-        let count = show_file(&mut file, json, &format!("{folder}/{path}"), text, name);
+        let count = show_file(&mut file, json, &format!("{folder}/{path}"), text, name, owner);
         out.extend_from_slice(&file);
         count
     };
@@ -135,8 +146,9 @@ fn show_name(json: bool, name: &str, target: &str, walk: linework_search::walk::
 const MENTIONS: usize = 20;
 
 /// For a name nothing under `target` defines (a constant, a field, a name in another language): the lines that hold
-/// it as a whole word, so that the call is not wasted and the next one can ask for the right lines.
-fn mentions(name: &str, target: &str, walk: linework_search::walk::Options<'_>, part: &mut Vec<u8>) -> Result<(), String> {
+/// it as a whole word, so that the call is not wasted and the next one can ask for the right lines. Returns whether
+/// there were any.
+fn mentions(name: &str, target: &str, walk: linework_search::walk::Options<'_>, part: &mut Vec<u8>) -> Result<bool, String> {
     use linework_search::sweep;
     let query = sweep::Query::new(name, true, false, true)?;
     let line = |path: &str, bytes: &[u8], hit: &sweep::LineHit, out: &mut Vec<u8>| {
@@ -160,26 +172,32 @@ fn mentions(name: &str, target: &str, walk: linework_search::walk::Options<'_>, 
     let lines: Vec<&[u8]> = found.split_inclusive(|byte| *byte == b'\n').collect();
     if lines.is_empty() {
         part.extend_from_slice(format!("{name}: not found in {target}\n").as_bytes());
-        return Ok(());
+        return Ok(false);
     }
     part.extend_from_slice(format!("{name}: no definition found; the lines that name it:\n").as_bytes());
     lines.iter().take(MENTIONS).for_each(|line| part.extend_from_slice(line));
     if lines.len() > MENTIONS {
         part.extend_from_slice(format!("... and {} more lines (lw find -w {name} {target})\n", lines.len() - MENTIONS).as_bytes());
     }
-    Ok(())
+    Ok(true)
 }
 
 /// `lw show NAME... PATH`: each definition of each name, whole.
 pub fn show(s: &Settings, names: &[String], target: &str, walk: linework_search::walk::Options<'_>, mut out: &mut dyn Write) -> Result<i32, String> {
     let mut budget = report::Budget::new(s.budget);
-    let (mut defined, mut printed) = (0, false);
+    // Whether any name was answered with a definition or with lines that hold it.
+    let (mut answered, mut printed) = (false, false);
     for name in names {
         let mut part = Vec::new();
-        let shown = show_name(s.json, name, target, walk, &mut part)?;
-        defined += shown;
+        // The name as written first: some languages have names with a dot or colons in them.
+        let mut shown = show_name(s.json, name, None, target, walk, &mut part)?;
+        let (owner, bare) = qualified(name).map_or((None, name.as_str()), |(owner, bare)| (Some(owner), bare));
+        if shown == 0 && owner.is_some() {
+            shown = show_name(s.json, bare, owner, target, walk, &mut part)?;
+        }
+        answered |= shown > 0;
         if shown == 0 && !s.json {
-            mentions(name, target, walk, &mut part)?;
+            answered |= mentions(bare, target, walk, &mut part)?;
         }
         if part.is_empty() {
             continue;
@@ -195,7 +213,7 @@ pub fn show(s: &Settings, names: &[String], target: &str, walk: linework_search:
     if budget.cut {
         crate::note(format!("lw: output cut at {} bytes (--budget)", budget.written));
     }
-    Ok(i32::from(defined == 0))
+    Ok(i32::from(!answered))
 }
 
 /// One run of lines asked of `lw lines`: first and last, counted from 1; `None` for the last means to the end.
@@ -401,6 +419,14 @@ mod tests {
             run(&["show", "main", "r", "area", &code]),
             (0, format!("{code}:11-13  function main\n11:fn main() {{\n12:    println!(\"{{}}\", Circle {{ r: 1.0 }}.area());\n13:}}\n--\nr: no definition found; the lines that name it:\n{code}:2:    r: f64,\n{code}:7:        3.14 * self.r * self.r\n{code}:12:    println!(\"{{}}\", Circle {{ r: 1.0 }}.area());\n--\n{code}:6-8  method area\n6:    fn area(&self) -> f64 {{\n7:        3.14 * self.r * self.r\n8:    }}\n"))
         );
+        // A name written with its owner, as code writes it. Rust's impl blocks are not in the outline, so the owner
+        // cannot narrow there; in Python it picks the right class's method of two.
+        assert_eq!(run(&["show", "Circle::area", &code]), run(&["show", "area", &code]));
+        let python = dir.join("jobs.py");
+        std::fs::write(&python, "class A:\n    def run(self):\n        return 1\n\nclass B:\n    def run(self):\n        return 2\n").unwrap();
+        let python = python.to_str().unwrap().to_owned();
+        assert_eq!(run(&["show", "B.run", &python]), (0, format!("{python}:6-7  function run\n6:    def run(self):\n7:        return 2\n")));
+        assert_eq!(run(&["show", "run", &python]).1.matches("function run").count(), 2);
         assert_eq!(run(&["show", "area", dir.to_str().unwrap()]).1, format!("{code}:6-8  method area\n6:    fn area(&self) -> f64 {{\n7:        3.14 * self.r * self.r\n8:    }}\n"));
         assert_eq!(run(&["lines", &notes, "2", "3"]), (0, "two\nthree\n".to_owned()));
         assert_eq!(run(&["lines", "-n", &notes, "1-2", "4-"]), (0, "1:one\n2:two\n--\n4:four\n5:five\n".to_owned()));

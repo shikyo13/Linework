@@ -399,13 +399,15 @@ definitions are separated by a line of --.
 Several names are answered in one call, in the order given; the last word is
 always PATH. A name that nothing defines (a constant, a field) is answered
 with the lines that hold it as a whole word, up to 20 of them, so the call is
-not wasted.
+not wasted. A name may be written with its owner (Type::name, Type.name,
+Type#name): the name is looked up, and where the file's outline shows a
+definition of it inside that owner, only that one is printed.
 
 OPTIONS
   --json       one object for each definition: path, name, kind, line, end_line, text
   --budget N   stop after N bytes
 
-Exit code 1 when none of the names is defined in PATH.
+Exit code 1 when none of the names is found in PATH at all.
 
 EXAMPLES
   lw show parse_header src
