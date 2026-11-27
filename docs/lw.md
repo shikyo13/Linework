@@ -119,7 +119,7 @@ WHICH FILES (lw help folders)
 WHAT IS SHOWN (lw help output)
   -A N, -B N, -C N  lines of context after, before, around each match
   -o              only the matched text      -r TEXT   show each match replaced
-  -n, -N          line numbers on (the default) or off
+  -n, -N          line numbers on or off (by default on in a console, as ripgrep)
   --column, -b    the column, the byte offset
   -c, --count-matches   matching lines, or matches, per file
   -l, --files-without-match   only the names of files with, or without, a match
@@ -688,9 +688,10 @@ WHAT lw ADDS
   Bounded output  --budget stops output at a size, and the JSON summary says
                   how many files were searched and matched and whether the
                   output was cut, so a broad search never silently floods a
-                  terminal or an agent's context. A line over 1,000 bytes
-                  (minified code, a source map) shows only the part around
-                  its match, with how much was left out.
+                  terminal or an agent's context. In a file or folder search
+                  a line over 1,000 bytes (minified code, a source map) shows
+                  only the part around its match, with how much was left out;
+                  piped input passes through whole.
   JSON for all    --json gives objects for lines, context, counts (-c) and
                   names (-l), with a summary.
   Speed           Measured 2026-11-25 on one Windows 11 PC, both programs
@@ -701,11 +702,11 @@ WHAT lw ADDS
 
 WHERE lw DIFFERS ON PURPOSE
 
-  - Line numbers are on by default, also in a pipe (-N turns them off).
   - Paths use / between names; a folder's files come in path order, the
     same every run, not in the order threads happen to finish.
-  - A line over 1,000 bytes shows the part around its match, unless -M or
-    --whole-lines is given.
+  - In a search of files or folders, a line over 1,000 bytes shows the part
+    around its match, unless -M or --whole-lines is given. Piped input alone
+    passes through whole, as grep and ripgrep print it.
   - --json is lw's own format (lw help output), not ripgrep's messages, and
     with -c or -l it gives counts and names as JSON instead of overriding.
   - Binary files are judged by the first 64 KiB and then the exact zero byte,
@@ -858,7 +859,10 @@ How results are shown: lines, context, colours, JSON, limits
 LINES
 Each line is printed as its fields and its text:  PATH:LINE:COLUMN:OFFSET:TEXT
   PATH     when several paths or a folder are searched (-H always, -I never)
-  LINE     on by default (-N off)       COLUMN with --column
+  LINE     as ripgrep: by default in a console when files are searched, not for
+           piped input alone or when the output is piped; always in JSON;
+           -n always, -N never (put -n in the configuration file to keep
+           them everywhere)                COLUMN with --column
   OFFSET   with -b: where the line (with -o, the match) starts, from 0
 A context line uses - instead of : (--field-match-separator and
 --field-context-separator change them), and groups of lines that are not next
@@ -881,8 +885,9 @@ to each other are parted by a line of -- (--context-separator, or
   --stats         the totals after the results
 
 LONG LINES
-A line over 1,000 bytes, such as minified code or a source map, is shown as
-about 800 bytes around its first match:
+In a search of files or folders, a line over 1,000 bytes, such as minified code
+or a source map, is shown as about 800 bytes around its first match (piped
+input alone is printed whole, so lw filters a pipe without changing its lines):
   12:[48211 bytes omitted] ...text around the match... [1902 bytes omitted]
 --whole-lines prints it whole. -M NUM instead replaces lines over NUM bytes
 with [Omitted long matching line] (as ripgrep), and with --max-columns-preview

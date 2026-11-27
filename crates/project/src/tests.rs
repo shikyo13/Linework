@@ -176,6 +176,11 @@ fn scopes_are_the_innermost_definition_or_section() {
     let names: Vec<&str> = chains[0].iter().map(|s| s.name.as_str()).collect();
     assert_eq!(names, ["outside", "middle", "inmost"]);
     assert!(chains[1].is_empty());
+    // A definition starting later on the line (after `export `) contains the line's start too.
+    let ts = "export function processOrder(o: number) {\n  return o;\n}\nconst after = 1;\n";
+    let found = scopes(Path::new("a.ts"), ts, &[0, ts.find("const after").unwrap()]);
+    assert_eq!(found[0].as_ref().map(|s| s.name.as_str()), Some("processOrder"));
+    assert_eq!(found[1], None);
 }
 #[test]
 fn places_separate_definitions_from_uses_and_skip_comments_and_strings() {
