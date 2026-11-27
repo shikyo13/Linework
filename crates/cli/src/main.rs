@@ -229,7 +229,16 @@ fn execute(argv: Vec<String>, mut out: &mut dyn Write) -> Result<i32, String> {
             0
         }
         ("info", [file]) => {
-            let doc = open(file).map_err(io)?;
+            let doc = match open(file) {
+                Ok(doc) => doc,
+                // A binary file has no lines or encoding; say what it is.
+                Err(e) if linework_storage::is_binary_error(&e) => {
+                    let bytes = std::fs::metadata(file).map_err(io)?.len();
+                    writeln!(out, "bytes {bytes}\nencoding binary").map_err(io)?;
+                    return Ok(0);
+                }
+                Err(e) => return Err(io(e)),
+            };
             counted(&doc).map_err(io)?;
             let ends = match doc.newline() {
                 "\r\n" => "CRLF",

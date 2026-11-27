@@ -259,7 +259,7 @@ impl Codec {
     }
     pub fn detect(sample: &[u8], final_chunk: bool) -> io::Result<Self> {
         if sample.starts_with(&[0xff, 0xfe, 0, 0]) || sample.starts_with(&[0, 0, 0xfe, 0xff]) {
-            return Err(invalid("UTF-32 text is not supported. This file appears to contain binary data"));
+            return Err(invalid(format!("UTF-32 text is not supported. {}", crate::BINARY)));
         }
         if sample.starts_with(Self::Bom.bom()) {
             return Ok(Self::Bom);
@@ -279,7 +279,7 @@ impl Codec {
             if zeros(0) > pairs / 2 && zeros(1) < pairs / 10 + 1 {
                 return Ok(Self::Utf16Be);
             }
-            return Err(invalid("This file appears to contain binary data"));
+            return Err(invalid(crate::BINARY));
         }
         Ok(Self::detect_text(sample, final_chunk))
     }

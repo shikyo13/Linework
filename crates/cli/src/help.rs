@@ -181,6 +181,9 @@ EXAMPLES
   encoding NAME  the encoding Linework detected, such as UTF-8 or UTF-16 LE
   line ends X    CRLF, LF or CR, from the first line break
 
+For a binary file it prints two lines: bytes N (the file's size) and
+encoding binary.
+
 The first time a large file is read its lines are counted on several threads;
 the count is kept in the profile for the next time.
 

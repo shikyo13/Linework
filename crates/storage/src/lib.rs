@@ -52,6 +52,12 @@ use tree::Root;
 pub(crate) fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
+/// The message of the error an open gives for a file that is not text.
+pub(crate) const BINARY: &str = "This file appears to contain binary data";
+/// Whether an error from opening a file says the file is binary, not text.
+pub fn is_binary_error(error: &io::Error) -> bool {
+    error.kind() == io::ErrorKind::InvalidData && error.to_string().ends_with(BINARY)
+}
 fn conflict() -> io::Error {
     io::Error::new(
         io::ErrorKind::AlreadyExists,
