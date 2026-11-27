@@ -161,6 +161,72 @@ fn span(word: &str) -> Option<Span> {
     }
 }
 
+/// Writes the text between two places, as far as the budget allows.
+fn copy(doc: &Document, mut from: u64, to: u64, budget: &mut report::Budget, mut out: &mut dyn Write, block: &mut [u8]) -> std::io::Result<()> {
+    while from < to {
+        let n = (to - from).min(block.len() as u64) as usize;
+        doc.read_into(from, &mut block[..n])?;
+        if !budget.write(&mut out, &block[..n])? {
+            break;
+        }
+        from += n as u64;
+    }
+    Ok(())
+}
+
+/// Waits until the lines are counted as far as line `furthest`, or to the end of the text when it has fewer or none
+/// is named. A count that is already past the middle of the text is waited for to its end: a finished count of a
+/// large file is kept for the next call, and an unfinished one is lost.
+fn counted_to(doc: &Document, furthest: Option<u64>) -> std::io::Result<()> {
+    let enough = || {
+        let counted = doc.indexed_bytes();
+        counted == doc.len() || (counted < doc.len() / 2 && furthest.is_some_and(|line| doc.line_of(counted) >= line))
+    };
+    // The first lines are counted within microseconds of opening, less than the shortest sleep.
+    let mut turns = 0;
+    while !enough() {
+        if let Some(error) = doc.index_error() {
+            return Err(std::io::Error::other(error));
+        }
+        turns += 1;
+        if turns < 2000 { std::thread::yield_now() } else { std::thread::sleep(std::time::Duration::from_millis(1)) }
+    }
+    Ok(())
+}
+
+/// Where the last `count` lines start, found by reading back from the end of the text. A line ends as the line index
+/// has it (CR, LF or CRLF), and a text that ends with a line break has no line after it.
+fn tail_start(doc: &Document, count: u64) -> std::io::Result<u64> {
+    let len = doc.len();
+    if count == 0 {
+        return Ok(len);
+    }
+    // A few lines are in the last 64 KiB. Many lines are read in larger steps, which a drive reads faster going back.
+    let mut block = vec![0; 4 << 20];
+    let (mut at, mut found, mut step) = (len, 0, 1 << 16);
+    // The byte that follows the block being read, to tell a CR that is half of CRLF.
+    let mut after = None;
+    while at > 0 {
+        let n = at.min(step) as usize;
+        step = (step * 4).min(block.len() as u64);
+        at -= n as u64;
+        doc.read_into(at, &mut block[..n])?;
+        for i in memchr::memrchr2_iter(b'\n', b'\r', &block[..n]) {
+            let start = at + i as u64 + 1;
+            let next = block[..n].get(i + 1).copied().or(after);
+            if start == len || (block[i] == b'\r' && next == Some(b'\n')) {
+                continue;
+            }
+            found += 1;
+            if found == count {
+                return Ok(start);
+            }
+        }
+        after = Some(block[0]);
+    }
+    Ok(0)
+}
+
 /// `lw lines`: files, each followed by the runs of lines wanted of it.
 pub fn lines(s: &Settings, words: &[String], mut out: &mut dyn Write) -> Result<i32, String> {
     // FILE FROM TO, the first form lw had, is one run.
@@ -191,20 +257,35 @@ pub fn lines(s: &Settings, words: &[String], mut out: &mut dyn Write) -> Result<
     let mut block = vec![0; 1 << 20];
     for (index, (path, runs)) in asked.iter().enumerate() {
         let doc = Document::open(Path::new(path.as_str())).map_err(|e| format!("{path}: {e}"))?;
-        crate::counted(&doc).map_err(io)?;
-        let total = doc.line_count();
-        // A text that ends with a line break has no line after it.
-        let total = if total > 0 && doc.line_start(total - 1) == doc.len() { total - 1 } else { total };
-        let mut runs: Vec<Span> = runs.clone();
-        if let Some(last) = s.last {
-            runs.push((total.saturating_sub(last.saturating_sub(1)).max(1), None));
-        }
-        if runs.is_empty() {
-            runs.push((1, None));
-        }
         if several {
             let head = format!("{}==> {path} <==\n", if index > 0 { "\n" } else { "" });
             budget.write(&mut out, head.as_bytes()).map_err(io)?;
+        }
+        if let (Some(count), true, false) = (s.last, runs.is_empty(), numbered) {
+            // The last lines alone are found from the end: nothing before them is read or counted.
+            let from = tail_start(&doc, count).map_err(io)?;
+            printed |= from < doc.len();
+            copy(&doc, from, doc.len(), &mut budget, &mut out, &mut block).map_err(io)?;
+            continue;
+        }
+        // Runs that all name their last line need the lines counted only as far as the furthest of them.
+        let furthest = runs.iter().map(|run| run.1).try_fold(0, |most, last| last.map(|last| most.max(last)));
+        counted_to(&doc, furthest.filter(|_| s.last.is_none() && !runs.is_empty())).map_err(io)?;
+        let total = if doc.indexing_complete() {
+            let total = doc.line_count();
+            // A text that ends with a line break has no line after it.
+            if total > 0 && doc.line_start(total - 1) == doc.len() { total - 1 } else { total }
+        } else {
+            doc.line_of(doc.indexed_bytes())
+        };
+        let mut runs: Vec<Span> = runs.clone();
+        match s.last {
+            Some(0) if runs.is_empty() => continue,
+            Some(0) | None => {}
+            Some(last) => runs.push((total.saturating_sub(last - 1).max(1), None)),
+        }
+        if runs.is_empty() {
+            runs.push((1, None));
         }
         for (at, &(first, last)) in runs.iter().enumerate() {
             if first > total {
@@ -229,16 +310,8 @@ pub fn lines(s: &Settings, words: &[String], mut out: &mut dyn Write) -> Result<
                     }
                 }
             } else {
-                let mut from = doc.line_start(first - 1);
                 let to = if last < doc.line_count() { doc.line_start(last) } else { doc.len() };
-                while from < to {
-                    let n = (to - from).min(block.len() as u64) as usize;
-                    doc.read_into(from, &mut block[..n]).map_err(io)?;
-                    if !budget.write(&mut out, &block[..n]).map_err(io)? {
-                        break;
-                    }
-                    from += n as u64;
-                }
+                copy(&doc, doc.line_start(first - 1), to, &mut budget, &mut out, &mut block).map_err(io)?;
             }
         }
     }
@@ -274,6 +347,23 @@ mod tests {
         assert_eq!(run(&["lines", "--last", "2", &notes]), (0, "four\nfive".to_owned()));
         assert_eq!(run(&["lines", &notes, "2", &code, "11-11"]), (0, format!("==> {notes} <==\ntwo\n\n==> {code} <==\nfn main() {{\n")));
         assert_eq!(run(&["lines", &notes, "9"]).0, 1);
+        // The last lines, found from the end: with a line break at the end and without, CRLF, a lone CR, more
+        // lines asked for than there are, and a file longer than one block read.
+        let ends = dir.join("ends.txt");
+        let last = |text: &[u8], count: &str| {
+            std::fs::write(&ends, text).unwrap();
+            run(&["lines", "--last", count, ends.to_str().unwrap()])
+        };
+        assert_eq!(last(b"one\ntwo\nthree\n", "2"), (0, "two\nthree\n".to_owned()));
+        assert_eq!(last(b"one\r\ntwo\r\nthree\r\n", "2"), (0, "two\r\nthree\r\n".to_owned()));
+        assert_eq!(last(b"one\rtwo\rthree", "2"), (0, "two\rthree".to_owned()));
+        assert_eq!(last(b"one\ntwo\n", "9"), (0, "one\ntwo\n".to_owned()));
+        assert_eq!(last(b"one\ntwo\n", "0").0, 1);
+        assert_eq!(last(b"", "3").0, 1);
+        let long: String = (1..=30_000).map(|n| format!("line {n}\r\n")).collect();
+        let tail: String = (29_001..=30_000).map(|n| format!("line {n}\r\n")).collect();
+        assert_eq!(last(long.as_bytes(), "1000"), (0, tail));
+        assert_eq!(run(&["lines", "-n", "--last", "2", ends.to_str().unwrap()]), (0, "29999:line 29999\r\n30000:line 30000\r\n".to_owned()));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
