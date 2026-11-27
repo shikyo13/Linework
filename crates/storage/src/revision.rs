@@ -82,9 +82,11 @@ pub(crate) fn guard_destination(path: &Path, expected: &Stamp) -> io::Result<Fil
     Ok(file)
 }
 
-const BLOCK: usize = 1024 * 1024;
+/// The pipeline's block: one unbuffered write, in memory aligned for it, so a
+/// large save goes from the hash to the disk without another copy.
+const BLOCK: usize = RUN;
 /// Blocks waiting at each stage. Past this the stage before it waits.
-const DEPTH: usize = 4;
+const DEPTH: usize = 2;
 
 /// Files from this size on are staged past the Windows file cache, which on a
 /// fast disk is about twice as quick as writing through it and flushing.
@@ -108,6 +110,23 @@ impl Aligned {
     }
     fn bytes(&mut self) -> &mut [u8] {
         unsafe { std::slice::from_raw_parts_mut(self.0.as_ptr(), RUN) }
+    }
+    fn view(&self, len: usize) -> &[u8] {
+        unsafe { std::slice::from_raw_parts(self.0.as_ptr(), len.min(RUN)) }
+    }
+}
+
+/// A block of the save in sector-aligned memory, filled to `len`.
+struct Block {
+    memory: Aligned,
+    len: usize,
+}
+impl Block {
+    fn new() -> Self {
+        Self { memory: Aligned::new(), len: 0 }
+    }
+    fn bytes(&self) -> &[u8] {
+        self.memory.view(self.len)
     }
 }
 impl Drop for Aligned {
@@ -182,10 +201,28 @@ impl<'a> Staged<'a> {
 }
 impl Write for Staged<'_> {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        let Some((_, memory)) = &mut self.direct else {
+        let Some((handle, memory)) = &mut self.direct else {
             let mut file = self.file;
             return file.write(bytes);
         };
+        // A whole run already in aligned memory, with nothing collected before
+        // it, goes to the disk as it is.
+        if self.filled == 0 && bytes.len() == RUN && bytes.as_ptr() as usize % SECTOR == 0 {
+            return match handle.write_all(bytes) {
+                Ok(()) => {
+                    self.written += RUN as u64;
+                    Ok(RUN)
+                }
+                // As in `send`: a volume that refuses says so on the first write.
+                Err(_) if self.written == 0 => {
+                    self.direct = None;
+                    self.file.set_len(0)?;
+                    let mut file = self.file;
+                    file.write_all(bytes).map(|()| RUN)
+                }
+                Err(e) => Err(e),
+            };
+        }
         let count = bytes.len().min(RUN - self.filled);
         memory.bytes()[self.filled..self.filled + count].copy_from_slice(&bytes[..count]);
         self.filled += count;
@@ -206,17 +243,17 @@ impl Write for Staged<'_> {
 
 /// Collects encoded bytes into blocks for the hashing thread.
 struct Blocks {
-    block: Vec<u8>,
-    filled: SyncSender<Vec<u8>>,
-    spare: Receiver<Vec<u8>>,
+    block: Block,
+    filled: SyncSender<Block>,
+    spare: Receiver<Block>,
 }
 impl Blocks {
     fn send(&mut self) -> io::Result<()> {
         let mut next = self
             .spare
             .try_recv()
-            .unwrap_or_else(|_| Vec::with_capacity(BLOCK));
-        next.clear();
+            .unwrap_or_else(|_| Block::new());
+        next.len = 0;
         // The receiver only goes away early when the write failed. That
         // thread's own error is the one reported.
         self.filled
@@ -226,9 +263,11 @@ impl Blocks {
 }
 impl Write for Blocks {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        let count = bytes.len().min(BLOCK - self.block.len());
-        self.block.extend_from_slice(&bytes[..count]);
-        if self.block.len() == BLOCK {
+        let count = bytes.len().min(BLOCK - self.block.len);
+        let at = self.block.len;
+        self.block.memory.bytes()[at..at + count].copy_from_slice(&bytes[..count]);
+        self.block.len += count;
+        if self.block.len == BLOCK {
             self.send()?;
         }
         Ok(count)
@@ -247,13 +286,13 @@ pub(crate) fn stage(
     produce: impl FnOnce(&mut dyn Write) -> io::Result<()>,
 ) -> io::Result<[u8; 32]> {
     thread::scope(|scope| {
-        let (filled, to_hash) = sync_channel::<Vec<u8>>(DEPTH);
-        let (hashed, to_write) = sync_channel::<Vec<u8>>(DEPTH);
+        let (filled, to_hash) = sync_channel::<Block>(DEPTH);
+        let (hashed, to_write) = sync_channel::<Block>(DEPTH);
         let (recycle, spare) = channel();
         let hasher = scope.spawn(move || {
             let mut digest = hash::Hasher::new();
             for block in to_hash {
-                digest.update(&block);
+                digest.update(block.bytes());
                 if hashed.send(block).is_err() {
                     return None;
                 }
@@ -263,13 +302,13 @@ pub(crate) fn stage(
         let writer = scope.spawn(move || -> io::Result<()> {
             let mut out = out;
             for block in to_write {
-                out.write_all(&block)?;
+                out.write_all(block.bytes())?;
                 let _ = recycle.send(block);
             }
             out.flush()
         });
         let mut blocks = Blocks {
-            block: Vec::with_capacity(BLOCK),
+            block: Block::new(),
             filled,
             spare,
         };
